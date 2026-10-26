@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block contenido %}{% set ve = d.moneda == 'VES' %}
+<div class="cabecera no-print"><div><div class="ruta">{{ empresa.razon_social }} · Facturación</div><h1>{{ titulo }}</h1></div>
+<div class="acciones"><button class="sec" type="button" data-imprimir>Imprimir / PDF</button><a class="btn sec" href="{{ url_for('web.facturas', eid=empresa.id) }}">Volver</a></div></div>
+<div class="doc-layout">
+<article class="documento">{% if d.estado == 'Anulado' %}<div class="sello-anulado">ANULADA</div>{% endif %}
+  <div class="doc-cab"><div><h2>{{ empresa.razon_social }}</h2><div>RIF: <b>{{ empresa.rif }}</b></div><div>Domicilio fiscal: {{ empresa.direccion or '—' }}</div>{% if empresa.telefono %}<div>Teléfono: {{ empresa.telefono }}</div>{% endif %}
+    {% if empresa.es_sujeto_pasivo_especial %}<div><b>Contribuyente Especial</b></div>{% endif %}</div>
+    <div class="doc-tipo"><h2>{{ nombre_doc[d.tipo]|upper }}</h2><div>N° <b>{{ num(d) }}</b></div><div class="ctrl">N° de Control: {{ d.numero_control }}</div>
+      <div>Fecha: {{ d.fecha_emision.strftime('%d/%m/%Y') }} · Hora: {{ (d.emitido_en|hora_ve).strftime('%I:%M %p') }}</div><div class="peq">Página 1 de 1</div></div></div>
+  <div class="doc-bloques"><div><b>Adquirente</b><br>{{ d.cliente_nombre }}<br>RIF/C.I.: {{ d.cliente_rif }}<br>{{ d.cliente_direccion or '' }} {{ d.cliente_telefono or '' }}</div>
+    <div><b>Condiciones</b><br>Pago: {{ 'Contado' if d.condicion == 'Contado' else 'Crédito' }}{% if d.fecha_vencimiento %} · vence {{ d.fecha_vencimiento.strftime('%d/%m/%Y') }}{% endif %}<br>
+      Moneda: {{ d.moneda }}{% if not ve %} · Tasa BCV: {{ '%.4f'|format(d.tasa_bcv) }} Bs/{{ d.moneda }}{% endif %}
+      {% if afectado %}<br><b>Factura afectada:</b> N° {{ num(afectado) }} del {{ afectado.fecha_emision.strftime('%d/%m/%Y') }} (control {{ afectado.numero_control }}){% endif %}
+      {% if d.motivo %}<br><b>Motivo:</b> {{ d.motivo }}{% endif %}</div></div>
+  <div class="tabla-wrap"><table><thead><tr><th>Descripción</th><th class="n">Cant.</th><th class="n">Precio unit. ({{ d.moneda }})</th><th class="n">Desc. %</th><th class="n">Monto (Bs)</th></tr></thead><tbody>
+  {% for l in lineas %}<tr><td>{{ l.descripcion }}{% if l.alicuota == 'E' %} (E){% elif l.alicuota == 'R' %} (R){% elif l.alicuota == 'A' %} (A){% endif %}{% if l.producto_codigo %} <span class="peq">[{{ l.producto_codigo }}]</span>{% endif %}</td>
+    <td class="n">{{ '%g'|format(l.cantidad|float) }}</td><td class="n">{{ '{:,.2f}'.format(l.precio_unitario) }}</td><td class="n">{{ '%g'|format(l.descuento_pct|float) }}</td><td class="n">{{ '{:,.2f}'.format(l.base_bs) }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  <table class="doc-totales">
+    {% if d.descuento %}<tr><td>Descuentos</td><td class="n">{{ '{:,.2f}'.format(d.descuento) }}</td></tr>{% endif %}
+    {% if d.exento %}<tr><td>Monto exento (E)</td><td class="n">{{ '{:,.2f}'.format(d.exento) }}</td></tr>{% endif %}
+    {% if d.base_g %}<tr><td>Base imponible alícuota general {{ '%g'|format(d.pct_g|float) }}%</td><td class="n">{{ '{:,.2f}'.format(d.base_g) }}</td></tr><tr><td>IVA {{ '%g'|format(d.pct_g|float) }}%</td><td class="n">{{ '{:,.2f}'.format(d.iva_g) }}</td></tr>{% endif %}
+    {% if d.base_r %}<tr><td>Base imponible alícuota reducida {{ '%g'|format(d.pct_r|float) }}%</td><td class="n">{{ '{:,.2f}'.format(d.base_r) }}</td></tr><tr><td>IVA {{ '%g'|format(d.pct_r|float) }}%</td><td class="n">{{ '{:,.2f}'.format(d.iva_r) }}</td></tr>{% endif %}
+    {% if d.base_a %}<tr><td>Base imponible bienes de lujo ({{ '%g'|format(d.pct_g|float) }}% + {{ '%g'|format(d.pct_a|float) }}%)</td><td class="n">{{ '{:,.2f}'.format(d.base_a) }}</td></tr><tr><td>IVA {{ '%g'|format((d.pct_g + d.pct_a)|float) }}%</td><td class="n">{{ '{:,.2f}'.format(d.iva_a) }}</td></tr>{% endif %}
+    <tr class="gran"><td>TOTAL (Bs)</td><td class="n">{{ '{:,.2f}'.format(d.total) }}</td></tr>
+    {% if not ve %}<tr><td>Total equivalente ({{ d.moneda }})</td><td class="n">{{ '{:,.2f}'.format(d.total_divisa or 0) }}</td></tr>{% endif %}
+    {% if d.igtf %}<tr><td>IGTF {{ '%g'|format(d.igtf_pct|float) }}% sobre Bs {{ '{:,.2f}'.format(d.igtf_base) }} pagados en divisas</td><td class="n">{{ '{:,.2f}'.format(d.igtf) }}</td></tr>
+    <tr class="gran"><td>TOTAL A PAGAR (Bs)</td><td class="n">{{ '{:,.2f}'.format(d.total_a_pagar) }}</td></tr>{% endif %}
+  </table>
+  {% if d.observaciones %}<p><b>Observaciones:</b> {{ d.observaciones }}</p>{% endif %}
+  <div class="doc-pie">
+    {% if not ve %}Operación pactada en {{ d.moneda }}; el equivalente en bolívares se calcula a la tasa de cambio oficial del BCV del día de emisión (Bs {{ '%.4f'|format(d.tasa_bcv) }}). {% endif %}
+    Imprenta autorizada: {{ serie.imprenta_razon_social }} · RIF {{ serie.imprenta_rif }} · {{ serie.imprenta_providencia }} · Números de control asignados desde {{ serie.control_prefijo }}-… hasta {{ serie.control_prefijo }}-{{ '%08d'|format(serie.control_hasta) }} el {{ serie.fecha_asignacion.strftime('%d/%m/%Y') }}.
+    <br>Huella del documento: <code>{{ d.hash[:16] }}</code>{% if d.estado == 'Anulado' %} · ANULADO el {{ (d.anulado_en|hora_ve).strftime('%d/%m/%Y %I:%M %p') }}: {{ d.motivo_anulacion }}{% endif %}
+  </div>
+</article>
+
+<aside class="no-print">
+  <section><h2>Estado</h2><table class="pares">
+    <tr><th>Estado</th><td>{{ d.estado }}</td></tr><tr><th>Saldo pendiente</th><td class="n">{{ '{:,.2f}'.format(d.saldo_pendiente) }}</td></tr>
+    <tr><th>IVA retenido</th><td class="n">{{ '{:,.2f}'.format(d.iva_retenido) }}</td></tr>
+    {% if pagos %}<tr><th>Pagos</th><td class="n">{% for p in pagos %}{{ p.forma }} {{ p.moneda }} {{ '{:,.2f}'.format(p.monto) }}<br>{% endfor %}</td></tr>{% endif %}
+    {% if notas %}<tr><th>Notas asociadas</th><td>{% for n in notas %}<a href="{{ url_for('web.factura_ver', eid=empresa.id, did=n.id) }}">{{ n.tipo }} {{ num(n) }}</a> ({{ n.estado }})<br>{% endfor %}</td></tr>{% endif %}
+  </table></section>
+  {% if d.estado == 'Emitido' and puede_emitir %}
+    {% if d.saldo_pendiente > 0 and d.tipo != 'NC' %}<section><h2>Registrar cobro</h2><form method="post" action="{{ url_for('web.factura_cobro', eid=empresa.id, did=d.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="grid"><label>Fecha<input type="date" name="fecha" value="{{ hoy }}" required></label><label>Forma<select name="forma">{% for f in formas %}<option>{{ f }}</option>{% endfor %}</select></label>
+      <label>Moneda<select name="moneda">{% for m in monedas %}<option>{{ m }}</option>{% endfor %}</select></label><label>Monto<input type="number" step="any" name="monto" required></label>
+      <label>Tasa BCV (si es divisa)<input type="number" step="any" name="tasa"></label><label>Referencia<input name="ref" maxlength="120"></label></div>
+      <div class="form-pie"><button>Registrar cobro</button></div></form></section>{% endif %}
+    {% if d.tipo == 'FAC' %}<section><h2>Notas</h2><div class="acciones">
+      <a class="btn sec" href="{{ url_for('web.factura_nueva', eid=empresa.id, tipo='NC', afectado=d.id) }}">Nota de crédito</a>
+      <a class="btn sec" href="{{ url_for('web.factura_nueva', eid=empresa.id, tipo='ND', afectado=d.id) }}">Nota de débito</a></div></section>
+    <section><h2>Retención de IVA del cliente</h2><form method="post" action="{{ url_for('web.factura_retencion', eid=empresa.id, did=d.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="grid"><label>N° comprobante<input name="comprobante" required maxlength="40"></label><label>Monto retenido (Bs)<input type="number" step="any" name="monto" required></label></div>
+      <div class="form-pie"><button class="sec">Registrar retención</button></div></form></section>{% endif %}
+  {% endif %}
+  {% if d.estado == 'Emitido' and puede_anular and es_hoy %}<section><h2>Anular</h2><p class="peq">Solo el día de emisión y sin cobros posteriores. El número y el control no se reutilizan.</p>
+    <form method="post" action="{{ url_for('web.factura_anular', eid=empresa.id, did=d.id) }}" data-confirmar="¿Anular este documento? Esta acción no se puede deshacer."><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Motivo<input name="motivo" required maxlength="500"></label><div class="form-pie"><button class="peligro">Anular documento</button></div></form></section>{% endif %}
+</aside></div>
+{% endblock %}

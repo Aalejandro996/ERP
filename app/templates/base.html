@@ -1,0 +1,63 @@
+<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block titulo %}{{ titulo or 'ERP Web' }}{% endblock %} · {{ config.APP_NOMBRE }}</title>
+<link rel="icon" href="{{ url_for('static', filename='marca/favicon.ico') }}" sizes="any"><link rel="icon" href="{{ url_for('static', filename='marca/logo-icono.svg') }}" type="image/svg+xml">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename='marca/apple-touch-icon.png') }}"><meta name="theme-color" content="#191919"><meta name="description" content="{{ config.APP_NOMBRE }} — {{ config.APP_LEMA }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='estilo.css') }}"><script src="{{ url_for('static', filename='app.js') }}" defer></script></head>
+<body>{% set u = g.usuario %}{% set ep = request.endpoint %}
+{% macro item(perm, endpoint, texto, modulo, eid, ep) %}{% if modulo not in modulos %}<span class="bloq" title="No incluido en su plan">{{ texto }}</span>{% elif puede(perm) %}<a href="{{ url_for(endpoint, eid=eid) }}" class="{{ 'activo' if ep == endpoint }}">{{ texto }}</a>{% endif %}{% endmacro %}
+<div class="app"><input type="checkbox" id="nav-toggle">
+<aside class="sidebar">
+  <a class="marca" href="/"><img src="{{ url_for('static', filename='marca/logo-icono.svg') }}" alt="" width="30" height="30">{{ config.APP_NOMBRE }}</a>
+  {% if u and u.rol != 'Maestro' %}
+  <div class="org"><b>{{ g.organizacion.nombre if g.organizacion else '' }}</b>
+    {% if g.licencia %}<span class="chip">{{ plan_nombre }}</span>{% else %}<span class="chip rojo">Sin licencia</span>{% endif %}</div>
+  <nav class="nav-grupo"><span>General</span><a href="/" class="{{ 'activo' if ep == 'web.inicio' }}">Panel de empresas</a></nav>
+  {% if empresa %}{% set e = empresa.id %}
+    <nav class="nav-grupo"><span>Facturación</span>
+      {{ item('facturacion.ver', 'web.facturas', 'Documentos de venta', 'facturacion', e, ep) }}{{ item('facturacion.emitir', 'web.factura_nueva', 'Nueva factura', 'facturacion', e, ep) }}
+      {{ item('facturacion.ver', 'web.libro_ventas', 'Libro de ventas', 'facturacion', e, ep) }}{{ item('facturacion.ver', 'web.clientes_fact', 'Clientes', 'facturacion', e, ep) }}
+      {{ item('facturacion.configurar', 'web.series', 'Series y control', 'facturacion', e, ep) }}</nav>
+    <nav class="nav-grupo"><span>Contabilidad</span>
+      {{ item('asientos.ver', 'web.asientos', 'Libro diario', 'contabilidad', e, ep) }}{{ item('asientos.ver', 'web.cuentas', 'Plan de cuentas', 'contabilidad', e, ep) }}
+      {{ item('reportes.ver', 'web.mayor', 'Mayor y comprobación', 'contabilidad', e, ep) }}{{ item('reportes.ver', 'web.reportes', 'Estados financieros', 'contabilidad', e, ep) }}
+      {{ item('asientos.ver', 'web.periodos', 'Cierres', 'contabilidad', e, ep) }}
+      {{ item('fiscal.ver', 'web.fiscal_islr', 'ISLR', 'contabilidad', e, ep) }}{{ item('fiscal.ver', 'web.fiscal_retenciones', 'Retenciones', 'contabilidad', e, ep) }}{{ item('fiscal.ver', 'web.fiscal_libros', 'Libros fiscales', 'contabilidad', e, ep) }}</nav>
+    <nav class="nav-grupo"><span>Administración</span>
+      {{ item('cartera.ver', 'web.cxc', 'Cuentas por cobrar', 'administrativo', e, ep) }}{{ item('cartera.ver', 'web.cxp', 'Cuentas por pagar', 'administrativo', e, ep) }}
+      {{ item('cartera.ver', 'web.libro_compras', 'Libro de compras', 'administrativo', e, ep) }}{{ item('cartera.ver', 'web.bancos', 'Bancos', 'administrativo', e, ep) }}
+      {{ item('inventario.ver', 'web.inventario', 'Inventario', 'inventario', e, ep) }}</nav>
+    <nav class="nav-grupo"><span>Auditoría</span>{{ item('auditoria.ver', 'web.auditoria', 'Auditoría financiera', 'auditoria', e, ep) }}</nav>
+  {% endif %}
+  {% if u.rol == 'Administrador' %}<nav class="nav-grupo"><span>Organización</span>
+    <a href="{{ url_for('web.admin_usuarios') }}" class="{{ 'activo' if ep == 'web.admin_usuarios' }}">Usuarios</a>
+    <a href="{{ url_for('web.admin_organizacion') }}" class="{{ 'activo' if ep == 'web.admin_organizacion' }}">Mi organización</a>
+    <a href="{{ url_for('web.admin_equipos') }}" class="{{ 'activo' if ep == 'web.admin_equipos' }}">Equipos</a>
+    <a href="{{ url_for('web.admin_licencia') }}" class="{{ 'activo' if ep == 'web.admin_licencia' }}">Licencia</a></nav>{% endif %}
+  {% elif u %}
+  <div class="org"><b>Consola Maestro</b><span class="chip">Maestro</span></div>
+  <nav class="nav-grupo"><span>Plataforma</span>
+    <a href="{{ url_for('web.plataforma') }}" class="{{ 'activo' if ep == 'web.plataforma' }}">Clientes</a>
+    <a href="{{ url_for('web.maestro_licencias') }}" class="{{ 'activo' if ep == 'web.maestro_licencias' }}">Licencias y equipos</a>
+    <a href="{{ url_for('web.maestro_pagos') }}" class="{{ 'activo' if ep == 'web.maestro_pagos' }}">Pagos y precios</a>
+    <a href="{{ url_for('web.maestro_bd') }}" class="{{ 'activo' if ep == 'web.maestro_bd' }}">Base de datos</a>
+    <a href="{{ url_for('web.admin_fiscal') }}" class="{{ 'activo' if ep == 'web.admin_fiscal' }}">Parámetros legales</a>
+    <a href="{{ url_for('web.plataforma_bitacora') }}" class="{{ 'activo' if ep == 'web.plataforma_bitacora' }}">Bitácora</a></nav>
+  {% endif %}
+  <div class="pie">{{ config.APP_LEMA }}<br>Normativa VE: VEN-NIF · Prov. SNAT 0071 · LIVA · LISLR · IGTF<br>Gigadevs Corp</div>
+</aside>
+<div class="principal">
+  <header class="topbar">
+    <label for="nav-toggle" class="hamburguesa" aria-label="Menú"><i></i></label>
+    {% if empresa and u.rol != 'Maestro' %}<details class="menu"><summary>{{ empresa.razon_social }}</summary><div class="panel">
+      {% for x in mis_empresas() %}<a href="{{ url_empresa(x.id) or '/' }}">{{ x.razon_social }} <span class="peq">{{ x.rif }}</span></a>{% endfor %}</div></details>{% endif %}
+    <span class="sp"></span>
+    {% if u %}<details class="menu"><summary><span class="avatar">{{ u.username[:2] }}</span>{{ u.username }}</summary><div class="panel">
+      <div class="peq menu-info">{{ u.rol }}{% if u.email %} · {{ u.email }}{% endif %}</div>
+      <a href="{{ url_for('auth.cuenta') }}">Mi cuenta y seguridad</a><a href="{{ url_for('auth.cambiar_clave') }}">Cambiar contraseña</a>
+      <form method="post" action="{{ url_for('auth.logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button>Cerrar sesión</button></form></div></details>{% endif %}
+  </header>
+  <main class="contenido">
+    {% for cat, m in get_flashed_messages(with_categories=true) %}<div class="msg" role="alert">{{ m }}</div>{% endfor %}
+    {% block contenido %}{% endblock %}
+  </main>
+</div></div></body></html>

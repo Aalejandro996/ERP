@@ -1,0 +1,11 @@
+Flask>=3.0
+Flask-SQLAlchemy>=3.1
+Flask-WTF>=1.2
+Flask-Limiter[redis]>=3.5
+argon2-cffi>=23.1
+cryptography>=42
+psycopg[binary]>=3.1
+gunicorn>=22
+python-dotenv>=1.0
+segno>=1.6           # código QR del MFA (SVG, sin dependencias)
+pytest>=8

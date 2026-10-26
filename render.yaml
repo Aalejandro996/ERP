@@ -1,0 +1,116 @@
+# Blueprint de Render — proyecto «ERP» (Gigadevs Corp). Dashboard → New → Blueprint → este repositorio.
+# Las variables con sync: false se piden al aplicar el blueprint (nunca se guardan en el repositorio).
+projects:
+  - name: ERP
+    environments:
+      - name: produccion
+        services:
+          # ------------------------------------------------------------- aplicación web (clientes + consola Maestro)
+          - type: web
+            name: erp-web
+            runtime: python
+            plan: starter
+            region: ohio
+            buildCommand: pip install -r requirements.txt
+            preDeployCommand: python scripts/inicializar.py --no-interactivo
+            startCommand: gunicorn wsgi:app --workers 2 --threads 4 --timeout 60 --forwarded-allow-ips="*"
+            healthCheckPath: /salud
+            envVars:
+              - key: PYTHON_VERSION
+                value: 3.12.7
+              - key: FLASK_ENV
+                value: production
+              - key: SECRET_KEY
+                generateValue: true
+              - key: FIELD_ENCRYPTION_KEY        # Fernet: python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"
+                sync: false
+              - key: DATABASE_URL
+                fromDatabase:
+                  name: erp-db
+                  property: connectionString
+              - key: DB_ROL_APLICACION           # la app hace SET ROLE a este rol sin privilegios de dueño → aplica RLS
+                value: erp_app
+              - key: RATELIMIT_STORAGE_URI
+                fromService:
+                  type: keyvalue
+                  name: erp-cache
+                  property: connectionString
+              - key: LICENSE_SERVER_URL          # activación/renovación por la red privada de Render
+                fromService:
+                  type: web
+                  name: erp-licencias
+                  property: hostport
+              - key: LICENSE_ADMIN_SECRET
+                fromService:
+                  type: web
+                  name: erp-licencias
+                  envVarKey: LICENSE_ADMIN_SECRET
+              - key: LICENSE_PUBLIC_KEY          # python -m licensing_server.cli keygen
+                sync: false
+              - key: APP_NOMBRE
+                value: ERP
+              - key: APP_BASE_URL                # p. ej. https://erp-web.onrender.com o su dominio
+                sync: false
+              - key: MAIL_BACKEND
+                value: brevo
+              - key: MAIL_FROM
+                value: Gigadevs Corp <aalejandro996@icloud.com>
+              - key: BREVO_API_KEY
+                sync: false
+              - key: MAESTRO_USUARIO             # primer Maestro: recibe una invitación por correo en el primer despliegue
+                sync: false
+              - key: MAESTRO_EMAIL
+                sync: false
+              - key: PAGO_MOVIL_INSTRUCCIONES    # banco, teléfono y RIF para pagos en bolívares
+                sync: false
+
+          # ------------------------------------------------------------- servidor de licencias y muro de pago
+          - type: web
+            name: erp-licencias
+            runtime: python
+            plan: starter
+            region: ohio
+            buildCommand: pip install -r requirements.txt
+            startCommand: gunicorn licensing_server.wsgi:app --workers 2 --timeout 60 --forwarded-allow-ips="*"
+            healthCheckPath: /salud
+            envVars:
+              - key: PYTHON_VERSION
+                value: 3.12.7
+              - key: DATABASE_URL
+                fromDatabase:
+                  name: erp-db
+                  property: connectionString
+              - key: LICENSE_PRIVATE_KEY         # SOLO aquí. Nunca en erp-web.
+                sync: false
+              - key: LICENSE_ADMIN_SECRET
+                generateValue: true
+              - key: PUBLIC_URL                  # URL pública de este servicio (webhook de Binance Pay)
+                sync: false
+              - key: ERP_URL                     # URL pública de erp-web (retorno tras pagar)
+                sync: false
+              - key: MAIL_FROM
+                value: Gigadevs Corp <aalejandro996@icloud.com>
+              - key: BREVO_API_KEY
+                sync: false
+              - key: BINANCE_PAY_API_KEY         # opcional: sin estas dos variables no se cobra en USDT
+                sync: false
+              - key: BINANCE_PAY_SECRET
+                sync: false
+              - key: PAGO_MOVIL_INSTRUCCIONES
+                sync: false
+
+          # ------------------------------------------------------------- límites de tasa compartidos entre procesos
+          - type: keyvalue
+            name: erp-cache
+            plan: free
+            region: ohio
+            ipAllowList: []                      # solo red privada
+
+        databases:
+          - name: erp-db
+            plan: basic-256mb
+            region: ohio
+            databaseName: erp
+            user: erp_owner
+            postgresMajorVersion: "16"
+            ipAllowList: []                      # sin acceso desde Internet

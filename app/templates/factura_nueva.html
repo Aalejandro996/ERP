@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block contenido %}
+<div class="cabecera"><div><div class="ruta">{{ empresa.razon_social }} · RIF {{ empresa.rif }}</div><h1>{{ titulo }}</h1></div>
+<div class="acciones"><a class="btn sec" href="{{ url_for('web.facturas', eid=empresa.id) }}">Cancelar</a></div></div>
+<script type="application/json" id="datos-factura">{{ datos_js|safe }}</script>
+<form method="post" id="form-factura">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="tipo" value="{{ tipo }}">
+{% if afectado %}<input type="hidden" name="afectado" value="{{ afectado.id }}">{% endif %}
+
+<section><h2>Documento</h2><div class="grid">
+  <label>Serie<select name="serie_id" required>{% for s in series %}<option value="{{ s.id }}">{{ s.serie or '(sin serie)' }} — control disponible: {{ s.control_hasta - s.control_siguiente + 1 }}</option>{% endfor %}</select></label>
+  <label>Fecha de emisión<input type="date" name="fecha" value="{{ form.fecha or hoy }}" max="{{ hoy }}" required></label>
+  {% if tipo == 'FAC' %}
+  <label>Moneda de la operación<select name="moneda" id="moneda">{% for m in monedas %}<option {{ 'selected' if form.moneda == m }}>{{ m }}</option>{% endfor %}</select></label>
+  <label>Tasa BCV del día (Bs por unidad)<input type="number" step="any" name="tasa" id="tasa" value="{{ form.tasa or (tasa or '') }}"></label>
+  <label>Condición<select name="condicion" id="condicion"><option value="Contado">Contado</option><option value="Credito" {{ 'selected' if form.condicion == 'Credito' }}>Crédito</option></select></label>
+  <label id="lbl-venc">Vencimiento (crédito)<input type="date" name="vencimiento" value="{{ form.vencimiento or '' }}"></label>
+  {% else %}
+  <label>{{ 'Factura afectada' }}<input value="{{ afectado.serie }}{{ '%08d'|format(afectado.numero) }} · {{ afectado.fecha_emision }} · {{ afectado.cliente_nombre }}" disabled></label>
+  <label>Moneda / condición<input value="{{ afectado.moneda }} · {{ afectado.condicion }}" disabled></label>
+  <label>Motivo de la nota<input name="motivo" required maxlength="500" value="{{ form.motivo or '' }}"></label>
+  {% if tipo == 'NC' and 'inventario' in modulos %}<label>¿Devolución de mercancía?<select name="reintegrar"><option value="0">No (solo ajuste de precio)</option><option value="1">Sí, reingresar al inventario</option></select></label>{% endif %}
+  {% endif %}
+</div></section>
+
+{% if tipo == 'FAC' %}
+<section><h2>Adquirente</h2><div class="grid">
+  <label>Cliente registrado<select id="cliente-sel"><option value="">— Nuevo / manual —</option>{% for c in clientes %}<option value="{{ c.rif }}">{{ c.razon_social }} ({{ c.rif }})</option>{% endfor %}</select></label>
+  <label>RIF o cédula<input name="cliente_rif" id="cliente_rif" required placeholder="J-12345678-9 / V-12345678-0" value="{{ form.cliente_rif or '' }}"></label>
+  <label>Nombre o razón social<input name="cliente_nombre" id="cliente_nombre" required maxlength="300" value="{{ form.cliente_nombre or '' }}"></label>
+  <label>Domicilio fiscal<input name="cliente_direccion" id="cliente_direccion" maxlength="500" value="{{ form.cliente_direccion or '' }}"></label>
+  <label>Teléfono<input name="cliente_telefono" id="cliente_telefono" maxlength="40" value="{{ form.cliente_telefono or '' }}"></label>
+  <label>Guardar en clientes<select name="guardar_cliente"><option value="1">Sí</option><option value="0">No</option></select></label>
+</div></section>
+{% endif %}
+
+<section><h2>Detalle</h2><p class="peq nota">Precios en la moneda del documento, sin IVA. Alícuota: G general · R reducida · A lujo (general + adicional) · E exento.</p>
+<div class="tabla-wrap"><table class="lineas"><thead><tr>{% if productos %}<th>Producto</th>{% endif %}<th>Descripción</th><th class="n">Cantidad</th><th class="n">Precio unit.</th><th class="n">Desc. %</th><th>IVA</th><th class="n">Subtotal</th></tr></thead><tbody>
+{% for i in range(1, n_lineas + 1) %}{% set la = lineas_af[i-1] if lineas_af|length >= i else none %}
+<tr data-linea="{{ i }}">{% if productos %}<td class="c-cod"><select name="l{{ i }}_prod" class="sel-prod"><option value="">—</option>{% for p in productos %}<option value="{{ p.codigo }}" {{ 'selected' if (form['l%d_prod'|format(i)] or (la.producto_codigo if la else '')) == p.codigo }}>{{ p.codigo }} · {{ p.nombre }}</option>{% endfor %}</select></td>{% endif %}
+<td class="c-desc"><input name="l{{ i }}_desc" maxlength="300" value="{{ form['l%d_desc'|format(i)] or (la.descripcion if la else '') }}"></td>
+<td class="c-num"><input name="l{{ i }}_cant" type="number" step="any" min="0" class="n" value="{{ form['l%d_cant'|format(i)] or (la.cantidad|float if la else '') }}"></td>
+<td class="c-num"><input name="l{{ i }}_precio" type="number" step="any" min="0" class="n" value="{{ form['l%d_precio'|format(i)] or (la.precio_unitario|float if la else '') }}"></td>
+<td class="c-num"><input name="l{{ i }}_dpct" type="number" step="any" min="0" max="100" class="n" value="{{ form['l%d_dpct'|format(i)] or (la.descuento_pct|float if la else '0') }}"></td>
+<td><select name="l{{ i }}_alic">{% for k, v in alic_txt.items() %}<option value="{{ k }}" {{ 'selected' if (form['l%d_alic'|format(i)] or (la.alicuota if la else 'G')) == k }}>{{ k }} · {{ v }}</option>{% endfor %}</select></td>
+<td class="n sub">—</td></tr>{% endfor %}
+</tbody></table></div>
+<div class="resumen" id="resumen"><div><span>Base imponible</span><b data-r="base">—</b></div><div><span>Exento</span><b data-r="exento">—</b></div><div><span>IVA</span><b data-r="iva">—</b></div><div class="total"><span>Total estimado (Bs)</span><b data-r="total">—</b></div></div>
+<p class="peq">Vista previa aproximada; el servidor recalcula y valida todo al emitir.</p></section>
+
+{% if tipo != 'NC' %}
+<section id="sec-pagos"><h2>Pagos recibidos (contado)</h2>
+<p class="peq nota">Monto aplicado al documento en la moneda del pago. {% if empresa.es_sujeto_pasivo_especial %}Su empresa es Sujeto Pasivo Especial: se cobrará <b>IGTF</b> adicional sobre los pagos en divisas.{% endif %}</p>
+<div class="tabla-wrap"><table class="lineas"><thead><tr><th>Forma</th><th>Moneda</th><th class="n">Monto</th><th>Referencia</th></tr></thead><tbody>
+{% for i in range(1, n_pagos + 1) %}<tr><td><select name="p{{ i }}_forma">{% for f in formas %}<option>{{ f }}</option>{% endfor %}</select></td>
+<td><select name="p{{ i }}_moneda">{% for m in monedas %}<option>{{ m }}</option>{% endfor %}</select></td>
+<td class="c-num"><input name="p{{ i }}_monto" type="number" step="any" min="0" value="{{ form['p%d_monto'|format(i)] or '' }}"></td>
+<td><input name="p{{ i }}_ref" maxlength="120" value="{{ form['p%d_ref'|format(i)] or '' }}"></td></tr>{% endfor %}
+</tbody></table></div></section>
+{% endif %}
+
+<section><label>Observaciones<textarea name="observaciones" rows="2" maxlength="500">{{ form.observaciones or '' }}</textarea></label>
+<div class="form-pie"><button>Emitir {{ titulo|replace('Nueva ', '') }}</button><a class="btn sec" href="{{ url_for('web.facturas', eid=empresa.id) }}">Cancelar</a></div>
+<p class="peq">Al emitir se asignan el número consecutivo y el número de control; el documento ya no podrá modificarse (solo anularse el mismo día o corregirse con una nota).</p></section>
+</form>
+{% endblock %}

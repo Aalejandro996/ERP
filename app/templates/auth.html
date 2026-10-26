@@ -1,0 +1,80 @@
+<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ {'login':'Iniciar sesión','verificar_correo':'Verificar correo','invitacion':'Activar cuenta','recuperar':'Recuperar acceso','restablecer':'Nueva contraseña',
+  'cambiar_clave':'Cambiar contraseña','mfa_verificar':'Verificación en dos pasos','mfa_configurar':'Activar MFA','mfa_codigos':'Códigos de respaldo','cuenta':'Mi cuenta'}[vista] }} · {{ config.APP_NOMBRE }}</title>
+<link rel="icon" href="{{ url_for('static', filename='marca/favicon.ico') }}" sizes="any"><link rel="icon" href="{{ url_for('static', filename='marca/logo-icono.svg') }}" type="image/svg+xml">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename='marca/apple-touch-icon.png') }}"><meta name="theme-color" content="#191919"><meta name="description" content="{{ config.APP_NOMBRE }} — {{ config.APP_LEMA }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='estilo.css') }}"></head>
+<body><div class="auth">
+<div class="auth-hero"><a class="marca" href="/"><img src="{{ url_for('static', filename='marca/logo-icono.svg') }}" alt="" width="30" height="30">{{ config.APP_NOMBRE }}</a>
+  <div><h1>{{ config.APP_LEMA }}</h1>
+  <p>Contabilidad VEN-NIF, facturación según la Providencia SNAT/2011/00071, inventario y auditoría en una plataforma segura.</p>
+  <ul class="auth-lista"><li>Verificación en dos pasos obligatoria</li><li>Datos aislados por cliente a nivel de base de datos</li><li>Bitácora inalterable de cada operación</li></ul></div>
+  <span class="peq">© {{ config.APP_NOMBRE }} · un producto de Gigadevs Corp</span></div>
+<div class="auth-caja"><div class="auth-form">
+{% for m in get_flashed_messages() %}<div class="msg" role="alert">{{ m }}</div>{% endfor %}
+{% set csrf %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endset %}
+
+{% if vista == 'login' %}
+  <h2>Iniciar sesión</h2><p class="peq">Ingrese con su usuario o correo.</p>
+  <form method="post" autocomplete="off">{{ csrf }}
+    <label>Usuario o correo<input name="usuario" required maxlength="254" autocomplete="username" autofocus></label>
+    <label>Contraseña<input name="clave" type="password" required maxlength="128" autocomplete="current-password"></label>
+    <button>Entrar</button></form>
+  <div class="enlaces"><a href="{{ url_for('auth.recuperar') }}">¿Olvidó su contraseña?</a></div>
+
+{% elif vista == 'verificar_correo' %}
+  <h2>Verifique su correo</h2><p class="peq">Por seguridad, cada usuario debe tener un correo verificado: allí recibirá alertas de acceso y los enlaces de recuperación.</p>
+  <form method="post">{{ csrf }}<label>Correo<input name="email" type="email" required maxlength="254" value="{{ email }}"></label><button>Enviar enlace de verificación</button></form>
+  <form method="post" action="{{ url_for('auth.logout') }}">{{ csrf }}<button class="sec">Salir</button></form>
+
+{% elif vista in ('invitacion', 'restablecer') %}
+  <h2>{{ 'Active su cuenta' if vista == 'invitacion' else 'Nueva contraseña' }}</h2>
+  {% if usuario %}<p class="peq">Usuario: <b>{{ usuario }}</b></p>{% endif %}
+  <p class="peq">Mínimo 12 caracteres y al menos 3 de: minúsculas, mayúsculas, números y símbolos.</p>
+  <form method="post">{{ csrf }}
+    <label>Contraseña<input name="nueva" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label>
+    <label>Repita la contraseña<input name="repetir" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label>
+    <button>Guardar</button></form>
+
+{% elif vista == 'recuperar' %}
+  <h2>Recuperar acceso</h2><p class="peq">Le enviaremos un enlace de un solo uso (válido 30 minutos) a su correo verificado.</p>
+  <form method="post">{{ csrf }}<label>Correo<input name="email" type="email" required maxlength="254"></label><button>Enviar enlace</button></form>
+  <div class="enlaces"><a href="{{ url_for('auth.login') }}">← Volver</a></div>
+
+{% elif vista == 'cambiar_clave' %}
+  <h2>Cambiar contraseña</h2><p class="peq">Al cambiarla se cierran sus demás sesiones abiertas.</p>
+  <form method="post">{{ csrf }}
+    <label>Contraseña actual<input name="actual" type="password" required autocomplete="current-password"></label>
+    <label>Nueva contraseña<input name="nueva" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label>
+    <button>Guardar</button></form>
+  <div class="enlaces"><a href="/">← Volver</a></div>
+
+{% elif vista == 'mfa_verificar' %}
+  <h2>Verificación en dos pasos</h2><p class="peq">Escriba el código de 6 dígitos de su aplicación autenticadora, o uno de sus códigos de respaldo.</p>
+  <form method="post">{{ csrf }}<label>Código<input name="codigo" inputmode="numeric" maxlength="11" required autofocus autocomplete="one-time-code"></label><button>Verificar</button></form>
+  <div class="enlaces"><a href="{{ url_for('auth.login') }}">← Volver</a></div>
+
+{% elif vista == 'mfa_configurar' %}
+  <h2>Active la verificación en dos pasos</h2>
+  <p class="peq">Escanee el código con Google Authenticator, Microsoft Authenticator, Authy u otra aplicación TOTP.</p>
+  {% if qr %}<p><span class="qr"><img src="{{ qr }}" alt="Código QR para la aplicación autenticadora" width="200" height="200"></span></p>{% endif %}
+  <p class="peq">¿No puede escanear? Ingrese esta clave manualmente (basada en tiempo, 6 dígitos, 30 s):<br><code>{{ secreto }}</code></p>
+  <form method="post">{{ csrf }}<label>Código actual de 6 dígitos<input name="codigo" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required autocomplete="one-time-code"></label><button>Activar</button></form>
+
+{% elif vista == 'mfa_codigos' %}
+  <h2>Códigos de respaldo</h2>
+  {% if codigos %}<p class="peq">Guárdelos en un lugar seguro. <b>Solo se muestran esta vez.</b> Cada uno sirve una sola vez si pierde su teléfono.</p>
+    <div class="codigos">{% for c in codigos %}<span>{{ c }}</span>{% endfor %}</div>
+    <div class="form-pie"><a class="btn" href="/">Ya los guardé, continuar</a></div>
+  {% else %}<p class="peq">Le quedan <b>{{ restantes }}</b> códigos sin usar. Para generar 10 nuevos (anula los anteriores) confirme con su código MFA.</p>
+    <form method="post">{{ csrf }}<label>Código MFA<input name="codigo" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label><button>Generar nuevos códigos</button></form>
+    <div class="enlaces"><a href="/">← Volver</a></div>{% endif %}
+
+{% elif vista == 'cuenta' %}
+  <h2>Mi cuenta</h2>
+  <table class="pares"><tr><th>Usuario</th><td>{{ g.usuario.username }}</td></tr><tr><th>Correo</th><td>{{ g.usuario.email }}{% if g.usuario.email_verificado %} <span class="chip">verificado</span>{% endif %}</td></tr>
+    <tr><th>Rol</th><td>{{ g.usuario.rol }}</td></tr><tr><th>MFA</th><td>{{ 'Activo' if g.usuario.mfa_activo else 'Pendiente' }}</td></tr><tr><th>Códigos de respaldo disponibles</th><td>{{ restantes }}</td></tr>
+    <tr><th>Último acceso</th><td>{{ g.usuario.ultimo_login.strftime('%Y-%m-%d %H:%M UTC') if g.usuario.ultimo_login else '—' }} {{ ('· IP ' ~ g.usuario.ultimo_ip) if g.usuario.ultimo_ip else '' }}</td></tr></table>
+  <div class="form-pie"><a class="btn" href="{{ url_for('auth.cambiar_clave') }}">Cambiar contraseña</a><a class="btn sec" href="{{ url_for('auth.mfa_codigos') }}">Códigos de respaldo</a><a class="btn sec" href="/">Volver</a></div>
+{% endif %}
+</div></div></div></body></html>

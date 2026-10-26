@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% macro opcion(o, valor) %}<option value="{{ o[0] }}" {{ 'selected' if valor is not none and o[0]|string == valor|string }}>{{ o[1] }}</option>{% endmacro %}
+{% macro campos(lista) %}<div class="grid">{% for c in lista %}
+{% if c.t == 'hidden' %}<input type="hidden" name="{{ c.n }}" value="{{ c.valor if c.valor is not none else '' }}">{% else %}<label>{{ c.l }}
+{% if c.t == 'select' %}<select name="{{ c.n }}" {{ 'required' if c.req }}>{% for o in c.opciones %}{{ opcion(o, c.valor) }}{% endfor %}</select>
+{% elif c.t == 'textarea' %}<textarea name="{{ c.n }}" rows="3" maxlength="4000" {{ 'required' if c.req }}></textarea>
+{% else %}<input name="{{ c.n }}" type="{{ c.t }}" {{ 'required' if c.req }} {% if c.t == 'number' %}step="any"{% endif %} value="{{ c.valor if c.valor is not none else '' }}" maxlength="500" autocomplete="{{ 'new-password' if c.t == 'password' else 'off' }}">{% endif %}</label>{% endif %}{% endfor %}</div>{% endmacro %}
+{% block contenido %}
+<div class="cabecera"><div>{% if empresa %}<div class="ruta">{{ empresa.razon_social }} · RIF {{ empresa.rif }}</div>{% endif %}<h1>{{ titulo }}</h1></div>
+{% if acciones %}<div class="acciones">{% for a in acciones %}<a class="btn {{ '' if a.primaria else 'sec' }}" href="{{ a.url }}">{{ a.texto }}</a>{% endfor %}</div>{% endif %}</div>
+{% for s in secciones %}
+{% if s.kpis %}<div class="kpis">{% for k, v in s.kpis %}<div class="kpi"><span>{{ k }}</span><b>{{ v }}</b></div>{% endfor %}</div>
+{% else %}<section>{% if s.titulo %}<h2>{{ s.titulo }}</h2>{% endif %}{% if s.nota %}<p class="peq nota">{{ s.nota }}</p>{% endif %}
+{% if s.tarjetas is defined %}{% if s.tarjetas %}<div class="tarjetas">{% for t in s.tarjetas %}{% if t.url %}<a href="{{ t.url }}"><b>{{ t.titulo }}</b><span class="peq">{{ t.sub }}</span><br><span class="ir">Abrir →</span></a>{% else %}<div class="tarjeta"><b>{{ t.titulo }}</b><p class="peq">{{ t.sub }} · Su rol no tiene módulos habilitados en esta empresa.</p></div>{% endif %}{% endfor %}</div>{% else %}<p class="peq">{{ s.vacio }}</p>{% endif %}{% endif %}
+{% if s.form %}<form method="{{ s.form.metodo or 'post' }}" action="{{ s.form.action }}">{% if (s.form.metodo or 'post') == 'post' %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+{{ campos(s.form.campos) }}<div class="form-pie"><button>{{ s.form.boton }}</button></div></form>{% endif %}
+{% if s.enlace %}<div class="form-pie"><a class="btn" href="{{ s.enlace.url }}" rel="noopener noreferrer">{{ s.enlace.texto }} →</a></div>{% endif %}
+{% if s.pares %}<table class="pares">{% for k, v in s.pares %}<tr><th>{{ k }}</th><td class="n">{{ v }}</td></tr>{% endfor %}</table>{% endif %}
+{% if s.tabla %}<div class="tabla-wrap"><table class="{{ 'ancha' if s.tabla.ancha }}"><thead><tr>{% for c in s.tabla.cols %}<th class="{{ 'n' if loop.index0 in (s.tabla.num or []) }}">{{ c }}</th>{% endfor %}{% if s.tabla.accion %}<th></th>{% endif %}</tr></thead><tbody>
+{% for f in s.tabla.filas %}<tr class="{{ f.clase or '' }}">{% for v in f.cells %}<td class="{{ 'n' if loop.index0 in (s.tabla.num or []) }}">{% if loop.first and f.url %}<a class="fila" href="{{ f.url }}">{{ v }}</a>{% else %}{{ v }}{% endif %}</td>{% endfor %}
+{% if s.tabla.accion %}<td>{% if f.form %}<form class="mini" method="{{ f.form.metodo or 'post' }}" action="{{ f.form.action }}">{% if (f.form.metodo or 'post') == 'post' %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+{% for c in f.form.campos %}{% if c.t == 'hidden' %}<input type="hidden" name="{{ c.n }}" value="{{ c.valor if c.valor is not none else '' }}">{% else %}<input name="{{ c.n }}" type="{{ c.t }}" placeholder="{{ c.l }}" aria-label="{{ c.l }}" {{ 'required' if c.req }} {% if c.t == 'number' %}step="any"{% endif %} value="{{ c.valor if c.valor is not none else '' }}">{% endif %}{% endfor %}<button class="sec">{{ f.form.boton }}</button></form>{% endif %}</td>{% endif %}</tr>
+{% else %}<tr><td colspan="{{ s.tabla.cols|length + 1 }}" class="peq">Sin registros</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+{% if s.texto %}<pre>{{ s.texto }}</pre>{% endif %}</section>{% endif %}
+{% endfor %}{% endblock %}
