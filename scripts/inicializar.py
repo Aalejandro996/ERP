@@ -60,6 +60,25 @@ def crear_maestro(app, db, interactivo=True):
     db.session.commit(); print(f"Maestro «{nombre}» creado; se envió la invitación a {email}.")
 
 
+def reinvitar_maestro(app, db):
+    """El Maestro que aún no activó su cuenta recibe una invitación nueva si la anterior venció, o si se pide con
+    MAESTRO_REENVIAR_INVITACION=1 (quite la variable después: cada despliegue con ella reenvía y anula el enlace previo)."""
+    from app.auth.routes import enviar_invitacion
+    from app.models import TokenCorreo, Usuario, _ahora
+    forzar = os.environ.get("MAESTRO_REENVIAR_INVITACION") == "1"
+    for u in db.session.query(Usuario).filter_by(rol="Maestro", email_verificado=False, activo=True):
+        vigente = db.session.query(TokenCorreo).filter(TokenCorreo.usuario_id == u.id, TokenCorreo.proposito == "invitacion",
+                                                       TokenCorreo.usado_en.is_(None), TokenCorreo.expira_en > _ahora()).count()
+        if vigente and not forzar:
+            print(f"Maestro «{u.username}» pendiente de activar; su invitación sigue vigente."); continue
+        try:
+            with app.test_request_context():
+                enviar_invitacion(u, "la plataforma ERP (consola Maestro)", "Gigadevs Corp")
+            db.session.commit(); print(f"Invitación reenviada al Maestro «{u.username}» ({u.email}).")
+        except OSError as e:
+            db.session.rollback(); print(f"AVISO: no se pudo reenviar la invitación a «{u.username}» ({e}).")
+
+
 def preparar_rol(db, rol):
     if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", rol): sys.exit("DB_ROL_APLICACION inválido")
     t = db.text
@@ -114,6 +133,8 @@ def main():
         if rol: preparar_rol(db, rol)
         if db.session.query(Usuario).filter_by(rol="Maestro").count() == 0:
             crear_maestro(app, db, interactivo="--no-interactivo" not in sys.argv)
+        else:
+            reinvitar_maestro(app, db)
         print("Base de datos lista.")
 
 

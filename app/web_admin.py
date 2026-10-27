@@ -73,11 +73,8 @@ def admin_usuarios():
                 enviar_invitacion(u, org.nombre, g.usuario.username)
             elif a == "recuperar":
                 if not u.email_verificado: raise ValueError("El usuario no tiene correo verificado; reenvíe la invitación")
-                from .auth.routes import crear_token
-                from flask import url_for
-                tok = crear_token(u, "recuperar", u.email)
-                correo.enviar(u.email, "Restablecer contraseña", f"El administrador solicitó restablecer su contraseña.\nEnlace (30 minutos, un uso):\n"
-                                                                 f"{correo.url_absoluta(url_for('auth.recuperar_token', token=tok))}")
+                from .auth.routes import enviar_recuperacion
+                enviar_recuperacion(u, "El administrador de su organización solicitó restablecer la contraseña de su cuenta.")
             registrar(g.usuario.username, a.upper(), u.username); db.session.commit()
         acciones = {"crear": crear, "estado": estado, "asignar": asignar, "quitar": asignar, "reset_mfa": reset, "reinvitar": reset, "recuperar": reset}
         if a not in acciones: flash("Acción inválida"); return redirect(request.url)

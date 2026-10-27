@@ -19,9 +19,9 @@ if len(_secreto) < 32:
 _binance = BinancePay(os.environ["BINANCE_PAY_API_KEY"], os.environ["BINANCE_PAY_SECRET"]) if os.environ.get("BINANCE_PAY_API_KEY") else None
 
 
-def _correo(destino, asunto, texto):
+def _correo(destino, asunto, texto, html=None):
     brevo.enviar(os.environ.get("BREVO_API_KEY"), os.environ.get("MAIL_FROM", "Gigadevs Corp <aalejandro996@icloud.com>"), destino, asunto, texto,
-                 etiquetas=("licencia",))
+                 html=html, etiquetas=("licencia",))
 
 
 app = create_app(_url, Ed25519PrivateKey.from_private_bytes(base64.urlsafe_b64decode(_b + "=" * (-len(_b) % 4))),

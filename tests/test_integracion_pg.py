@@ -76,7 +76,7 @@ def entorno():
     from licensing_server.server import create_app as crear_srv
     correos_lic = []
     srv = crear_srv("sqlite:///" + os.path.join(tempfile.mkdtemp(), "lic.db"), Ed25519PrivateKey.generate(), secreto_admin="z" * 40,
-                    correo=lambda d, a, t: correos_lic.append((d, t)), config={"pago_movil": "Banco Prueba 0414-0000000"})
+                    correo=lambda d, a, t, **k: correos_lic.append((d, t)), config={"pago_movil": "Banco Prueba 0414-0000000"})
     cli_srv = srv.test_client()
     def transporte(metodo, url, cuerpo, cab):
         r = cli_srv.open(url.split("lic.test", 1)[1], method=metodo, data=cuerpo, headers=cab); return r.status_code, r.data

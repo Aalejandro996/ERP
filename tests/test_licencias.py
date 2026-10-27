@@ -58,7 +58,7 @@ class Entorno:
         self.binance = BinancePay("KEY", "SECRET", transporte=self.bf.transporte, reloj=lambda: self.t[0])
         url = "sqlite:///" + os.path.join(tempfile.mkdtemp(), "lic.db")
         self.app = create_app(url, self.priv, reloj=lambda: self.t[0], secreto_admin=SECRETO, binance=self.binance,
-                              correo=lambda d, a, x: self.correos.append((d, a, x)), config={"url_erp": "https://erp.test", "pago_movil": "Banco X 0414"})
+                              correo=lambda d, a, x, **k: self.correos.append((d, a, x)), config={"url_erp": "https://erp.test", "pago_movil": "Banco X 0414"})
         self.st = self.app.extensions["almacen"]
         self.http = self.app.test_client()
         self.admin = ClienteAdmin("https://lic.test", SECRETO, transporte=self._admin_http, reloj=lambda: self.t[0])

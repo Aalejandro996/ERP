@@ -47,18 +47,35 @@ def consumir_token(crudo, proposito, marcar=True):
 
 def enviar_invitacion(u, org_nombre, quien):
     tok = crear_token(u, "invitacion", u.email)
-    correo.enviar(u.email, "Invitación de acceso",
-                  f"{quien} le dio acceso a {org_nombre} con el usuario «{u.username}» y el rol {u.rol}.\n\n"
-                  f"Para activar su cuenta y crear su contraseña abra este enlace (vence en 72 horas):\n"
-                  f"{correo.url_absoluta(url_for('auth.invitacion', token=tok))}\n\n"
-                  "Al primer ingreso deberá configurar la verificación en dos pasos (MFA).")
+    correo.enviar(u.email, "Invitación para activar su cuenta",
+                  f"Estimado(a) {u.username}:\n\n"
+                  f"{quien} le ha otorgado acceso a {org_nombre}. Para comenzar, active su cuenta y defina su contraseña personal "
+                  "mediante el siguiente botón. Por su seguridad, nadie más conoce ni podrá conocer esa contraseña.\n\n"
+                  "Al ingresar por primera vez se le pedirá configurar la verificación en dos pasos (MFA) con una aplicación "
+                  "autenticadora, como Google o Microsoft Authenticator.",
+                  titulo="Bienvenido(a) a ERP", boton=("Activar mi cuenta", correo.url_absoluta(url_for("auth.invitacion", token=tok))),
+                  filas=[("Usuario", u.username), ("Rol", u.rol), ("Organización", org_nombre), ("Validez del enlace", "72 horas, un solo uso")],
+                  nota="Si usted no esperaba esta invitación, ignore este mensaje: la cuenta no se activará.")
 
 
 def enviar_verificacion(u, email):
     tok = crear_token(u, "verificar", email)
-    correo.enviar(email, "Verifique su correo",
-                  f"Para confirmar que este correo pertenece al usuario «{u.username}» abra este enlace (vence en 24 horas):\n"
-                  f"{correo.url_absoluta(url_for('auth.correo_confirmar', token=tok))}")
+    correo.enviar(email, "Confirme su dirección de correo",
+                  f"Estimado(a) {u.username}:\n\nPara proteger su cuenta necesitamos confirmar que esta dirección le pertenece. "
+                  "En ella recibirá las alertas de acceso y, si la necesita, la recuperación de su contraseña.",
+                  titulo="Confirme su correo", boton=("Confirmar mi correo", correo.url_absoluta(url_for("auth.correo_confirmar", token=tok))),
+                  filas=[("Usuario", u.username), ("Validez del enlace", "24 horas, un solo uso")],
+                  nota="Si usted no solicitó este cambio, ignore el mensaje y avise al administrador de su organización.")
+
+
+def enviar_recuperacion(u, motivo="Recibimos una solicitud para restablecer la contraseña de su cuenta."):
+    tok = crear_token(u, "recuperar", u.email)
+    correo.enviar(u.email, "Restablecimiento de contraseña",
+                  f"Estimado(a) {u.username}:\n\n{motivo} Para definir una contraseña nueva utilice el siguiente botón. "
+                  "Al hacerlo se cerrarán todas sus sesiones abiertas y se le pedirá su código de verificación en dos pasos.",
+                  titulo="Restablezca su contraseña", boton=("Crear una contraseña nueva", correo.url_absoluta(url_for("auth.recuperar_token", token=tok))),
+                  filas=[("Usuario", u.username), ("Validez del enlace", "30 minutos, un solo uso")],
+                  nota="Si usted no lo solicitó, ignore este mensaje: su contraseña actual sigue vigente.")
 
 
 # ---------------------------------------------------------------- sesión y compuertas
@@ -252,12 +269,12 @@ def recuperar():
         email = (request.form.get("email") or "").strip().lower()[:254]
         u = db.session.execute(select(Usuario).where(Usuario.email == email)).scalar_one_or_none() if "@" in email else None
         if u and u.activo and u.email_verificado:
-            tok = crear_token(u, "recuperar", u.email)
-            registrar(u.username, "RECUPERACION_SOLICITADA", org=u.organizacion_id); db.session.commit()
-            correo.enviar_seguro(u.email, "Restablecer contraseña",
-                                 f"Recibimos una solicitud para restablecer la contraseña de «{u.username}».\n"
-                                 f"Enlace (vence en 30 minutos, un solo uso):\n{correo.url_absoluta(url_for('auth.recuperar_token', token=tok))}\n\n"
-                                 "Si no lo solicitó, ignore este mensaje: su contraseña no cambia.")
+            try:
+                enviar_recuperacion(u)
+            except OSError:
+                db.session.rollback()  # la respuesta sigue siendo genérica: no revela si la cuenta existe
+            else:
+                registrar(u.username, "RECUPERACION_SOLICITADA", org=u.organizacion_id); db.session.commit()
         else:
             verificar_clave("relleno", None)  # tiempo similar exista o no la cuenta
         flash(MSG_RECUPERAR)

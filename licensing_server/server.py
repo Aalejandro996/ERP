@@ -267,14 +267,19 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
     # ------------------------------------------------------------------ entrega única por correo
     def enviar_clave(con, lic_id, clave, correo_destino, cliente, plan, vence_en, motivo):
         if correo is None: raise RuntimeError("Correo no configurado")
-        texto = (f"Hola {cliente}:\n\n{motivo}\n\n"
-                 f"  Clave de licencia: {clave}\n  Plan: {plan}\n  Vigente hasta: {time.strftime('%d/%m/%Y', time.gmtime(vence_en))}\n\n"
-                 "Activación:\n  1. Ingrese al ERP con su usuario Administrador.\n  2. Vaya a Organización → Licencia.\n"
-                 "  3. Pegue la clave en «Activar licencia» y pulse Activar.\n\n"
-                 "Esta clave se envía UNA sola vez y no se guarda legible en nuestros sistemas. No la comparta: quien la tenga "
-                 "puede activarla. Si la pierde, pida al soporte una nueva (la anterior quedará anulada).\n"
-                 + (f"\nIngresar: {cfg['url_erp']}\n" if cfg.get("url_erp") else ""))
-        correo(correo_destino, f"Su licencia ERP ({plan})", texto)
+        from app import plantilla_correo as pc
+        url_erp = cfg.get("url_erp") or ""
+        parrafos = [f"Estimado(a) {cliente}:", motivo,
+                    "Para activarla, ingrese al ERP con su usuario Administrador, vaya a Organización → Licencia, pegue la clave "
+                    "en «Activar licencia» y pulse Activar."]
+        filas = [("Plan", plan), ("Vigente hasta", time.strftime("%d/%m/%Y", time.gmtime(vence_en)))]
+        nota = ("Esta clave se envía una sola vez y no se guarda legible en nuestros sistemas. No la comparta: quien la tenga puede "
+                "activarla. Si la pierde, solicite una nueva al soporte de Gigadevs; la anterior quedará anulada.")
+        boton = ("Ingresar al ERP", f"{url_erp}/admin/licencia") if url_erp else None
+        titulo = "Su licencia de ERP"
+        correo(correo_destino, f"Su licencia ERP ({plan})", pc.texto(titulo, parrafos, boton, ("Clave de licencia", clave), filas, nota),
+               html=pc.html(titulo, parrafos, url_erp or "https://erp", "ERP", "Tu empresa en orden. Tu fisco al día.", boton,
+                            ("Clave de licencia", clave), filas, nota))
         con.execute(update(licencias).where(licencias.c.id == lic_id).values(clave_enviada_en=reloj()))
         st.log(con, lic_id, "clave_enviada", correo_destino)
 
