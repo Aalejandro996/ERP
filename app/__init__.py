@@ -120,7 +120,8 @@ def create_app(config_obj=None):
                                                    "base-uri 'self'; form-action 'self'")
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["X-Frame-Options"] = "DENY"
-        resp.headers["Referrer-Policy"] = "no-referrer"
+        # same-origin: el Referer solo viaja dentro del ERP (lo exige la protección CSRF sobre HTTPS) y nunca a otros sitios
+        resp.headers["Referrer-Policy"] = "same-origin"
         resp.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
         resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
         resp.headers["Cross-Origin-Opener-Policy"] = "same-origin"
@@ -141,5 +142,12 @@ def create_app(config_obj=None):
             return render_template("error.html", codigo=codigo, titulo=t, mensaje=m), codigo
         return h
     for c in errores: app.register_error_handler(c, manejador(c))
+
+    from flask_wtf.csrf import CSRFError
+
+    @app.errorhandler(CSRFError)
+    def csrf_vencido(_e):  # formulario vencido o enviado desde otro sitio: se explica en vez de un "Bad Request" crudo
+        return render_template("error.html", codigo=400, titulo="El formulario expiró",
+                               mensaje="Por seguridad, vuelva a la página anterior, recárguela e intente de nuevo."), 400
 
     return app
