@@ -19,7 +19,8 @@ from datetime import date
 
 sys.path.insert(0, ".")
 REFERENCIA = [("G", "16"), ("R", "8"), ("A", "15"), ("IGTF", "3")]
-MIGRACIONES = ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql")
+MIGRACIONES = ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql",
+               "005_retirar_org_ficticia.sql")
 SOLO_INSERCION = ("asientos", "movimientos", "audit_log", "movimientos_inventario", "lineas_documento_venta", "pagos_documento_venta")
 
 

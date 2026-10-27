@@ -23,10 +23,11 @@ ALTER TABLE productos ADD COLUMN IF NOT EXISTS alicuota_iva varchar(1) NOT NULL 
 DO $$
 DECLARE org integer;
 BEGIN
+  -- Solo datos de NEGOCIO sin organización indican una instalación anterior. La bitácora NO cuenta: los eventos del
+  -- Maestro (plataforma) se guardan a propósito sin organización.
   IF EXISTS (SELECT 1 FROM empresas WHERE organizacion_id IS NULL)
      OR EXISTS (SELECT 1 FROM usuarios WHERE organizacion_id IS NULL AND rol <> 'Maestro')
-     OR EXISTS (SELECT 1 FROM tramos_provision WHERE organizacion_id IS NULL)
-     OR EXISTS (SELECT 1 FROM audit_log WHERE organizacion_id IS NULL) THEN
+     OR EXISTS (SELECT 1 FROM tramos_provision WHERE organizacion_id IS NULL) THEN
     SELECT id INTO org FROM organizaciones ORDER BY id LIMIT 1;
     IF org IS NULL THEN
       INSERT INTO organizaciones(nombre, rif, estado, creado_en)
@@ -37,7 +38,9 @@ BEGIN
     UPDATE usuarios SET organizacion_id = org WHERE organizacion_id IS NULL AND rol <> 'Maestro';
     UPDATE tramos_provision SET organizacion_id = org WHERE organizacion_id IS NULL;
     -- La bitácora es de solo-inserción: se suspende el trigger SOLO para asignar la organización (no cambia el hash).
-    IF EXISTS (SELECT 1 FROM audit_log WHERE organizacion_id IS NULL) AND NOT EXISTS (SELECT 1 FROM audit_log WHERE organizacion_id IS NOT NULL) THEN
+    -- Solo en una instalación anterior a la plataforma (sin ningún Maestro): ahí toda la bitácora era del único cliente.
+    IF EXISTS (SELECT 1 FROM audit_log WHERE organizacion_id IS NULL) AND NOT EXISTS (SELECT 1 FROM audit_log WHERE organizacion_id IS NOT NULL)
+       AND NOT EXISTS (SELECT 1 FROM usuarios WHERE rol = 'Maestro') THEN
       ALTER TABLE audit_log DISABLE TRIGGER trg_inmutable;
       UPDATE audit_log SET organizacion_id = org WHERE organizacion_id IS NULL;
       ALTER TABLE audit_log ENABLE TRIGGER trg_inmutable;

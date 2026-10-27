@@ -56,7 +56,7 @@ def entorno():
     with app_owner.app_context():
         db.session.execute(text("CREATE EXTENSION IF NOT EXISTS citext")); db.session.commit()
         db.create_all()
-        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql"):
+        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql"):
             db.session.execute(text(pathlib.Path("migrations", m).read_text(encoding="utf-8"))); db.session.commit()
     with owner.connect() as c:
         c.execute(text("GRANT USAGE ON SCHEMA public TO erp_app"))
@@ -136,6 +136,21 @@ def test_flujo_completo(entorno):
     r = root.post("/mfa/verificar", data={"codigo": "000000"}); assert b"incorrecto" in r.data
     r = root.post("/mfa/verificar", data={"codigo": totp.codigo(sec_root)}); assert r.status_code == 302
     assert root.get("/").headers["Location"].endswith("/plataforma")
+    # Un redespliegue con eventos del Maestro en la bitácora NO debe inventar una «Organización principal»
+    import pathlib as _pl
+    with owner.connect() as c:
+        assert c.execute(text("SELECT count(*) FROM audit_log WHERE organizacion_id IS NULL")).scalar() > 0
+        c.execute(text(_pl.Path("migrations/002_multicliente_facturacion.sql").read_text(encoding="utf-8")))
+        assert c.execute(text("SELECT count(*) FROM organizaciones")).scalar() == 0
+        # …y si ya existía la ficticia (caso real en producción), la 005 la retira y devuelve los eventos a la plataforma
+        c.execute(text("ALTER TABLE audit_log DISABLE TRIGGER trg_inmutable"))
+        oid = c.execute(text("INSERT INTO organizaciones(nombre, rif, estado, creado_en) VALUES ('Organización principal','J-00000000-0','activa',now()) RETURNING id")).scalar()
+        c.execute(text("UPDATE audit_log SET organizacion_id = :o WHERE organizacion_id IS NULL"), {"o": oid})
+        c.execute(text("ALTER TABLE audit_log ENABLE TRIGGER trg_inmutable"))
+        c.execute(text(_pl.Path("migrations/005_retirar_org_ficticia.sql").read_text(encoding="utf-8")))
+        assert c.execute(text("SELECT count(*) FROM organizaciones")).scalar() == 0
+        assert c.execute(text("SELECT count(*) FROM audit_log WHERE organizacion_id IS NOT NULL")).scalar() == 0
+    assert "ÍNTEGRA".encode() in root.get("/plataforma/bitacora").data
     for cod, pct in (("G", "16"), ("R", "8"), ("A", "15"), ("IGTF", "3")):
         root.post("/plataforma/fiscal", data={"accion": "alicuota", "codigo": cod, "valor": pct, "fecha": "2026-01-01"})
     root.post("/plataforma/fiscal", data={"accion": "tasa", "valor": "36.5", "eur": "40,25", "fecha": hoy_ve().isoformat()})
