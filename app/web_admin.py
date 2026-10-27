@@ -188,6 +188,12 @@ def admin_licencia():
                                     tasa_bcv=str(tasa) if tasa else None)
                 registrar(g.usuario.username, "ORDEN_LICENCIA", f"{o['ref']} {plan} {meses}m {o['monto']} {moneda}"); db.session.commit()
                 return redirect(url_for("web.admin_licencia", orden=o["ref"]))
+            if a == "verificar":
+                _orden_de_mi_org(adm, F["ref"])  # solo órdenes de SU organización
+                r = adm.verificar(F["ref"])
+                flash("Pago confirmado: la clave de licencia va camino a su correo." if r.get("estado") == "entregada"
+                      else ("La orden venció sin pago." if r.get("estado") == "vencida" else "Aún no vemos el pago en Binance. Si lo acaba de enviar, espere unos minutos."))
+                return redirect(url_for("web.admin_licencia", orden=F["ref"]))
             if a == "informar":
                 adm.informar_pago(F["ref"], organizacion_ref=str(org.id), referencia=F["referencia"].strip(), banco=F.get("banco", ""), telefono=F.get("telefono", ""))
                 registrar(g.usuario.username, "PAGO_INFORMADO", F["ref"]); db.session.commit()
@@ -213,17 +219,18 @@ def admin_licencia():
             precios, ordenes = [], []; flash(f"Tienda de licencias no disponible: {e}")
         ref = request.args.get("orden", "")
         o = next((x for x in ordenes if x["ref"] == ref), None)
-        if o and o["proveedor"] == "binance" and o["estado"] in ("pendiente", "pagada"):
-            try: adm.verificar(ref); o = _orden_de_mi_org(adm, ref)   # al volver de Binance: se confirma con Binance, no con el navegador
-            except (ErrorAdmin, ValueError, OSError): pass
         if o:
             if o["estado"] == "entregada":
                 secs.append(dict(titulo=f"Orden {o['ref']}: pagada", nota=f"La clave de licencia se envió a {g.usuario.email}. Péguela abajo en «Activar licencia»."))
             elif o["proveedor"] == "binance":
-                url = o.get("checkout_url") or ""
-                ok = url.startswith("https://") and (url.split("/")[2].endswith(".binance.com") or url.split("/")[2] == "binance.com")
-                secs.append(dict(titulo=f"Orden {o['ref']}: {o['monto']} USDT", nota="Pague con Binance Pay. Al confirmarse el pago recibirá la clave por correo (una sola vez).",
-                                 enlace=dict(url=url, texto="Pagar con Binance Pay") if ok else None))
+                exacto = o.get("monto_esperado") or o["monto"]
+                if o["estado"] == "vencida":
+                    secs.append(dict(titulo=f"Orden {o['ref']}: vencida", nota="No se recibió el pago a tiempo. Si ya pagó, contacte a soporte con el ID de la transacción; si no, cree una orden nueva."))
+                else:
+                    secs.append(dict(titulo=f"Orden {o['ref']}: pagar {exacto} USDT", pares=[("Monto EXACTO a enviar", f"{exacto} USDT"), ("Estado", o["estado"].replace("_", " "))],
+                                     nota=(o.get("instrucciones") or "") + " La verificación es automática (cada pocos minutos): al confirmarse, la clave llega a "
+                                          f"{g.usuario.email} una sola vez.",
+                                     form=dict(action=request.path, boton="Ya pagué: verificar ahora", campos=[campo("accion", "", "hidden", valor="verificar"), campo("ref", "", "hidden", valor=o["ref"])])))
             else:
                 secs.append(dict(titulo=f"Orden {o['ref']}: Bs {o['monto']}", nota=(current_app.config.get("PAGO_MOVIL_INSTRUCCIONES") or "")
                                  + " Haga el pago móvil por el monto exacto e informe la referencia. Un operador lo verificará y recibirá la clave por correo.",
@@ -233,9 +240,9 @@ def admin_licencia():
         if precios:
             ofertas = [(f"{p['plan']}:{p['meses']}", f"{PLANES[p['plan']]['nombre']} · {p['meses']} mes(es) · {p['monto_usd']} USD · {p['max_usuarios']} usuarios, "
                                                     f"{p['max_empresas']} empresas, {p['max_equipos']} equipos") for p in precios]
-            secs.append(dict(titulo="Comprar o renovar licencia", nota="USDT con Binance Pay (automático) o bolívares por pago móvil a la tasa BCV del día. La clave llega por correo una sola vez.",
+            secs.append(dict(titulo="Comprar o renovar licencia", nota="USDT por Binance (verificación automática) o bolívares por pago móvil a la tasa BCV del día. La clave llega por correo una sola vez.",
                              form=dict(action=request.path, boton="Continuar al pago", campos=[campo("accion", "", "hidden", valor="comprar"), campo("oferta", "Plan", "select", opciones=ofertas),
-                                       campo("moneda", "Pagar en", "select", opciones=[("USDT", "USDT (Binance Pay)"), ("VES", "Bolívares (pago móvil)")])])))
+                                       campo("moneda", "Pagar en", "select", opciones=[("USDT", "USDT (Binance)"), ("VES", "Bolívares (pago móvil)")])])))
         if ordenes:
             secs.append(dict(titulo="Mis órdenes", tabla=dict(cols=["Orden", "Plan", "Meses", "Moneda", "Monto", "Estado"], num=[4], filas=[
                 dict(cells=[x["ref"], x["plan"], x["meses"], x["moneda"], x["monto"], x["estado"].replace("_", " ")], url=url_for("web.admin_licencia", orden=x["ref"])) for x in ordenes])))

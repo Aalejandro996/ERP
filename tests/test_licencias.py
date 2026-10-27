@@ -1,17 +1,14 @@
-import base64
 import json
 import os
 import tempfile
 from decimal import Decimal
 
 import pytest
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from app.licensing.admin import ClienteAdmin, ErrorAdmin, firma
 from app.licensing.client import GestorLicencia, huella_instalacion
-from licensing_server.binance import BinancePay, ErrorBinance
+from licensing_server.binance import BinanceCuenta, ErrorBinance
 from licensing_server.server import create_app, licencias
 
 SECRETO = "s" * 40
@@ -24,29 +21,26 @@ class Almacen:
 
 
 class BinanceFalso:
-    """Simula la API de Binance Pay, incluida la firma RSA de los avisos."""
-    def __init__(self, reloj):
-        self.rsa = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        self.ordenes, self.reloj = {}, reloj
+    """Simula la API de una cuenta PERSONAL de Binance: historial de Binance Pay y de depósitos, con firma HMAC."""
+    def __init__(self):
+        self.pagos, self.depositos, self.consultas = [], [], []
 
-    def transporte(self, url, cuerpo, cab):
-        d = json.loads(cuerpo)
-        if url.endswith("/certificates"):
-            pem = self.rsa.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
-            return 200, json.dumps({"status": "SUCCESS", "data": [{"certSerial": "SN1", "certPublic": pem}]}).encode()
-        if url.endswith("/v3/order"):
-            self.ordenes[d["merchantTradeNo"]] = {"status": "INITIAL", "orderAmount": str(d["orderAmount"]), "currency": d["currency"], "merchantTradeNo": d["merchantTradeNo"]}
-            return 200, json.dumps({"status": "SUCCESS", "data": {"prepayId": "P1", "checkoutUrl": "https://pay.binance.com/checkout/x"}}).encode()
-        if url.endswith("/order/query"):
-            return 200, json.dumps({"status": "SUCCESS", "data": self.ordenes[d["merchantTradeNo"]]}).encode()
+    def transporte(self, url, cab):
+        import hashlib, hmac, urllib.parse
+        base, q = url.split("?", 1)
+        params, firma_ = q.rsplit("&signature=", 1)
+        assert hmac.compare_digest(hmac.new(b"SECRET", params.encode(), hashlib.sha256).hexdigest(), firma_) and cab["X-MBX-APIKEY"] == "KEY"
+        args = dict(urllib.parse.parse_qsl(params)); self.consultas.append(base)
+        desde, hasta = int(args["startTime"]), int(args["endTime"])
+        if base.endswith("/sapi/v1/pay/transactions"):
+            return 200, json.dumps({"code": "000000", "success": True, "data": [x for x in self.pagos if desde <= x["transactionTime"] <= hasta]}).encode()
+        if base.endswith("/sapi/v1/capital/deposit/hisrec"):
+            return 200, json.dumps([x for x in self.depositos if desde <= x["insertTime"] <= hasta]).encode()
         return 404, b"{}"
 
-    def aviso(self, ref, ts=None):
-        cuerpo = json.dumps({"bizType": "PAY", "bizStatus": "PAY_SUCCESS", "data": json.dumps({"merchantTradeNo": ref})}).encode()
-        ts = str(int((ts or self.reloj()) * 1000)); nonce = "n" * 32
-        f = self.rsa.sign(f"{ts}\n{nonce}\n".encode() + cuerpo + b"\n", padding.PKCS1v15(), hashes.SHA256())
-        return {"BinancePay-Timestamp": ts, "BinancePay-Nonce": nonce, "BinancePay-Signature": base64.b64encode(f).decode(),
-                "BinancePay-Certificate-SN": "SN1", "Content-Type": "application/json"}, cuerpo
+    def pago(self, monto, ts, tid, moneda="USDT"):
+        self.pagos.append({"orderType": "C2C", "transactionId": tid, "transactionTime": int(ts * 1000), "amount": str(monto), "currency": moneda,
+                           "payerInfo": {"binanceId": "777"}})
 
 
 class Entorno:
@@ -54,11 +48,12 @@ class Entorno:
         self.t = [1_000_000.0]
         self.priv = Ed25519PrivateKey.generate()
         self.correos = []
-        self.bf = BinanceFalso(lambda: self.t[0])
-        self.binance = BinancePay("KEY", "SECRET", transporte=self.bf.transporte, reloj=lambda: self.t[0])
+        self.bf = BinanceFalso()
+        self.binance = BinanceCuenta("KEY", "SECRET", transporte=self.bf.transporte, reloj=lambda: self.t[0])
         url = "sqlite:///" + os.path.join(tempfile.mkdtemp(), "lic.db")
         self.app = create_app(url, self.priv, reloj=lambda: self.t[0], secreto_admin=SECRETO, binance=self.binance,
-                              correo=lambda d, a, x, **k: self.correos.append((d, a, x)), config={"url_erp": "https://erp.test", "pago_movil": "Banco X 0414"})
+                              correo=lambda d, a, x, **k: self.correos.append((d, a, x)), config={"url_erp": "https://erp.test", "pago_movil": "Banco X 0414", "binance_pay_id": "123456789",
+                                      "usdt_red": "TRC20", "usdt_direccion": "TXyz"})
         self.st = self.app.extensions["almacen"]
         self.http = self.app.test_client()
         self.admin = ClienteAdmin("https://lic.test", SECRETO, transporte=self._admin_http, reloj=lambda: self.t[0])
@@ -186,35 +181,70 @@ def test_maestro_crea_licencia_y_la_clave_solo_va_por_correo(e):
 
 
 # ------------------------------------------------------------------ muro de pago
-def test_pago_usdt_con_binance_entrega_una_sola_vez(e):
+def _orden_usdt(e, org="5"):
+    return e.admin.crear_orden(organizacion_ref=org, cliente="Bodega", correo="a@b.test", plan="CASH", meses=1, moneda="USDT", monto_usd="0.01")
+
+
+def test_usdt_monto_unico_y_entrega_automatica_una_sola_vez(e):
     e.admin.fijar_precio(plan="CASH", meses=1, monto_usd="25", max_usuarios=3, max_empresas=1, max_equipos=2)
-    o = e.admin.crear_orden(organizacion_ref="5", cliente="Bodega", correo="a@b.test", plan="CASH", meses=1, moneda="USDT", monto_usd="0.01")
-    assert o["monto"] == "25.00" and o["checkout_url"].startswith("https://")             # el monto lo fija el servidor
-    cab, cuerpo = e.bf.aviso(o["ref"])
-    assert e.http.post("/v1/pagos/binance/webhook", data=cuerpo, headers=cab).status_code == 200
-    assert e.correos == []                                                                 # Binance dice INITIAL: no se entrega
-    e.bf.ordenes[o["ref"]]["status"] = "PAID"
-    for _ in range(3):                                                                      # avisos repetidos
-        cab, cuerpo = e.bf.aviso(o["ref"])
-        assert e.http.post("/v1/pagos/binance/webhook", data=cuerpo, headers=cab).status_code == 200
+    o = _orden_usdt(e)
+    exacto = Decimal(o["monto_esperado"])
+    assert Decimal("25.0001") <= exacto <= Decimal("25.0999") and "123456789" in o["instrucciones"]   # el monto lo fija el servidor
+    assert e.app.extensions["revisar_pendientes"]() == 0 and e.correos == []                        # aún no pagó
+    e.t[0] += 60; e.bf.pago(exacto, e.t[0], "T1")
+    for _ in range(3):                                                                              # revisiones repetidas
+        e.app.extensions["revisar_pendientes"]()
+    e.admin.verificar(o["ref"])
     assert len(e.correos) == 1 and e.admin.ordenes(org="5")[0]["estado"] == "entregada"
     est = e.gestor("srvX").activar(_clave_de_correo(e.correos[0][2]))
     assert est.claims["plan"] == "CASH" and est.claims["max_equipos"] == 2
 
 
-def test_webhook_falso_o_monto_distinto_no_entrega(e):
+def test_usdt_no_entrega_con_monto_distinto_pago_viejo_o_reusado(e):
     e.admin.fijar_precio(plan="CASH", meses=1, monto_usd="25", max_usuarios=3, max_empresas=1, max_equipos=2)
-    o = e.admin.crear_orden(organizacion_ref="5", cliente="B", correo="a@b.test", plan="CASH", meses=1, moneda="USDT")
-    cab, cuerpo = e.bf.aviso(o["ref"])
-    cab["BinancePay-Signature"] = base64.b64encode(b"x" * 256).decode()
-    assert e.http.post("/v1/pagos/binance/webhook", data=cuerpo, headers=cab).status_code == 400
-    cab, cuerpo = e.bf.aviso(o["ref"], ts=e.t[0] - 3600)
-    assert e.http.post("/v1/pagos/binance/webhook", data=cuerpo, headers=cab).status_code == 400   # aviso viejo
-    e.bf.ordenes[o["ref"]].update(status="PAID", orderAmount="1.00")                          # pagó menos
-    cab, cuerpo = e.bf.aviso(o["ref"])
-    e.http.post("/v1/pagos/binance/webhook", data=cuerpo, headers=cab)
+    e.bf.pago("25", e.t[0] - 3600, "VIEJO")                                                         # pago anterior a la orden
+    o1, o2 = _orden_usdt(e, "5"), _orden_usdt(e, "6")
+    assert o1["monto_esperado"] != o2["monto_esperado"]                                              # montos únicos entre pendientes
+    e.t[0] += 60
+    e.bf.pago("25", e.t[0], "REDONDEO")                                                             # redondeó: no corresponde a ninguna
+    e.bf.pago(o1["monto_esperado"], e.t[0], "T1", moneda="BTC")                                     # otra moneda
+    e.app.extensions["revisar_pendientes"]()
     assert e.correos == []
-    with pytest.raises(ErrorBinance): e.binance.verificar_webhook({}, b"{}")
+    e.bf.pago(o1["monto_esperado"], e.t[0], "T2")
+    e.app.extensions["revisar_pendientes"]()
+    assert len(e.correos) == 1 and e.correos[0][0] == "a@b.test"
+    # la misma transacción no puede pagar otra orden aunque alguien fuerce el monto en la base
+    from licensing_server.server import ordenes
+    from sqlalchemy import update
+    with e.st.eng.begin() as c:
+        c.execute(update(ordenes).where(ordenes.c.ref == o2["ref"]).values(monto_esperado=Decimal(o1["monto_esperado"])))
+    e.admin.verificar(o2["ref"])
+    assert len(e.correos) == 1
+
+
+def test_usdt_por_deposito_en_red_y_vencimiento(e):
+    e.admin.fijar_precio(plan="CASH", meses=1, monto_usd="25", max_usuarios=3, max_empresas=1, max_equipos=2)
+    o = _orden_usdt(e)
+    e.t[0] += 120
+    e.bf.depositos.append({"coin": "USDT", "amount": o["monto_esperado"], "status": 1, "network": "BSC", "txId": "0xotra", "insertTime": int(e.t[0] * 1000)})
+    e.app.extensions["revisar_pendientes"]()
+    assert e.correos == []                                                                          # red distinta a la aceptada
+    e.bf.depositos.append({"coin": "USDT", "amount": o["monto_esperado"], "status": 1, "network": "TRX", "txId": "0xtrc", "insertTime": int(e.t[0] * 1000)})
+    e.bf.depositos[-1]["network"] = "TRC20"
+    e.app.extensions["revisar_pendientes"]()
+    assert len(e.correos) == 1
+    o2 = _orden_usdt(e)
+    e.t[0] += 25 * 3600
+    assert e.admin.verificar(o2["ref"])["estado"] == "vencida"
+    e.bf.pago(o2["monto_esperado"], e.t[0], "TARDE")                                                # pago después de vencer: no entrega solo
+    e.app.extensions["revisar_pendientes"]()
+    assert len(e.correos) == 1
+
+
+def test_binance_firma_y_errores():
+    b = BinanceCuenta("KEY", "SECRET", transporte=lambda url, cab: (401, b'{"code":-2015,"msg":"Invalid API-key"}'))
+    with pytest.raises(ErrorBinance, match="401"): b.pagos_recibidos(0, 1)
+    with pytest.raises(ErrorBinance): BinanceCuenta("", "")
 
 
 def test_pago_movil_en_bolivares_lo_confirma_el_maestro(e):

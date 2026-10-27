@@ -38,9 +38,14 @@ historial de eventos), **pagos y precios** (catálogo, órdenes USDT/Bs, confirm
 La clave de una licencia **solo** viaja por correo (Brevo, remitente Gigadevs Corp) y se guarda como SHA‑256.
 
 ## Compra de licencias (muro de pago)
-El Administrador de un cliente, en Organización → Licencia, elige plan y período y paga con **USDT (Binance Pay)** —
-la licencia se entrega sola al confirmarse el pago— o **bolívares por pago móvil** a la tasa BCV del día —informa la
-referencia y el Maestro la confirma—. En ambos casos la clave llega una sola vez a su correo.
+El Administrador de un cliente, en Organización → Licencia, elige plan y período y paga:
+- **USDT por Binance (cuenta personal):** cada orden tiene un **monto único** (p. ej. 25,0371 USDT) que el cliente envía a
+  nuestro Binance Pay ID (o por la red configurada). Cada 2 minutos `erp-licencias` lee el historial de la cuenta con una
+  clave de **solo lectura** (`/sapi/v1/pay/transactions`, opcional `/sapi/v1/capital/deposit/hisrec`), empareja monto exacto
+  + ventana de tiempo y entrega la licencia sola. Una transacción de Binance paga como máximo una orden; las órdenes vencen
+  a las 24 h. Si el cliente envía otro monto, el Maestro lo confirma a mano.
+- **Bolívares por pago móvil** a la tasa BCV del día: informa la referencia y el Maestro la confirma.
+En ambos casos la clave llega una sola vez a su correo.
 
 ## Flujo de alta de un cliente
 1. Maestro → **Clientes** → «Nuevo cliente»: se crea la organización y se envía una invitación por correo a su administrador.

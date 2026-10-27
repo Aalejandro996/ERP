@@ -4,7 +4,8 @@ Responsabilidades:
   * /v1/activate y /v1/refresh — emite tokens Ed25519 atados a una instalación (plan, topes, equipos).
   * /admin/v1/...             — API del usuario Maestro (la consume el ERP por la red privada). Cada petición va firmada
                                 con HMAC-SHA256 (LICENSE_ADMIN_SECRET) + marca de tiempo + nonce de un solo uso.
-  * Órdenes de pago           — USDT por Binance Pay (automático) y bolívares por pago móvil (verificación del Maestro).
+  * Órdenes de pago           — USDT con cuenta personal de Binance (monto único, validado leyendo el historial con una clave
+                                de SOLO LECTURA) y bolívares por pago móvil (verificación del Maestro).
   * Entrega única por correo  — la clave se genera al entregar, se envía UNA vez por Brevo y solo se guarda su SHA-256.
 
 Persistencia: PostgreSQL (o SQLite en pruebas) con SQLAlchemy Core; todo SQL va parametrizado (sin inyecciones).
@@ -25,6 +26,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.licensing.token import firmar
 
+VIGENCIA_ORDEN_USDT_S = 24 * 3600    # una orden en USDT espera su pago 24 h
 VIGENCIA_TOKEN_S = 7 * 24 * 3600   # ventana offline máxima: 7 días
 LIMITE_PETICIONES = (20, 60)        # 20 peticiones por 60 s y por IP (endpoints públicos)
 TOLERANCIA_FIRMA_S = 300
@@ -67,7 +69,14 @@ ordenes = Table(
     Column("tasa_bcv", Numeric(18, 6)), Column("proveedor", String(12), nullable=False),
     Column("estado", String(14), nullable=False, default="pendiente"), Column("checkout_url", Text), Column("prepay_id", Text),
     Column("referencia_pago", Text), Column("detalle_pago", Text), Column("licencia_id", Integer),
-    Column("creada_en", Float, nullable=False), Column("pagada_en", Float), Column("entregada_en", Float), Column("motivo", Text))
+    Column("creada_en", Float, nullable=False), Column("pagada_en", Float), Column("entregada_en", Float), Column("motivo", Text),
+    Column("monto_esperado", Numeric(18, 4)), Column("expira_en", Float), Column("instrucciones", Text))
+# Cada transacción de Binance paga como máximo UNA orden (la clave primaria lo impone en la base de datos)
+pagos_usados = Table(
+    "lic_pagos_usados", md,
+    Column("pago_id", String(120), primary_key=True), Column("orden_ref", String(32), nullable=False),
+    Column("monto", Numeric(18, 8), nullable=False), Column("registrado_en", Float, nullable=False))
+COLUMNAS_NUEVAS = {"lic_ordenes": [("monto_esperado", "NUMERIC(18,4)"), ("expira_en", "FLOAT"), ("instrucciones", "TEXT")]}
 
 
 def _h(clave: str) -> str:
@@ -106,6 +115,12 @@ class Almacen:
         self.eng = create_engine(url, pool_pre_ping=True)
         self.reloj = reloj
         md.create_all(self.eng)
+        from sqlalchemy import inspect, text
+        with self.eng.begin() as c:  # bases creadas antes: se agregan las columnas nuevas (nombres fijos, no hay datos del usuario)
+            for tabla, cols in COLUMNAS_NUEVAS.items():
+                existentes = {x["name"] for x in inspect(c).get_columns(tabla)}
+                for nombre, tipo in cols:
+                    if nombre not in existentes: c.execute(text(f"ALTER TABLE {tabla} ADD COLUMN {nombre} {tipo}"))
 
     # ---------------- licencias ----------------
     def crear_licencia(self, cliente, dias=365, max_usuarios=5, max_empresas=10, max_instancias=1, plan="ERP_CONTABLE",
@@ -195,7 +210,7 @@ class Almacen:
 
 # ======================================================================================================================
 def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str | None = None, binance=None, correo=None, config=None) -> Flask:
-    """`binance`: instancia de BinancePay (o None si no se cobra en USDT). `correo(destino, asunto, texto)`: envío (Brevo).
+    """`binance`: instancia de BinanceCuenta (o None si no se cobra en USDT). `correo(destino, asunto, texto)`: envío (Brevo).
     `config`: {"url_publica", "url_erp", "pago_movil"} para enlaces e instrucciones de pago."""
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
@@ -407,10 +422,14 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
                     monto_usd=p.monto_usd, tasa_bcv=tasa, proveedor="binance" if moneda == "USDT" else "pago_movil", estado="pendiente", creada_en=reloj())
         resp = {"ref": ref, "monto": str(monto), "moneda": moneda}
         if moneda == "USDT":
-            if binance is None: raise ValueError("El cobro en USDT no está habilitado")
-            r = binance.crear_orden(ref, monto, f"Licencia ERP {plan} {meses} mes(es)", f"{cfg.get('url_erp', '')}/admin/licencia?orden={ref}",
-                                    f"{cfg.get('url_erp', '')}/admin/licencia?orden={ref}", f"{cfg.get('url_publica', '')}/v1/pagos/binance/webhook")
-            fila.update(checkout_url=r["checkout_url"], prepay_id=r["prepay_id"]); resp["checkout_url"] = r["checkout_url"]
+            if binance is None or not cfg.get("binance_pay_id"): raise ValueError("El cobro en USDT no está habilitado")
+            exacto = monto_unico(p.monto_usd)
+            expira = reloj() + VIGENCIA_ORDEN_USDT_S
+            instr = (f"Envíe EXACTAMENTE {exacto} USDT por Binance Pay al Pay ID {cfg['binance_pay_id']}"
+                     + (f", o deposítelos por la red {cfg['usdt_red']} a la dirección {cfg['usdt_direccion']}" if cfg.get("usdt_direccion") else "")
+                     + f". El monto exacto identifica su orden: no lo redondee. Válido hasta {time.strftime('%d/%m/%Y %H:%M', time.gmtime(expira))} UTC.")
+            fila.update(monto_esperado=exacto, expira_en=expira, instrucciones=instr)
+            resp.update(monto_esperado=str(exacto), instrucciones=instr, expira_en=expira)
         else:
             resp["instrucciones"] = cfg.get("pago_movil") or "Solicite los datos de pago móvil al soporte."
         with st.eng.begin() as c: c.execute(insert(ordenes).values(**fila))
@@ -444,7 +463,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         with st.eng.connect() as c:
             o = c.execute(select(ordenes).where(ordenes.c.ref == ref)).first()
         if o is None: raise LookupError("Orden inexistente")
-        if o.proveedor != "pago_movil" and o.estado != "pagada": raise ValueError("Las órdenes en USDT se confirman solo con Binance")
+        if o.estado not in ("pendiente", "por_verificar", "pagada", "entregada"): raise ValueError(f"Orden {o.estado}")  # entregada: doble clic inofensivo
         return jsonify(entregar_orden(ref, f"confirmada por {cuerpo().get('autor', '')}"))
 
     @app.post("/admin/v1/ordenes/<ref>/rechazar")
@@ -458,38 +477,80 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
 
     @app.post("/admin/v1/ordenes/<ref>/verificar")
     def a_verificar(ref):
-        """Consulta la orden en Binance (por si el aviso no llegó) y la entrega si está pagada."""
+        """Busca el pago de la orden en el historial de Binance (no se espera a la revisión periódica)."""
         return jsonify(verificar_binance(ref))
 
-    def verificar_binance(ref):
+    def monto_unico(base) -> Decimal:
+        """Precio del catálogo + 0,0001…0,0999 USDT, distinto de toda orden en USDT aún pendiente: identifica el pago."""
+        with st.eng.connect() as c:
+            ocupados = {r[0] for r in c.execute(select(ordenes.c.monto_esperado).where(
+                ordenes.c.proveedor == "binance", ordenes.c.estado.in_(("pendiente", "pagada")), ordenes.c.expira_en > reloj()))}
+        for _ in range(200):
+            m = (Decimal(base) + Decimal(secrets.randbelow(999) + 1) / Decimal(10000)).quantize(Decimal("0.0001"))
+            if m not in ocupados: return m
+        raise ValueError("Demasiadas órdenes en USDT pendientes; intente en unos minutos")
+
+    def leer_pagos(desde_s, hasta_s):
+        desde_ms, hasta_ms = int(desde_s * 1000), int(hasta_s * 1000)
+        pagos = binance.pagos_recibidos(desde_ms, hasta_ms)
+        if cfg.get("usdt_direccion"):
+            pagos += binance.depositos_recibidos(desde_ms, hasta_ms, cfg.get("usdt_red"))
+        return pagos
+
+    def verificar_binance(ref, pagos=None):
+        """Empareja la orden con un ingreso en USDT de monto EXACTO, posterior a la orden y antes de su vencimiento.
+        Cada transacción de Binance solo puede pagar una orden (clave primaria en lic_pagos_usados)."""
         if not RE_REF.match(ref) or binance is None: raise ValueError("Orden inválida")
         with st.eng.connect() as c:
             o = c.execute(select(ordenes).where(ordenes.c.ref == ref)).first()
+            ya = c.execute(select(pagos_usados).where(pagos_usados.c.orden_ref == ref)).first()
         if o is None: raise LookupError("Orden inexistente")
+        if o.proveedor != "binance": raise ValueError("No es una orden en USDT")
         if o.estado == "entregada": return {"estado": "entregada"}
-        d = binance.consultar_orden(ref)
-        pagado = (d.get("status") == "PAID" and str(d.get("currency")) == "USDT" and _dec(d.get("orderAmount"), "monto") == o.monto
-                  and str(d.get("merchantTradeNo")) == ref)
-        if not pagado:
-            return {"estado": o.estado, "binance": str(d.get("status"))}
-        return entregar_orden(ref, json.dumps({k: d.get(k) for k in ("status", "transactionId", "orderAmount", "currency", "transactTime")}))
+        if o.estado not in ("pendiente", "pagada"): return {"estado": o.estado}
+        ahora = reloj()
+        if ya is None:
+            hasta = min(ahora, o.expira_en or ahora)
+            if pagos is None: pagos = leer_pagos(o.creada_en - 120, hasta)
+            for pg in sorted(pagos, key=lambda x: x["ts"]):
+                if pg["monto"] != o.monto_esperado or not (o.creada_en - 120 <= pg["ts"] / 1000 <= hasta): continue
+                try:
+                    with st.eng.begin() as c:
+                        c.execute(insert(pagos_usados).values(pago_id=pg["id"], orden_ref=ref, monto=pg["monto"], registrado_en=ahora))
+                        st.log(c, None, "pago_usdt_identificado", f"orden={ref} {pg['origen']} {pg['id']} pagador={pg['pagador']}")
+                    ya = pg; break
+                except IntegrityError:
+                    continue  # esa transacción ya pagó otra orden
+        if ya is None:
+            if o.expira_en and ahora > o.expira_en:
+                with st.eng.begin() as c:
+                    c.execute(update(ordenes).where(ordenes.c.ref == ref, ordenes.c.estado == "pendiente").values(estado="vencida"))
+                return {"estado": "vencida"}
+            return {"estado": o.estado, "binance": "pago aún no recibido"}
+        pid = ya["id"] if isinstance(ya, dict) else ya.pago_id
+        return entregar_orden(ref, json.dumps({"binance": pid, "monto": str(o.monto_esperado)}))
 
-    # ------------------------------------------------------------------ webhook público de Binance
-    @app.post("/v1/pagos/binance/webhook")
-    def webhook_binance():
-        if binance is None: return jsonify(returnCode="FAIL", returnMessage="no habilitado"), 404
-        if limitado(request.remote_addr or "?"): return jsonify(returnCode="FAIL"), 429
+    def revisar_pendientes():
+        """Revisión periódica: una sola consulta a Binance para todas las órdenes en USDT pendientes."""
+        if binance is None: return 0
+        with st.eng.connect() as c:
+            pend = c.execute(select(ordenes).where(ordenes.c.proveedor == "binance", ordenes.c.estado.in_(("pendiente", "pagada")))).all()
+        if not pend: return 0
+        ahora = reloj()
         try:
-            aviso = binance.verificar_webhook(request.headers, request.get_data())
-            datos = json.loads(aviso.get("data") or "{}") if isinstance(aviso.get("data"), str) else (aviso.get("data") or {})
-            ref = str(datos.get("merchantTradeNo", ""))
-            if aviso.get("bizType") == "PAY" and aviso.get("bizStatus") == "PAY_SUCCESS" and RE_REF.match(ref):
-                verificar_binance(ref)  # NO se confía en el aviso: se consulta la orden en Binance antes de entregar
-        except Exception as e:  # noqa: BLE001 — se registra y Binance reintenta
-            with st.eng.begin() as c: st.log(c, None, "webhook_rechazado", f"{type(e).__name__}: {str(e)[:200]}", request.remote_addr)
-            return jsonify(returnCode="FAIL", returnMessage="rechazado"), 400
-        return jsonify(returnCode="SUCCESS", returnMessage=None)
+            pagos = leer_pagos(min(o.creada_en for o in pend) - 120, ahora)
+        except Exception as e:  # noqa: BLE001 — se reintenta en la próxima vuelta
+            with st.eng.begin() as c: st.log(c, None, "binance_no_disponible", str(e)[:200])
+            return 0
+        n = 0
+        for o in pend:
+            try:
+                if verificar_binance(o.ref, pagos).get("estado") == "entregada": n += 1
+            except Exception as e:  # noqa: BLE001 — p. ej. correo caído: la orden queda pagada y se reintenta
+                with st.eng.begin() as c: st.log(c, o.licencia_id, "entrega_pendiente", f"orden={o.ref} {str(e)[:150]}")
+        return n
 
     app.extensions["verificar_binance"] = verificar_binance
+    app.extensions["revisar_pendientes"] = revisar_pendientes
     app.extensions["entregar_orden"] = entregar_orden
     return app

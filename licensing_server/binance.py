@@ -1,99 +1,92 @@
-"""Binance Pay (API de comercios) — cobro en USDT.
+"""Binance con cuenta PERSONAL — validación automática de pagos en USDT con una clave de API de SOLO LECTURA.
 
-Seguridad:
-  * Peticiones a Binance firmadas con HMAC-SHA512 (BINANCE_PAY_API_KEY / BINANCE_PAY_SECRET, solo en el servidor de licencias).
-  * Webhook: la firma RSA-SHA256 se verifica con el certificado público que publica Binance (se consulta por API autenticada).
-  * Aun con firma válida, NUNCA se entrega una licencia sin volver a consultar la orden en Binance y comprobar
-    estado PAID, monto y moneda contra la orden guardada (defensa en profundidad contra webhooks falsificados o repetidos).
+Cómo funciona:
+  * Cada orden en USDT tiene un MONTO ÚNICO (p. ej. 25.0371). El cliente paga ese monto exacto a nuestro Binance Pay ID
+    (o, si está configurado, lo deposita por la red indicada).
+  * El servidor lee el historial de la cuenta (GET /sapi/v1/pay/transactions y, opcional, /sapi/v1/capital/deposit/hisrec),
+    busca un ingreso en USDT con ese monto exacto posterior a la orden y, si lo encuentra, entrega la licencia.
+  * Binance no devuelve la nota del pago: por eso se identifica por monto único + ventana de tiempo, y cada transacción de
+    Binance solo puede pagar UNA orden.
+
+Seguridad: la clave debe tener SOLO el permiso «Permitir lectura» (sin trading, retiros ni transferencias). Las consultas se
+firman con HMAC-SHA256 (BINANCE_API_SECRET) y van a una URL fija por HTTPS. El cliente nunca informa el pago: se lee de Binance.
 """
-import base64
 import hashlib
 import hmac
 import json
-import secrets
-import string
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from decimal import Decimal, InvalidOperation
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
-
-BASE = "https://bpay.binanceapi.com"
-TOLERANCIA_MS = 5 * 60 * 1000
+BASE = "https://api.binance.com"
+ACREDITADO = 1  # estado de depósito «success»
 
 
 class ErrorBinance(Exception):
     pass
 
 
-def _post_http(url, cuerpo: bytes, cabeceras: dict, timeout=15):
-    req = urllib.request.Request(url, cuerpo, cabeceras)
+def _get_http(url, cabeceras, timeout=15):
+    req = urllib.request.Request(url, headers=cabeceras)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 (URL fija HTTPS)
-            return r.status, r.read()
+            return r.status, r.read(2 * 1024 * 1024)
     except urllib.error.HTTPError as e:
-        return e.code, e.read()
+        return e.code, e.read(64 * 1024)
 
 
-class BinancePay:
-    def __init__(self, api_key, secreto, transporte=_post_http, reloj=time.time):
+def _dec(v):
+    try:
+        d = Decimal(str(v))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    return d if d.is_finite() else None
+
+
+class BinanceCuenta:
+    def __init__(self, api_key, secreto, transporte=_get_http, reloj=time.time):
         if not (api_key and secreto):
-            raise ErrorBinance("Binance Pay no está configurado (BINANCE_PAY_API_KEY / BINANCE_PAY_SECRET)")
-        self.key, self.secreto, self.post, self.reloj = api_key, secreto.encode(), transporte, reloj
-        self._certs = {}
+            raise ErrorBinance("Binance no está configurado (BINANCE_API_KEY / BINANCE_API_SECRET)")
+        self.key, self.secreto, self.get, self.reloj = api_key, secreto.encode(), transporte, reloj
 
-    def _firmar(self, ts: str, nonce: str, cuerpo: str) -> str:
-        return hmac.new(self.secreto, f"{ts}\n{nonce}\n{cuerpo}\n".encode(), hashlib.sha512).hexdigest().upper()
-
-    def _llamar(self, ruta: str, datos: dict) -> dict:
-        cuerpo = json.dumps(datos, separators=(",", ":"))
-        ts = str(int(self.reloj() * 1000))
-        nonce = "".join(secrets.choice(string.ascii_letters) for _ in range(32))
-        cab = {"Content-Type": "application/json", "BinancePay-Timestamp": ts, "BinancePay-Nonce": nonce,
-               "BinancePay-Certificate-SN": self.key, "BinancePay-Signature": self._firmar(ts, nonce, cuerpo)}
-        estado, resp = self.post(BASE + ruta, cuerpo.encode(), cab)
+    def _llamar(self, ruta: str, params: dict):
+        params = {**{k: v for k, v in params.items() if v is not None}, "timestamp": int(self.reloj() * 1000), "recvWindow": 10000}
+        q = urllib.parse.urlencode(params)
+        firma = hmac.new(self.secreto, q.encode(), hashlib.sha256).hexdigest()
+        estado, cuerpo = self.get(f"{BASE}{ruta}?{q}&signature={firma}", {"X-MBX-APIKEY": self.key, "Accept": "application/json"})
         try:
-            r = json.loads(resp or b"{}")
+            r = json.loads(cuerpo or b"null")
         except ValueError as e:
             raise ErrorBinance(f"Respuesta no válida de Binance ({estado})") from e
-        if estado != 200 or r.get("status") != "SUCCESS":
-            raise ErrorBinance(f"Binance rechazó la operación: {r.get('code')} {str(r.get('errorMessage'))[:120]}")
-        return r.get("data") or {}
+        if estado != 200:
+            msg = r.get("msg") if isinstance(r, dict) else None
+            raise ErrorBinance(f"Binance respondió {estado}: {str(msg)[:120]}")
+        return r
 
-    def crear_orden(self, ref, monto, descripcion, url_retorno, url_cancelar, url_webhook, expira_s=3600) -> dict:
-        datos = {"env": {"terminalType": "WEB"}, "merchantTradeNo": ref, "orderAmount": float(monto), "currency": "USDT",
-                 "description": descripcion[:256],
-                 "goodsDetails": [{"goodsType": "02", "goodsCategory": "Z000", "referenceGoodsId": ref, "goodsName": descripcion[:256]}],
-                 "returnUrl": url_retorno, "cancelUrl": url_cancelar, "webhookUrl": url_webhook,
-                 "orderExpireTime": int((self.reloj() + expira_s) * 1000)}
-        d = self._llamar("/binancepay/openapi/v3/order", datos)
-        if not str(d.get("checkoutUrl", "")).startswith("https://"):
-            raise ErrorBinance("Binance no devolvió un enlace de pago válido")
-        return {"prepay_id": d.get("prepayId"), "checkout_url": d["checkoutUrl"]}
+    def pagos_recibidos(self, desde_ms: int, hasta_ms: int) -> list[dict]:
+        """Ingresos en USDT por Binance Pay (transferencias a nuestro Pay ID)."""
+        r = self._llamar("/sapi/v1/pay/transactions", {"startTime": desde_ms, "endTime": hasta_ms, "limit": 100})
+        datos = r.get("data") if isinstance(r, dict) else None
+        if not isinstance(datos, list): raise ErrorBinance("Historial de Binance Pay no disponible")
+        out = []
+        for t in datos:
+            monto = _dec(t.get("amount"))
+            if monto is None or monto <= 0 or t.get("currency") != "USDT" or not t.get("transactionId"): continue
+            out.append({"id": f"pay:{t['transactionId']}", "ts": int(t.get("transactionTime") or 0), "monto": monto,
+                        "origen": "Binance Pay", "pagador": str((t.get("payerInfo") or {}).get("binanceId") or "")[:40]})
+        return out
 
-    def consultar_orden(self, ref) -> dict:
-        return self._llamar("/binancepay/openapi/v2/order/query", {"merchantTradeNo": ref})
-
-    def _certificado(self, serie):
-        if serie not in self._certs:
-            for c in self._llamar("/binancepay/openapi/certificates", {}) or []:
-                self._certs[c.get("certSerial")] = serialization.load_pem_public_key(c["certPublic"].encode())
-        if serie not in self._certs:
-            raise ErrorBinance("Certificado de firma desconocido")
-        return self._certs[serie]
-
-    def verificar_webhook(self, cabeceras, cuerpo: bytes) -> dict:
-        """Devuelve el JSON del aviso si la firma es auténtica y reciente; si no, lanza ErrorBinance."""
-        ts, nonce = cabeceras.get("BinancePay-Timestamp", ""), cabeceras.get("BinancePay-Nonce", "")
-        firma, serie = cabeceras.get("BinancePay-Signature", ""), cabeceras.get("BinancePay-Certificate-SN", "")
-        if not (ts.isdigit() and nonce and firma and serie) or len(cuerpo) > 64 * 1024:
-            raise ErrorBinance("Aviso incompleto")
-        if abs(self.reloj() * 1000 - int(ts)) > TOLERANCIA_MS:
-            raise ErrorBinance("Aviso fuera de tiempo")
-        try:
-            self._certificado(serie).verify(base64.b64decode(firma), f"{ts}\n{nonce}\n".encode() + cuerpo + b"\n", padding.PKCS1v15(), hashes.SHA256())
-        except (InvalidSignature, ValueError) as e:
-            raise ErrorBinance("Firma del aviso no válida") from e
-        return json.loads(cuerpo)
+    def depositos_recibidos(self, desde_ms: int, hasta_ms: int, red: str | None = None) -> list[dict]:
+        """Depósitos en USDT por la red (TRC20, BEP20…) ya acreditados."""
+        r = self._llamar("/sapi/v1/capital/deposit/hisrec", {"coin": "USDT", "status": ACREDITADO, "startTime": desde_ms, "endTime": hasta_ms})
+        if not isinstance(r, list): raise ErrorBinance("Historial de depósitos no disponible")
+        out = []
+        for d in r:
+            monto = _dec(d.get("amount"))
+            if monto is None or monto <= 0 or d.get("coin") != "USDT" or d.get("status") != ACREDITADO or not d.get("txId"): continue
+            if red and str(d.get("network", "")).upper() != red.upper(): continue
+            out.append({"id": f"dep:{d['txId']}", "ts": int(d.get("insertTime") or 0), "monto": monto,
+                        "origen": f"Depósito {d.get('network', '')}", "pagador": ""})
+        return out

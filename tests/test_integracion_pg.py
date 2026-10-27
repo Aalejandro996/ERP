@@ -295,7 +295,6 @@ def test_flujo_completo(entorno):
             c.execute(text("DELETE FROM documentos_venta WHERE id = :i"), {"i": d1.id})
 
     # --- Libro de compras desde CxP ---
-    a2 = _cliente(app)  # (la sesión de «a» sigue viva; se usa para registrar)
     r = a.post(f"/e/{eid_a}/cxp", data={"proveedor_nombre": "Proveedor Uno", "proveedor_rif": "J-77777777-7", "tipo_documento": "FAC", "numero_documento": "000123",
                                         "numero_control": "00-000999", "fecha_emision": hoy_ve().isoformat(), "fecha_vencimiento": hoy_ve().isoformat(),
                                         "monto": "126", "exento": "10", "base_imponible": "100", "alicuota": "16", "monto_iva": "16", "importacion": "0"}, follow_redirects=True)

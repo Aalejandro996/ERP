@@ -250,17 +250,20 @@ def maestro_pagos():
         if o["estado"] == "por_verificar":
             return dict(action=request.path, boton="Confirmar pago", campos=[h("confirmar"), campo("ref", "", "hidden", valor=o["ref"])])
         if o["proveedor"] == "binance" and o["estado"] in ("pendiente", "pagada"):
-            return dict(action=request.path, boton="Consultar Binance", campos=[h("verificar"), campo("ref", "", "hidden", valor=o["ref"])])
+            return dict(action=request.path, boton="Buscar pago en Binance", campos=[h("verificar"), campo("ref", "", "hidden", valor=o["ref"])])
         return None
     ref_pago = lambda o: ", ".join(f"{k}: {v}" for k, v in _json.loads(o["referencia_pago"]).items() if v) if o.get("referencia_pago") else ""
     planes = [(k, v["nombre"]) for k, v in PLANES.items()]
     return pagina("Pagos y precios", None, [
         dict(kpis=[("Órdenes", len(ords)), ("Por verificar (Bs)", sum(o["estado"] == "por_verificar" for o in ords)),
                    ("Entregadas", sum(o["estado"] == "entregada" for o in ords)), ("Cobrado USD", f"{sum(float(o['monto_usd']) for o in ords if o['estado'] == 'entregada'):,.2f}")]),
-        dict(titulo="Órdenes", nota="USDT: Binance Pay confirma y la licencia se entrega sola. Bs (pago móvil): verifique el pago en su banco y confírmelo aquí.",
+        dict(titulo="Órdenes", nota="USDT: cada orden tiene un monto único; el sistema revisa su historial de Binance cada 2 min y entrega la licencia sola. "
+                  "Si un cliente pagó un monto distinto, verifíquelo en Binance y use «Confirmar». Bs (pago móvil): verifique en su banco y confirme aquí.",
              tabla=dict(cols=["Orden", "Cliente", "Plan", "Meses", "Moneda", "Monto", "Estado", "Pago informado", "Fecha (UTC)"], num=[5], accion=True,
-                        filas=[dict(cells=[o["ref"], orgs.get(o["organizacion_ref"], o["cliente"]), o["plan"], o["meses"], o["moneda"], o["monto"], o["estado"], ref_pago(o),
+                        filas=[dict(cells=[o["ref"], orgs.get(o["organizacion_ref"], o["cliente"]), o["plan"], o["meses"], o["moneda"], o.get("monto_esperado") or o["monto"], o["estado"], ref_pago(o),
                                            _fecha(o["creada_en"])], form=acciones(o)) for o in ords])),
+        dict(titulo="Confirmar un pago manualmente", nota="Para pagos que no se emparejaron solos (p. ej. el cliente envió otro monto). Verifique primero en su Binance o banco: al confirmar se emite la licencia y se envía la clave.",
+             form=dict(action=request.path, boton="Confirmar y entregar", campos=[h("confirmar"), campo("ref", "Orden", "select", opciones=[(o["ref"], f"{o['ref']} · {orgs.get(o['organizacion_ref'], o['cliente'])} · {o['moneda']} {o.get('monto_esperado') or o['monto']}") for o in ords if o["estado"] in ("pendiente", "por_verificar", "pagada")])])),
         dict(titulo="Rechazar orden", form=dict(action=request.path, boton="Rechazar", campos=[h("rechazar"), campo("ref", "Orden", "select", opciones=[(o["ref"], o["ref"]) for o in ords if o["estado"] in ("pendiente", "por_verificar")]),
                                                                                            campo("motivo", "Motivo")])),
         dict(titulo="Catálogo de precios (USD / USDT)", nota="El monto de cada orden lo fija SIEMPRE este catálogo en el servidor; el cliente no puede alterarlo. En Bs se convierte a la tasa BCV del día.",

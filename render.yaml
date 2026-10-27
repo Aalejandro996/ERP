@@ -92,9 +92,11 @@ projects:
                 value: Gigadevs Corp <aalejandro996@icloud.com>
               - key: BREVO_API_KEY
                 sync: false
-              - key: BINANCE_PAY_API_KEY         # opcional: sin estas dos variables no se cobra en USDT
+              - key: BINANCE_API_KEY             # opcional: clave de SOLO LECTURA de la cuenta personal (sin ella no se cobra en USDT)
                 sync: false
-              - key: BINANCE_PAY_SECRET
+              - key: BINANCE_API_SECRET
+                sync: false
+              - key: BINANCE_PAY_ID              # el Pay ID que verá el cliente para pagar
                 sync: false
               - key: PAGO_MOVIL_INSTRUCCIONES
                 sync: false
