@@ -50,8 +50,13 @@ def crear_maestro(app, db, interactivo=True):
     u = Usuario(username=nombre, email=email, email_verificado=False, rol="Maestro", organizacion_id=None,
                 password_hash=hashear(secrets.token_urlsafe(32)), debe_cambiar_clave=False)  # clave inutilizable hasta aceptar
     db.session.add(u); db.session.flush()
-    with app.test_request_context():
-        enviar_invitacion(u, "la plataforma ERP (consola Maestro)", "El instalador")
+    try:
+        with app.test_request_context():
+            enviar_invitacion(u, "la plataforma ERP (consola Maestro)", "El instalador")
+    except OSError as e:  # sin correo no hay forma de activar la cuenta: no se crea y se reintenta en el próximo despliegue
+        db.session.rollback()
+        print(f"AVISO: no se pudo enviar la invitación al Maestro ({e}). Revise BREVO_API_KEY y MAIL_FROM y vuelva a desplegar.")
+        return
     db.session.commit(); print(f"Maestro «{nombre}» creado; se envió la invitación a {email}.")
 
 
