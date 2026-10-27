@@ -19,7 +19,7 @@ from datetime import date
 
 sys.path.insert(0, ".")
 REFERENCIA = [("G", "16"), ("R", "8"), ("A", "15"), ("IGTF", "3")]
-MIGRACIONES = ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql")
+MIGRACIONES = ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql")
 SOLO_INSERCION = ("asientos", "movimientos", "audit_log", "movimientos_inventario", "lineas_documento_venta", "pagos_documento_venta")
 
 
@@ -131,6 +131,8 @@ def main():
             db.session.execute(db.text(pathlib.Path("migrations", m).read_text(encoding="utf-8"))); db.session.commit()
             print(f"Aplicada migrations/{m}")
         if rol: preparar_rol(db, rol)
+        from app import tasas
+        print("Tasa BCV (DolarAPI):", "actualizada" if tasas.actualizar_si_falta() else "sin cambios o no disponible")
         if db.session.query(Usuario).filter_by(rol="Maestro").count() == 0:
             crear_maestro(app, db, interactivo="--no-interactivo" not in sys.argv)
         else:

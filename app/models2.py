@@ -168,7 +168,7 @@ class ConceptoRetencionISLR(db.Model):
 class IndiceINPC(db.Model):
     __tablename__ = "indice_inpc"
     id = db.Column(db.Integer, primary_key=True)
-    valor_indice = db.Column(db.Numeric(18, 6), nullable=False)
+    valor_indice = db.Column(db.Numeric(38, 10), nullable=False)  # base dic-2007 = 100: hoy son miles de millones
     fecha = db.Column(db.Date, nullable=False, unique=True)
     referencia = db.Column(db.Text)
 
@@ -188,8 +188,10 @@ class AlicuotaImpuesto(db.Model):
 class TasaCambio(db.Model):
     __tablename__ = "tasa_cambio"
     id = db.Column(db.Integer, primary_key=True)
-    fecha = db.Column(db.Date, nullable=False, unique=True)
+    fecha = db.Column(db.Date, nullable=False, unique=True)              # fecha de vigencia publicada por el BCV
     tasa_usd_ves = db.Column(db.Numeric(18, 6), nullable=False)
+    tasa_eur_ves = db.Column(db.Numeric(18, 6))
+    fuente = db.Column(db.Text)                                          # "BCV vía DolarAPI" o "Manual (Maestro)"
 
 
 class RetencionIVA(db.Model):

@@ -17,7 +17,7 @@ from .contabilidad.validadores import parsear_fecha
 from .extensions import db
 from .tiempo import hoy_ve
 from .models import Empresa, PeriodoCerrado
-from .models2 import AlicuotaImpuesto, CobroCxC, DocumentoCxC, DocumentoFiscal, Producto, TasaCambio
+from .models2 import AlicuotaImpuesto, CobroCxC, DocumentoCxC, DocumentoFiscal, Producto
 from .models_fact import DocumentoVenta, LineaDocumentoVenta, PagoDocumentoVenta, SerieFacturacion
 
 GENESIS = "0" * 64
@@ -35,8 +35,10 @@ def alicuotas_vigentes(fecha) -> dict:
     return out
 
 
-def tasa_del_dia(fecha):
-    return db.session.execute(select(TasaCambio.tasa_usd_ves).where(TasaCambio.fecha <= fecha).order_by(TasaCambio.fecha.desc()).limit(1)).scalar()
+def tasa_del_dia(fecha, moneda="USD"):
+    """Tasa BCV vigente para la moneda; si falta la de hoy se consulta DolarAPI automáticamente (app/tasas.py)."""
+    from . import tasas
+    return tasas.tasa_vigente(fecha, moneda)
 
 
 def _periodo_cerrado(eid, f):
@@ -78,7 +80,7 @@ def emitir_documento(eid, u, datos, modulos) -> DocumentoVenta:
         if not cliente.get("rif") or not cliente.get("nombre"): raise ErrorFactura("Indique RIF/cédula y nombre o razón social del adquirente")
         moneda, condicion = datos.get("moneda", "VES"), datos.get("condicion", "Contado")
     if condicion not in ("Contado", "Credito"): raise ErrorFactura("Condición de pago inválida")
-    tasa = datos.get("tasa") or (tasa_del_dia(f) if moneda != "VES" else 1)
+    tasa = datos.get("tasa") or (tasa_del_dia(f, moneda) if moneda != "VES" else 1)
     if moneda != "VES" and not tasa: raise ErrorFactura("Indique la tasa BCV del día para operaciones en divisas")
     alic = alicuotas_vigentes(f)
     calc = F.calcular(datos["lineas"], alic, moneda, tasa)
@@ -180,7 +182,7 @@ def registrar_cobro_doc(eid, u, did, fecha, forma, moneda, monto, tasa, referenc
     if forma not in F.FORMAS_PAGO or moneda not in F.MONEDAS: raise ErrorFactura("Forma de pago o moneda inválida")
     m = F.q2(F._dec(monto, "Monto"))
     if m <= 0: raise ErrorFactura("El monto debe ser mayor que cero")
-    t = F._dec(tasa or tasa_del_dia(f) or 0, "Tasa") if moneda != "VES" else Decimal(1)
+    t = F._dec(tasa or tasa_del_dia(f, moneda) or 0, "Tasa") if moneda != "VES" else Decimal(1)
     if t <= 0: raise ErrorFactura("Indique la tasa BCV del día")
     mbs = F.q2(m * t)
     emp = db.session.get(Empresa, eid)

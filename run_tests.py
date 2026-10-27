@@ -7,7 +7,7 @@ except ImportError:
     pt = types.ModuleType("pytest"); pt.fixture = lambda f: f; sys.modules["pytest"] = pt
 ok = fail = 0
 for mod in ("tests.test_licencias", "tests.test_validadores", "tests.test_calculos", "tests.test_premigracion", "tests.test_seguridad_legacy",
-            "tests.test_facturacion"):
+            "tests.test_facturacion", "tests.test_tasas"):
     try: M = importlib.import_module(mod)
     except ModuleNotFoundError as e:
         if e.name == mod: continue   # el módulo de pruebas aún no existe

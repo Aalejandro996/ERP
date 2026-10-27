@@ -60,6 +60,11 @@
     var put = function (k, v) { var el = document.querySelector('[data-r="' + k + '"]'); if (el) el.textContent = fmt(v); };
     put("base", base); put("exento", exento); put("iva", iva); put("total", base + exento + iva);
   }
+  var monedaIn = document.getElementById("moneda"), tasaCampo = document.getElementById("tasa");
+  if (monedaIn && tasaCampo && datos.tasas) monedaIn.addEventListener("change", function () {
+    var t = datos.tasas[monedaIn.value];
+    if (t) tasaCampo.value = t;  // tasa BCV del día de la moneda elegida (USD o EUR)
+  });
   form.addEventListener("input", recalcular);
   form.addEventListener("change", recalcular);
 

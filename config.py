@@ -30,7 +30,8 @@ class Config:
     LICENSE_PUBLIC_KEY = _req("LICENSE_PUBLIC_KEY")
     LICENSE_ADMIN_URL = _url_servicio(os.environ.get("LICENSE_ADMIN_URL") or os.environ["LICENSE_SERVER_URL"]) if os.environ.get("LICENSE_SERVER_URL") else None
     LICENSE_ADMIN_SECRET = os.environ.get("LICENSE_ADMIN_SECRET", "")
-    PAGO_MOVIL_INSTRUCCIONES = os.environ.get("PAGO_MOVIL_INSTRUCCIONES", "")   # API del Maestro (HMAC); vacío = consola de licencias deshabilitada
+    PAGO_MOVIL_INSTRUCCIONES = os.environ.get("PAGO_MOVIL_INSTRUCCIONES", "")
+    TASAS_AUTOMATICAS = os.environ.get("TASAS_AUTOMATICAS", "1") == "1"   # tasa BCV USD/EUR diaria desde DolarAPI   # API del Maestro (HMAC); vacío = consola de licencias deshabilitada
     RATELIMIT_STORAGE_URI = os.environ.get("RATELIMIT_STORAGE_URI", "memory://")
 
     # Correo (verificación, invitaciones, recuperación, alertas). APP_BASE_URL fija el dominio de los enlaces.

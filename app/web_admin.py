@@ -158,7 +158,8 @@ def _orden_de_mi_org(adm, ref):
 @ruta("/admin/licencia", "admin", ("GET", "POST"))
 def admin_licencia():
     from .licensing.admin import ErrorAdmin
-    from .models2 import TasaCambio
+    from . import tasas as SFT
+    from .tiempo import hoy_ve
     gestor = current_app.extensions["gestor_licencia"](g.usuario.organizacion_id)
     adm_f = current_app.extensions.get("admin_licencias")
     org = db.session.get(Organizacion, g.usuario.organizacion_id)
@@ -180,7 +181,7 @@ def admin_licencia():
             adm = adm_f()
             if a == "comprar":
                 moneda = F["moneda"]
-                tasa = db.session.execute(select(TasaCambio.tasa_usd_ves).order_by(TasaCambio.fecha.desc()).limit(1)).scalar() if moneda == "VES" else None
+                tasa = SFT.tasa_vigente(hoy_ve(), "USD") if moneda == "VES" else None
                 if moneda == "VES" and not tasa: raise ValueError("No hay tasa BCV cargada; intente más tarde.")
                 plan, meses = F["oferta"].split(":", 1)
                 o = adm.crear_orden(organizacion_ref=str(org.id), cliente=org.nombre, correo=g.usuario.email, plan=plan, meses=int(meses), moneda=moneda,

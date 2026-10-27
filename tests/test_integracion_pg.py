@@ -51,12 +51,12 @@ def entorno():
         if not c.execute(text("SELECT 1 FROM pg_roles WHERE rolname='erp_app'")).first():
             c.execute(text(f"CREATE ROLE erp_app LOGIN PASSWORD '{APP_PW}'"))
     class CfgOwner(Config):
-        TESTING = True; WTF_CSRF_ENABLED = False; RATELIMIT_ENABLED = False; SESSION_COOKIE_NAME = "s"; PRODUCCION = False
+        TESTING = True; TASAS_AUTOMATICAS = False; WTF_CSRF_ENABLED = False; RATELIMIT_ENABLED = False; SESSION_COOKIE_NAME = "s"; PRODUCCION = False
     app_owner = create_app(CfgOwner)
     with app_owner.app_context():
         db.session.execute(text("CREATE EXTENSION IF NOT EXISTS citext")); db.session.commit()
         db.create_all()
-        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql"):
+        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql"):
             db.session.execute(text(pathlib.Path("migrations", m).read_text(encoding="utf-8"))); db.session.commit()
     with owner.connect() as c:
         c.execute(text("GRANT USAGE ON SCHEMA public TO erp_app"))
@@ -138,7 +138,13 @@ def test_flujo_completo(entorno):
     assert root.get("/").headers["Location"].endswith("/plataforma")
     for cod, pct in (("G", "16"), ("R", "8"), ("A", "15"), ("IGTF", "3")):
         root.post("/plataforma/fiscal", data={"accion": "alicuota", "codigo": cod, "valor": pct, "fecha": "2026-01-01"})
-    root.post("/plataforma/fiscal", data={"accion": "tasa", "valor": "36.5", "fecha": hoy_ve().isoformat()})
+    root.post("/plataforma/fiscal", data={"accion": "tasa", "valor": "36.5", "eur": "40,25", "fecha": hoy_ve().isoformat()})
+    # INPC real del BCV (base dic-2007 = 100): miles de millones, también con formato venezolano
+    r = root.post("/plataforma/fiscal", data={"accion": "inpc", "valor": "6.734.512.876,45", "fecha": "2025-12-01", "ref": "BCV"}, follow_redirects=True)
+    assert "Parámetro guardado".encode() in r.data, re.findall(r'role="alert">([^<]+)', r.get_data(as_text=True))
+    r = root.post("/plataforma/fiscal", data={"accion": "inpc", "valor": "7000000000", "fecha": "2025-12-01"}, follow_redirects=True)
+    assert "Ya hay un INPC".encode() in r.data
+    assert "6734512876.45".encode() in root.get("/plataforma/fiscal").data
 
     # --- Alta de dos clientes con su administrador por invitación ---
     root.post("/plataforma", data={"accion": "crear", "nombre": "Alfa Contadores", "rif": "J-11111111-1", "username": "adminA", "email": "a@alfa.test"})

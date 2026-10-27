@@ -104,7 +104,8 @@ def factura_nueva(eid):
     emp = db.session.get(Empresa, eid)
     datos_js = json.dumps({"clientes": {c.rif: [c.razon_social, c.direccion or "", c.telefono or ""] for c in clientes},
                            "productos": {p.codigo: [p.nombre, str(p.precio_venta), p.alicuota_iva, str(p.cantidad_actual)] for p in productos},
-                           "alicuotas": {k: str(v) for k, v in alic.items()}, "igtf": bool(emp.es_sujeto_pasivo_especial)})
+                           "alicuotas": {k: str(v) for k, v in alic.items()}, "igtf": bool(emp.es_sujeto_pasivo_especial),
+                           "tasas": {m: str(SF.tasa_del_dia(hoy_ve(), m) or "") for m in ("USD", "EUR")}})
     datos_js = datos_js.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")  # un nombre con "</script>" no rompe el bloque
     return render_template("factura_nueva.html", titulo=f"Nueva {NOMBRE_DOC[tipo].lower()}", empresa=emp, tipo=tipo, afectado=afectado, lineas_af=lineas_af,
                            series=series, clientes=clientes, productos=productos, datos_js=datos_js, n_lineas=N_LINEAS, n_pagos=N_PAGOS, hoy=hoy(),

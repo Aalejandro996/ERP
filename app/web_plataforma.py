@@ -71,8 +71,22 @@ def admin_fiscal():
             elif a == "tarifa": db.session.add(TarifaISLR(desde_ut=a_decimal(F["desde"]), hasta_ut=a_decimal(F["hasta"]), porcentaje=a_decimal(F["pct"]), sustraendo_ut=a_decimal(F.get("sust") or 0)))
             elif a == "concepto": db.session.add(ConceptoRetencionISLR(concepto=F["concepto"], codigo_seniat=F.get("codigo"), porcentaje_juridica=a_decimal(F["pj"]), porcentaje_natural=a_decimal(F["pn"]),
                                                                         sustraendo_ut=a_decimal(F.get("sust") or 0), monto_minimo_ut=a_decimal(F.get("min") or 0)))
-            elif a == "inpc": db.session.add(IndiceINPC(valor_indice=F["valor"], fecha=parsear_fecha(F["fecha"]), referencia=F.get("ref")))
-            elif a == "tasa": db.session.add(TasaCambio(fecha=parsear_fecha(F["fecha"]), tasa_usd_ves=F["valor"]))
+            elif a == "inpc":
+                v = _decimal_positivo(F["valor"], "Índice INPC")
+                f = parsear_fecha(F["fecha"])
+                if db.session.execute(select(IndiceINPC.id).where(IndiceINPC.fecha == f)).first(): raise ValueError(f"Ya hay un INPC registrado para {f}")
+                db.session.add(IndiceINPC(valor_indice=v, fecha=f, referencia=F.get("ref")))
+            elif a == "tasa":
+                from .tasas import guardar
+                usd, eur = _decimal_positivo(F["valor"], "Tasa USD"), (_decimal_positivo(F["eur"], "Tasa EUR") if F.get("eur") else None)
+                f = parsear_fecha(F["fecha"])
+                fila = db.session.execute(select(TasaCambio).where(TasaCambio.fecha == f)).scalar_one_or_none()
+                if fila: fila.tasa_usd_ves, fila.tasa_eur_ves, fila.fuente = usd, eur or fila.tasa_eur_ves, "Manual (Maestro)"
+                else: db.session.add(TasaCambio(fecha=f, tasa_usd_ves=usd, tasa_eur_ves=eur, fuente="Manual (Maestro)"))
+            elif a == "tasa_bcv":
+                from . import tasas
+                t = tasas.consultar()
+                flash(f"BCV vía DolarAPI · vigencia {t['fecha']:%d/%m/%Y}: USD {t['USD']} · EUR {t['EUR']} — {tasas.guardar(t, forzar=F.get('forzar') == '1')}")
             elif a == "alicuota":
                 if F["codigo"] not in ("G", "R", "A", "IGTF"): raise ValueError("Código inválido")
                 db.session.add(AlicuotaImpuesto(codigo=F["codigo"], porcentaje=a_decimal(F["valor"]), fecha_vigencia=parsear_fecha(F["fecha"]), gaceta_referencia=F.get("gaceta")))
@@ -86,16 +100,32 @@ def admin_fiscal():
              titulo="Alícuotas (IVA e IGTF)", tabla=dict(cols=["Código", "%", "Vigencia", "Gaceta"], num=[1], filas=[dict(cells=[x.codigo, x.porcentaje, x.fecha_vigencia, x.gaceta_referencia]) for x in q(AlicuotaImpuesto, AlicuotaImpuesto.fecha_vigencia.desc(), n=20)])),
         f("alicuota", "Nueva alícuota", campo("codigo", "Tipo", "select", opciones=[("G", "IVA general"), ("R", "IVA reducida"), ("A", "IVA adicional bienes de lujo"), ("IGTF", "IGTF (pagos en divisas)")]),
           campo("valor", "%", "number"), campo("fecha", "Vigencia", "date", valor=hoy()), campo("gaceta", "Gaceta / norma", req=False)),
-        dict(titulo="Tasa BCV USD/VES", tabla=dict(cols=["Fecha", "Tasa"], num=[1], filas=[dict(cells=[x.fecha, x.tasa_usd_ves]) for x in q(TasaCambio, TasaCambio.fecha.desc(), n=10)])),
-        f("tasa", "Tasa del día", campo("valor", "Tasa", "number"), campo("fecha", "Fecha", "date", valor=hoy())),
+        dict(titulo="Tasa oficial BCV (Bs por divisa)", nota="Se actualiza sola cada día desde DolarAPI (fuente: BCV). Una tasa cargada a mano tiene prioridad sobre la automática.",
+             tabla=dict(cols=["Vigencia", "USD", "EUR", "Fuente"], num=[1, 2], filas=[dict(cells=[x.fecha, x.tasa_usd_ves, x.tasa_eur_ves or "—", x.fuente or "Manual"]) for x in q(TasaCambio, TasaCambio.fecha.desc(), n=10)])),
+        dict(titulo="Actualizar ahora desde el BCV", form=dict(action=request.path, boton="Consultar DolarAPI", campos=[h("tasa_bcv"),
+             campo("forzar", "¿Reemplazar una tasa cargada a mano para esa fecha?", "select", opciones=[("0", "No"), ("1", "Sí")])])),
+        f("tasa", "Cargar tasa a mano", campo("valor", "USD (Bs)", "number"), campo("eur", "EUR (Bs)", "number", req=False), campo("fecha", "Vigencia", "date", valor=hoy())),
         dict(titulo="Unidad Tributaria", tabla=dict(cols=["Valor Bs", "Vigencia", "Gaceta"], num=[0], filas=[dict(cells=[x.valor_bs, x.fecha_vigencia, x.gaceta_referencia]) for x in q(UnidadTributaria, UnidadTributaria.fecha_vigencia.desc(), n=5)])),
         f("ut", "Nueva Unidad Tributaria", campo("valor", "Valor Bs", "number"), campo("fecha", "Vigencia", "date", valor=hoy()), campo("gaceta", "Gaceta", req=False)),
         dict(titulo="Tarifa N° 2 ISLR (jurídicas)", tabla=dict(cols=["Desde UT", "Hasta UT", "%", "Sustraendo UT"], num=[0, 1, 2, 3], filas=[dict(cells=[x.desde_ut, x.hasta_ut, x.porcentaje, x.sustraendo_ut]) for x in q(TarifaISLR, TarifaISLR.desde_ut)])),
         f("tarifa", "Nuevo tramo de tarifa", campo("desde", "Desde UT", "number"), campo("hasta", "Hasta UT", "number"), campo("pct", "%", "number"), campo("sust", "Sustraendo UT", "number", req=False)),
         dict(titulo="Conceptos de retención ISLR (Decreto 1.808)", tabla=dict(cols=["Concepto", "Código", "% jurídica", "% natural", "Sustraendo UT", "Mínimo UT"], num=[2, 3, 4, 5], filas=[dict(cells=[x.concepto, x.codigo_seniat, x.porcentaje_juridica, x.porcentaje_natural, x.sustraendo_ut, x.monto_minimo_ut]) for x in q(ConceptoRetencionISLR, ConceptoRetencionISLR.id)])),
         f("concepto", "Nuevo concepto de retención", campo("concepto", "Concepto"), campo("codigo", "Código SENIAT", req=False), campo("pj", "% jurídica", "number"), campo("pn", "% natural", "number"), campo("sust", "Sustraendo UT", "number", req=False), campo("min", "Mínimo UT", "number", req=False)),
-        dict(titulo="Índices INPC (BCV)", tabla=dict(cols=["Fecha", "Índice", "Referencia"], num=[1], filas=[dict(cells=[x.fecha, x.valor_indice, x.referencia]) for x in q(IndiceINPC, IndiceINPC.fecha.desc(), n=24)])),
-        f("inpc", "Nuevo índice INPC", campo("valor", "Índice", "number"), campo("fecha", "Fecha", "date"), campo("ref", "Referencia", req=False))])
+        dict(titulo="Índices INPC (BCV)", tabla=dict(cols=["Fecha", "Índice", "Referencia"], num=[1], filas=[dict(cells=[x.fecha, format(x.valor_indice.normalize(), "f"), x.referencia]) for x in q(IndiceINPC, IndiceINPC.fecha.desc(), n=24)])),
+        f("inpc", "Nuevo índice INPC", campo("valor", "Índice (base dic-2007 = 100)", "number"), campo("fecha", "Mes (use el día 1 o el último día)", "date"), campo("ref", "Referencia", req=False))])
+
+
+def _decimal_positivo(valor, nombre):
+    """Acepta 1234567,89 o 1.234.567,89 (formato venezolano) además de 1234567.89."""
+    from decimal import Decimal, InvalidOperation
+    t = str(valor or "").strip().replace(" ", "")
+    if "," in t: t = t.replace(".", "").replace(",", ".")
+    try:
+        d = Decimal(t)
+    except InvalidOperation as e:
+        raise ValueError(f"{nombre} inválido: {valor!r}") from e
+    if not d.is_finite() or d <= 0 or d >= Decimal("1e27"): raise ValueError(f"{nombre} fuera de rango")
+    return d
 
 
 @ruta("/plataforma/bitacora", "plataforma")
