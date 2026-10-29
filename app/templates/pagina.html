@@ -2,7 +2,8 @@
 {% macro opcion(o, valor) %}<option value="{{ o[0] }}" {{ 'selected' if valor is not none and o[0]|string == valor|string }}>{{ o[1] }}</option>{% endmacro %}
 {% macro campos(lista) %}<div class="grid">{% for c in lista %}
 {% if c.t == 'hidden' %}<input type="hidden" name="{{ c.n }}" value="{{ c.valor if c.valor is not none else '' }}">{% else %}<label>{{ c.l }}
-{% if c.t == 'select' %}<select name="{{ c.n }}" {{ 'required' if c.req }}>{% for o in c.opciones %}{{ opcion(o, c.valor) }}{% endfor %}</select>
+{% if c.t == 'checks' %}<span class="checks">{% for o in c.opciones %}<label class="check"><input type="checkbox" name="{{ c.n }}" value="{{ o[0] }}" {{ 'checked' if c.valor and o[0] in c.valor }}> {{ o[1] }}</label>{% endfor %}</span>
+{% elif c.t == 'select' %}<select name="{{ c.n }}" {{ 'required' if c.req }}>{% for o in c.opciones %}{{ opcion(o, c.valor) }}{% endfor %}</select>
 {% elif c.t == 'textarea' %}<textarea name="{{ c.n }}" rows="3" maxlength="4000" {{ 'required' if c.req }}></textarea>
 {% else %}<input name="{{ c.n }}" type="{{ c.t }}" {{ 'required' if c.req }} {% if c.t == 'number' %}step="any"{% endif %} value="{{ c.valor if c.valor is not none else '' }}" maxlength="500" autocomplete="{{ 'new-password' if c.t == 'password' else 'off' }}">{% endif %}</label>{% endif %}{% endfor %}</div>{% endmacro %}
 {% block contenido %}
@@ -20,6 +21,9 @@
 {% for f in s.tabla.filas %}<tr class="{{ f.clase or '' }}">{% for v in f.cells %}<td class="{{ 'n' if loop.index0 in (s.tabla.num or []) }}">{% if loop.first and f.url %}<a class="fila" href="{{ f.url }}">{{ v }}</a>{% else %}{{ v }}{% endif %}</td>{% endfor %}
 {% if s.tabla.accion %}<td>{% if f.form %}<form class="mini" method="{{ f.form.metodo or 'post' }}" action="{{ f.form.action }}">{% if (f.form.metodo or 'post') == 'post' %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
 {% for c in f.form.campos %}{% if c.t == 'hidden' %}<input type="hidden" name="{{ c.n }}" value="{{ c.valor if c.valor is not none else '' }}">{% else %}<input name="{{ c.n }}" type="{{ c.t }}" placeholder="{{ c.l }}" aria-label="{{ c.l }}" {{ 'required' if c.req }} {% if c.t == 'number' %}step="any"{% endif %} value="{{ c.valor if c.valor is not none else '' }}">{% endif %}{% endfor %}<button class="sec">{{ f.form.boton }}</button></form>{% endif %}</td>{% endif %}</tr>
-{% else %}<tr><td colspan="{{ s.tabla.cols|length + 1 }}" class="peq">Sin registros</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+{% else %}<tr><td colspan="{{ s.tabla.cols|length + 1 }}" class="peq">Sin registros</td></tr>{% endfor %}</tbody></table></div>
+{% if s.tabla.pag %}{% set p = s.tabla.pag %}<div class="paginacion"><span>{{ p.texto }}</span><nav aria-label="Paginación">{% if p.todo %}<a href="{{ p.primera }}">Paginar</a>{% else %}
+{% if p.ant %}<a href="{{ p.ant }}" aria-label="Anterior">‹</a>{% endif %}{% for e in p.enlaces %}{% if e.gap %}<span class="gap">…</span>{% elif e.actual %}<span class="actual" aria-current="page">{{ e.n }}</span>{% else %}<a href="{{ e.url }}">{{ e.n }}</a>{% endif %}{% endfor %}
+{% if p.sig %}<a href="{{ p.sig }}" aria-label="Siguiente">›</a>{% endif %}<a href="{{ p.todas }}">Ver todo</a>{% endif %}</nav></div>{% endif %}{% endif %}
 {% if s.texto %}<pre>{{ s.texto }}</pre>{% endif %}</section>{% endif %}
 {% endfor %}{% endblock %}

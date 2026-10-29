@@ -30,7 +30,17 @@ VIGENCIA_ORDEN_USDT_S = 24 * 3600    # una orden en USDT espera su pago 24 h
 VIGENCIA_TOKEN_S = 7 * 24 * 3600   # ventana offline máxima: 7 días
 LIMITE_PETICIONES = (20, 60)        # 20 peticiones por 60 s y por IP (endpoints públicos)
 TOLERANCIA_FIRMA_S = 300
-PLANES = ("ERP_CONTABLE", "CASH", "ERP_ADMIN", "ALL_IN_ONE")
+PLANES = ("ERP_CONTABLE", "CASH", "ERP_ADMIN", "ALL_IN_ONE", "PERSONALIZADO")
+PLANES_TIENDA = PLANES[:4]   # PERSONALIZADO se arma por módulos y lo emite el Maestro; no está en el catálogo
+MODULOS_VALIDOS = ("contabilidad", "administrativo", "auditoria", "inventario", "facturacion")
+
+
+def _modulos(valor) -> str:
+    lista = valor.split(",") if isinstance(valor, str) else list(valor or [])
+    mods = sorted({str(m).strip() for m in lista if str(m).strip()})
+    if not mods: raise ValueError("Elija al menos un módulo para el plan personalizado")
+    if any(m not in MODULOS_VALIDOS for m in mods): raise ValueError("Módulo inválido")
+    return ",".join(mods)
 ESTADOS = ("activa", "suspendida", "revocada")
 RE_REF = re.compile(r"^[A-Z0-9]{8,32}$")
 RE_CORREO = re.compile(r"^[^@\s<>]{1,64}@[^@\s<>]{1,190}\.[A-Za-z]{2,24}$")
@@ -44,7 +54,11 @@ licencias = Table(
     Column("max_instancias", Integer, nullable=False, default=1), Column("max_usuarios", Integer, nullable=False, default=5),
     Column("max_empresas", Integer, nullable=False, default=10), Column("max_equipos", Integer),
     Column("vence_en", Float, nullable=False), Column("creada_en", Float, nullable=False),
-    Column("origen", String(12), nullable=False, default="maestro"), Column("clave_enviada_en", Float))
+    Column("origen", String(12), nullable=False, default="maestro"), Column("clave_enviada_en", Float),
+    Column("modulos", Text),
+    # venta registrada por el Maestro (licencias emitidas a mano): con esto el sistema arma la factura solo
+    Column("venta_monto", Numeric(18, 4)), Column("venta_moneda", String(4)), Column("venta_tasa", Numeric(18, 6)),
+    Column("venta_forma_pago", Text), Column("cliente_rif", Text), Column("dias", Integer))
 activaciones = Table(
     "lic_activaciones", md,
     Column("licencia_id", Integer, ForeignKey("lic_licencias.id"), primary_key=True), Column("huella", String(64), primary_key=True),
@@ -77,7 +91,8 @@ pagos_usados = Table(
     "lic_pagos_usados", md,
     Column("pago_id", String(120), primary_key=True), Column("orden_ref", String(32), nullable=False),
     Column("monto", Numeric(18, 8), nullable=False), Column("registrado_en", Float, nullable=False))
-COLUMNAS_NUEVAS = {"lic_ordenes": [("monto_esperado", "NUMERIC(18,4)"), ("expira_en", "FLOAT"), ("instrucciones", "TEXT"),
+COLUMNAS_NUEVAS = {"lic_licencias": [("modulos", "TEXT"), ("venta_monto", "NUMERIC(18,4)"), ("venta_moneda", "VARCHAR(4)"), ("venta_tasa", "NUMERIC(18,6)"),
+                                     ("venta_forma_pago", "TEXT"), ("cliente_rif", "TEXT"), ("dias", "INTEGER")], "lic_ordenes": [("monto_esperado", "NUMERIC(18,4)"), ("expira_en", "FLOAT"), ("instrucciones", "TEXT"),
                                    ("cliente_rif", "TEXT"), ("cliente_direccion", "TEXT")]}
 
 
@@ -138,14 +153,15 @@ class Almacen:
 
     # ---------------- licencias ----------------
     def crear_licencia(self, cliente, dias=365, max_usuarios=5, max_empresas=10, max_instancias=1, plan="ERP_CONTABLE",
-                       max_equipos=None, correo=None, organizacion_ref=None, origen="maestro", con=None) -> tuple[int, str]:
+                       max_equipos=None, correo=None, organizacion_ref=None, origen="maestro", con=None, modulos=None) -> tuple[int, str]:
         if plan not in PLANES: raise ValueError(f"Plan inválido: {plan}")
+        modulos = _modulos(modulos) if plan == "PERSONALIZADO" else None
         if correo and not RE_CORREO.match(correo): raise ValueError("Correo inválido")
         clave, ahora = nueva_clave(), self.reloj()
         datos = dict(key_hash=_h(clave), cliente=str(cliente)[:200], correo=correo, organizacion_ref=organizacion_ref, estado="activa", plan=plan,
                      max_instancias=_entero(max_instancias, "instancias", 1, 1000), max_usuarios=_entero(max_usuarios, "usuarios", 1, 100000),
                      max_empresas=_entero(max_empresas, "empresas", 1, 100000), max_equipos=None if max_equipos in (None, "") else _entero(max_equipos, "equipos", 1, 100000),
-                     vence_en=ahora + _entero(dias, "días", 1, 3650) * 86400, creada_en=ahora, origen=origen)
+                     vence_en=ahora + _entero(dias, "días", 1, 3650) * 86400, creada_en=ahora, origen=origen, modulos=modulos, dias=int(dias))
         if con is not None:
             lid = con.execute(insert(licencias).values(**datos).returning(licencias.c.id)).scalar()
         else:
@@ -164,6 +180,7 @@ class Almacen:
         if "plan" in cambios:
             if cambios["plan"] not in PLANES: raise ValueError("Plan inválido")
             permitidos["plan"] = cambios["plan"]
+        if cambios.get("modulos"): permitidos["modulos"] = _modulos(cambios["modulos"])
         if "estado" in cambios:
             if cambios["estado"] not in ESTADOS: raise ValueError("Estado inválido")
             permitidos["estado"] = cambios["estado"]
@@ -172,6 +189,12 @@ class Almacen:
         with self.eng.begin() as c:
             fila = c.execute(select(licencias).where(licencias.c.id == lid)).first()
             if fila is None: raise LookupError("Licencia inexistente")
+            plan_final = permitidos.get("plan", fila.plan)
+            if plan_final == "PERSONALIZADO" and not (permitidos.get("modulos") or fila.modulos):
+                raise ValueError("El plan personalizado necesita sus módulos")
+            if plan_final != "PERSONALIZADO":
+                permitidos.pop("modulos", None)
+                if "plan" in permitidos: permitidos["modulos"] = None
             if cambios.get("dias_extra"):
                 permitidos["vence_en"] = max(fila.vence_en, self.reloj()) + _entero(cambios["dias_extra"], "días", 1, 3650) * 86400
             if permitidos: c.execute(update(licencias).where(licencias.c.id == lid).values(**permitidos))
@@ -207,7 +230,7 @@ class Almacen:
 
     # ---------------- precios ----------------
     def fijar_precio(self, plan, meses, monto_usd, max_usuarios, max_empresas, max_equipos):
-        if plan not in PLANES: raise ValueError("Plan inválido")
+        if plan not in PLANES_TIENDA: raise ValueError("Plan inválido para el catálogo")
         datos = dict(monto_usd=_dec(monto_usd, "precio"), max_usuarios=_entero(max_usuarios, "usuarios", 1), max_empresas=_entero(max_empresas, "empresas", 1),
                      max_equipos=_entero(max_equipos, "equipos", 1))
         meses = _entero(meses, "meses", 1, 60)
@@ -286,6 +309,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
                   "max_empresas": lic.max_empresas, "iat": int(ahora), "exp": int(min(ahora + VIGENCIA_TOKEN_S, lic.vence_en)),
                   "vence_licencia": int(lic.vence_en)}
         if lic.plan: claims["plan"] = lic.plan            # firmado: el cliente no puede ampliar su plan
+        if lic.plan == "PERSONALIZADO": claims["modulos"] = (lic.modulos or "").split(",")   # módulos a medida, también firmados
         if lic.max_equipos: claims["max_equipos"] = lic.max_equipos
         if lic.organizacion_ref: claims["org"] = lic.organizacion_ref
         return jsonify(token=firmar(claims, clave_privada))
@@ -376,11 +400,27 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         with st.eng.begin() as con:
             lid, clave = st.crear_licencia(d.get("cliente") or "Cliente", d.get("dias", 365), d.get("max_usuarios", 5), d.get("max_empresas", 10),
                                            d.get("max_instancias", 1), d.get("plan", "ERP_CONTABLE"), d.get("max_equipos"), d["correo"],
-                                           d.get("organizacion_ref"), "maestro", con=con)
+                                           d.get("organizacion_ref"), "maestro", con=con, modulos=d.get("modulos"))
             st.log(con, lid, "creada_por_maestro", d.get("autor", ""))
+            venta = d.get("venta") or {}
+            if venta.get("monto"):
+                mon = venta.get("moneda", "USD")
+                if mon not in ("VES", "USD", "EUR", "USDT"): raise ValueError("Moneda de la venta inválida")
+                rif = str(venta.get("cliente_rif") or "").strip().upper()
+                if not re.fullmatch(r"[VEJPGC]-\d{8}-\d", rif): raise ValueError("RIF del cliente inválido")
+                con.execute(update(licencias).where(licencias.c.id == lid).values(
+                    venta_monto=_dec(venta["monto"], "monto de la venta"), venta_moneda=mon, venta_tasa=_tasa(venta["tasa"]) if venta.get("tasa") else None,
+                    venta_forma_pago=str(venta.get("forma_pago") or "")[:120] or None, cliente_rif=rif))
             lic = con.execute(select(licencias).where(licencias.c.id == lid)).first()
             enviar_clave(con, lid, clave, d["correo"], lic.cliente, lic.plan, lic.vence_en, "Se emitió una licencia para su organización:")
-        return jsonify(id=lid), 201
+        factura = None
+        if lic.venta_monto or (d.get("venta") or {}).get("monto"):
+            try:
+                factura = facturar_licencia(lid)   # segundo correo: la factura
+            except Exception as e:  # noqa: BLE001 — la licencia ya está entregada; queda pendiente de factura
+                with st.eng.begin() as c: st.log(c, lid, "factura_pendiente", str(e)[:200])
+                factura = {"error": str(e)[:200]}
+        return jsonify(id=lid, factura=factura), 201
 
     @app.patch("/admin/v1/licencias/<int:lid>")
     def a_modificar(lid):
@@ -425,7 +465,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         """El ERP pide una orden en nombre del Administrador de un cliente. El MONTO lo fija el catálogo del servidor."""
         d = cuerpo()
         plan, meses, moneda = d.get("plan"), _entero(d.get("meses"), "meses", 1, 60), d.get("moneda")
-        if plan not in PLANES or moneda not in ("USDT", "VES"): raise ValueError("Plan o moneda inválidos")
+        if plan not in PLANES_TIENDA or moneda not in ("USDT", "VES"): raise ValueError("Plan o moneda inválidos")
         if not RE_CORREO.match(str(d.get("correo", ""))): raise ValueError("Correo inválido")
         org = str(d.get("organizacion_ref") or "")[:40]
         if not re.fullmatch(r"[0-9]{1,12}", org): raise ValueError("Organización inválida")
@@ -600,12 +640,63 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
             if not o.cliente_rif: raise ValueError("La orden no tiene el RIF del cliente")
             usdt = o.moneda == "USDT"
             f = fx.emitir(con, cliente_nombre=o.cliente, cliente_rif=o.cliente_rif, cliente_direccion=o.cliente_direccion, cliente_correo=o.correo,
-                          moneda="USD" if usdt else "VES", tasa_bcv=o.tasa_bcv, monto_con_iva=(o.monto_esperado or o.monto) if usdt else o.monto,
-                          concepto=f"Licencia de uso ERP — plan {o.plan}, {o.meses} mes(es)", forma_pago="USDT por Binance" if usdt else "Pago móvil (Bs)",
+                          moneda="USDT" if usdt else "VES", tasa_bcv=o.tasa_bcv, monto_con_iva=(o.monto_esperado or o.monto) if usdt else o.monto,
+                          concepto=_concepto(o.plan, None, meses=o.meses), forma_pago="USDT por Binance" if usdt else "Pago móvil (Bs)",
                           orden_ref=ref, licencia_id=o.licencia_id, reloj=reloj)
             st.log(con, o.licencia_id, "factura_emitida", f"orden={ref} factura={f['serie']}{f['numero']} control={f['numero_control']}")
         enviar_factura(f["id"])
         return f["id"]
+
+    def _concepto(plan, modulos, meses=None, dias=None):
+        from app.planes import MODULOS
+        nombre = {"ERP_CONTABLE": "ERP Contable", "CASH": "Cash — Facturación", "ERP_ADMIN": "ERP Administrativo", "ALL_IN_ONE": "All in One"}.get(plan, plan or "ERP")
+        if plan == "PERSONALIZADO": nombre = "Personalizado (" + ", ".join(MODULOS.get(m, m) for m in (modulos or "").split(",") if m) + ")"
+        tiempo = f"{meses} mes(es)" if meses else (f"{dias} días" if dias else "")
+        return f"Licencia de uso ERP — plan {nombre}" + (f", {tiempo}" if tiempo else "")
+
+    def facturar_licencia(lid):
+        """Factura de una licencia emitida por el Maestro con venta registrada (idempotente)."""
+        with st.eng.begin() as con:
+            l = con.execute(select(licencias).where(licencias.c.id == lid).with_for_update()).first()
+            if l is None: raise LookupError("Licencia inexistente")
+            ya = con.execute(select(fx.facturas.c.id).where(fx.facturas.c.licencia_id == lid, fx.facturas.c.estado == "Emitida")).scalar()
+            if ya: return ya
+            if not l.venta_monto: raise ValueError("Esa licencia no tiene una venta registrada")
+            f = fx.emitir(con, cliente_nombre=l.cliente, cliente_rif=l.cliente_rif, cliente_direccion=None, cliente_correo=l.correo,
+                          moneda=l.venta_moneda or "USD", tasa_bcv=l.venta_tasa, monto_con_iva=l.venta_monto,
+                          concepto=_concepto(l.plan, l.modulos, dias=l.dias), forma_pago=l.venta_forma_pago, licencia_id=lid, reloj=reloj)
+            st.log(con, lid, "factura_emitida", f"factura={f['serie']}{f['numero']} control={f['numero_control']}")
+        enviar_factura(f["id"])
+        return f["id"]
+
+    def pendientes_de_factura(org=None):
+        """Ventas sin factura: órdenes pagadas y licencias del Maestro con venta registrada."""
+        with st.eng.connect() as c:
+            facturadas_o = {r[0] for r in c.execute(select(fx.facturas.c.orden_ref).where(fx.facturas.c.orden_ref.is_not(None)))}
+            facturadas_l = {r[0] for r in c.execute(select(fx.facturas.c.licencia_id).where(fx.facturas.c.licencia_id.is_not(None), fx.facturas.c.estado == "Emitida"))}
+            qo = select(ordenes).where(ordenes.c.estado == "entregada")
+            ql = select(licencias).where(licencias.c.venta_monto.is_not(None), licencias.c.origen == "maestro")
+            if org: qo, ql = qo.where(ordenes.c.organizacion_ref == str(org)), ql.where(licencias.c.organizacion_ref == str(org))
+            out = [{"tipo": "orden", "ref": o.ref, "organizacion_ref": o.organizacion_ref, "cliente": o.cliente, "concepto": _concepto(o.plan, None, meses=o.meses),
+                    "moneda": "USDT" if o.moneda == "USDT" else "VES", "monto": str(o.monto_esperado or o.monto), "fecha": o.entregada_en}
+                   for o in c.execute(qo) if o.ref not in facturadas_o]
+            out += [{"tipo": "licencia", "ref": str(l.id), "organizacion_ref": l.organizacion_ref, "cliente": l.cliente, "concepto": _concepto(l.plan, l.modulos, dias=l.dias),
+                     "moneda": l.venta_moneda, "monto": str(l.venta_monto), "fecha": l.creada_en} for l in c.execute(ql) if l.id not in facturadas_l]
+        return sorted(out, key=lambda x: x["fecha"] or 0)
+
+    @app.get("/admin/v1/facturas/pendientes")
+    def a_fx_pendientes():
+        return jsonify(pendientes=pendientes_de_factura(request.args.get("org")))
+
+    @app.post("/admin/v1/facturas/cliente")
+    def a_fx_cliente():
+        """«Construir la factura» eligiendo solo el cliente: se factura cada venta suya pendiente con sus datos reales."""
+        org = str(cuerpo().get("organizacion_ref") or "")
+        if not re.fullmatch(r"[0-9]{1,12}", org): raise ValueError("Cliente inválido")
+        pend = pendientes_de_factura(org)
+        if not pend: raise ValueError("Ese cliente no tiene ventas pendientes de factura")
+        ids = [facturar_orden(p["ref"]) if p["tipo"] == "orden" else facturar_licencia(int(p["ref"])) for p in pend]
+        return jsonify(ids=ids), 201
 
     @app.get("/admin/v1/facturacion/config")
     def a_fx_config():

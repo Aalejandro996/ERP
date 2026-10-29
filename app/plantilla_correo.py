@@ -122,7 +122,7 @@ def factura_html(f: dict, base_url: str, intro=None) -> str:
    <td valign="top" width="50%" style="background:{FONDO};border-radius:10px;padding:12px;font-size:13px;line-height:1.55;color:{TEXTO}"><b>Adquirente</b><br>{e(f['cliente_nombre'])}<br>RIF/C.I.: {e(f['cliente_rif'])}{('<br>' + e(f['cliente_direccion'])) if f.get('cliente_direccion') else ''}</td>
    <td width="12"></td>
    <td valign="top" width="50%" style="background:{FONDO};border-radius:10px;padding:12px;font-size:13px;line-height:1.55;color:{TEXTO}"><b>Condiciones</b><br>Pago: Contado{(' · ' + e(f['forma_pago'])) if f.get('forma_pago') else ''}<br>
-     Moneda: {e(f['moneda'])}{(' · Tasa BCV: ' + e(_bs(f['tasa_bcv'])) + ' Bs/' + e(f['moneda'])) if divisa else ''}{('<br>Orden: ' + e(f['orden_ref'])) if f.get('orden_ref') else ''}</td></tr></table>
+     Moneda: {e(f['moneda'])}{(' · Tasa BCV: ' + e(_bs(f['tasa_bcv'])) + ' Bs/' + e(f['moneda']) + (' (tasa oficial del dólar)' if f['moneda'] == 'USDT' else '')) if divisa else ''}{('<br>Orden: ' + e(f['orden_ref'])) if f.get('orden_ref') else ''}</td></tr></table>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
    <th align="left" style="padding:8px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:{SUAVE};border-bottom:1px solid {LINEA}">Descripción</th>
    <th align="right" style="padding:8px;font-size:11px;text-transform:uppercase;color:{SUAVE};border-bottom:1px solid {LINEA}">Cant.</th>

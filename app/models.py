@@ -62,6 +62,10 @@ class Empresa(db.Model):  # = clientes_contables del sistema original
     direccion = db.Column(db.Text)
     telefono = db.Column(db.Text)
     es_sujeto_pasivo_especial = db.Column(db.Boolean, nullable=False, default=False)
+    monedas = db.Column(db.Text, nullable=False, default="USD")   # divisas con las que factura la empresa (además del bolívar): USD,EUR,USDT
+
+    def divisas(self) -> list[str]:
+        return [m for m in ("USD", "EUR", "USDT") if m in (self.monedas or "").split(",")]
     creado_en = db.Column(db.DateTime(timezone=True), default=_ahora)
     __table_args__ = (UniqueConstraint("organizacion_id", "rif", name="uq_empresa_org_rif"),)
 

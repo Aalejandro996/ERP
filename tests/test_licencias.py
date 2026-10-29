@@ -321,3 +321,43 @@ def test_construir_factura_manual_anular_y_cadena(e):
     from sqlalchemy import update
     with e.st.eng.begin() as c: c.execute(update(fx.facturas).where(fx.facturas.c.id == 2).values(total=Decimal("1")))
     assert e.admin.fx_config()["cadena_integra"] is False                                               # alterar una factura se detecta
+
+
+def test_plan_personalizado_por_modulos(e):
+    from app.planes import modulos_de, nombre_plan
+    with pytest.raises(ValueError, match="al menos un módulo"): e.clave(plan="PERSONALIZADO")
+    with pytest.raises(ValueError, match="Módulo inválido"): e.clave(plan="PERSONALIZADO", modulos=["facturacion", "nomina"])
+    lid, clave = e.clave(plan="PERSONALIZADO", modulos=["facturacion", "auditoria", "facturacion"])
+    gp = e.gestor("srvP")
+    claims = gp.activar(clave).claims
+    assert claims["plan"] == "PERSONALIZADO" and claims["modulos"] == ["auditoria", "facturacion"]
+    assert modulos_de(claims) == {"auditoria", "facturacion"} and nombre_plan(claims) == "Personalizado (Auditoría financiera, Facturación)"
+    assert modulos_de({"plan": "PERSONALIZADO", "modulos": ["facturacion", "inventado"]}) == {"facturacion"}   # lo desconocido no habilita nada
+    e.admin.modificar(lid, modulos=["inventario"])
+    assert gp.renovar().claims["modulos"] == ["inventario"]                         # llega en la renovación
+    e.admin.modificar(lid, plan="CASH")                                                          # al cambiar de plan se limpian los módulos
+    assert e.admin.licencias()[0]["modulos"] is None
+    with pytest.raises(ErrorAdmin, match="catálogo"): e.admin.fijar_precio(plan="PERSONALIZADO", meses=1, monto_usd="10", max_usuarios=1, max_empresas=1, max_equipos=1)
+
+
+def test_factura_construida_solo_con_el_cliente(e):
+    _configurar_facturacion(e)
+    with pytest.raises(ErrorAdmin, match="pendientes"): e.admin.facturar_cliente(7, "maestro")
+    # licencia emitida por el Maestro con venta registrada: clave + factura (segundo correo) al instante
+    r = e.admin.crear_licencia(cliente="Taller Uno", correo="t@uno.test", organizacion_ref="7", plan="PERSONALIZADO", modulos=["facturacion"], dias=30,
+                               venta={"monto": "40", "moneda": "USDT", "tasa": "887.302", "forma_pago": "USDT por Binance", "cliente_rif": "J-30000000-1"})
+    assert [c[1].split(" ")[0] for c in e.correos] == ["Su", "Factura"] and r["factura"]
+    f = e.admin.facturas()[0]
+    assert f["moneda"] == "USDT" and "Personalizado (Facturación), 30 días" in f["lineas"][0]["descripcion"] and Decimal(f["total"]) == Decimal("35492.08")
+    # sin rango disponible la venta queda pendiente; al elegir el cliente se factura sola
+    from licensing_server import facturas as fx
+    from sqlalchemy import update
+    with e.st.eng.begin() as c: c.execute(update(fx.config).values(control_hasta=1))     # rango agotado
+    r2 = e.admin.crear_licencia(cliente="Taller Uno", correo="t@uno.test", organizacion_ref="7", plan="CASH", dias=365,
+                                venta={"monto": "250", "moneda": "USD", "tasa": "887.302", "cliente_rif": "J-30000000-1"})
+    assert "control" in r2["factura"]["error"] and len(e.admin.pendientes_factura(org="7")) == 1
+    e.admin.fx_rango(desde=2, hasta=10, fecha="2026-10-29")
+    ids = e.admin.facturar_cliente(7, "maestro")["ids"]
+    assert len(ids) == 1 and e.admin.pendientes_factura(org="7") == [] and e.admin.factura(ids[0])["numero_completo"] == "A00000002"
+    with pytest.raises(ErrorAdmin, match="RIF"):
+        e.admin.crear_licencia(cliente="X", correo="x@y.test", organizacion_ref="8", plan="CASH", venta={"monto": "1", "cliente_rif": "malo"})

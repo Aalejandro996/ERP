@@ -34,8 +34,39 @@ def campo(n, l, t="text", req=True, **kw):
 def hoy(): return hoy_ve().isoformat()
 
 
+POR_PAGINA = 25
+
+
+def paginar(tabla, clave):
+    """Pagina una tabla de pagina.html con el parámetro ?<clave>=N (o =todo para imprimir completa). Las filas de
+    total (clase "total") se repiten al pie de cada página. Devuelve la tabla con sus filas visibles y el paginador."""
+    filas = list(tabla.get("filas") or [])
+    fijas = [f for f in filas if (f.get("clase") or "") == "total"]
+    datos = [f for f in filas if (f.get("clase") or "") != "total"]
+    if len(datos) <= POR_PAGINA: return {**tabla, "filas": filas}
+    paginas = -(-len(datos) // POR_PAGINA)
+    pedido = request.args.get(clave, "1")
+    args = {k: v for k, v in request.args.items() if k != clave}
+
+    def url(n): return url_for(request.endpoint, **(request.view_args or {}), **args, **{clave: n})
+    if pedido == "todo":
+        return {**tabla, "filas": filas, "pag": {"texto": f"{len(datos)} registros", "todo": True, "primera": url(1)}}
+    actual = min(max(int(pedido) if pedido.isdigit() else 1, 1), paginas)
+    ini = (actual - 1) * POR_PAGINA
+    numeros = sorted({1, paginas, *range(max(1, actual - 2), min(paginas, actual + 2) + 1)})
+    enlaces, previo = [], 0
+    for n in numeros:
+        if n - previo > 1: enlaces.append({"gap": True})
+        enlaces.append({"n": n, "url": url(n), "actual": n == actual}); previo = n
+    return {**tabla, "filas": datos[ini:ini + POR_PAGINA] + fijas,
+            "pag": {"texto": f"{ini + 1}–{min(ini + POR_PAGINA, len(datos))} de {len(datos)}", "enlaces": enlaces,
+                    "ant": url(actual - 1) if actual > 1 else None, "sig": url(actual + 1) if actual < paginas else None, "todas": url("todo")}}
+
+
 def pagina(titulo, eid, secciones, acciones=None):
     emp = db.session.get(Empresa, eid) if eid else None
+    secciones = [({**s, "tabla": paginar(s["tabla"], f"pag{i}" if i else "pag")} if isinstance(s, dict) and s.get("tabla") else s)
+                 for i, s in enumerate(secciones)]
     return render_template("pagina.html", titulo=titulo, empresa=emp, secciones=secciones, acciones=acciones or [])
 
 

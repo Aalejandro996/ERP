@@ -82,3 +82,5 @@ class ClienteAdmin:
     def reenviar_factura(self, fid): return self._req("POST", f"/admin/v1/facturas/{int(fid)}/reenviar", {})
     def anular_factura(self, fid, motivo): return self._req("POST", f"/admin/v1/facturas/{int(fid)}/anular", {"motivo": motivo})
     def facturar_orden(self, ref): return self._req("POST", f"/admin/v1/ordenes/{ref}/facturar", {})
+    def pendientes_factura(self, org=None): return self._req("GET", "/admin/v1/facturas/pendientes", params={"org": org})["pendientes"]
+    def facturar_cliente(self, org, autor): return self._req("POST", "/admin/v1/facturas/cliente", {"organizacion_ref": str(org), "autor": autor})

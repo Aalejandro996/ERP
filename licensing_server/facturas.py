@@ -114,7 +114,7 @@ def emitir(con, *, cliente_nombre, cliente_rif, cliente_direccion, cliente_corre
     if not cfg["control_hasta"] or cfg["control_siguiente"] > cfg["control_hasta"]:
         raise ErrorFacturaPlataforma("No hay números de control disponibles: registre un nuevo rango asignado por la imprenta")
     if not re.fullmatch(r"[VEJPGC]-\d{8}-\d", (cliente_rif or "").upper()): raise ErrorFacturaPlataforma(f"RIF/cédula del cliente inválido: {cliente_rif!r}")
-    if moneda not in ("VES", "USD", "EUR"): raise ErrorFacturaPlataforma("Moneda inválida")
+    if moneda not in ("VES", "USD", "EUR", "USDT"): raise ErrorFacturaPlataforma("Moneda inválida")
     tasa = Decimal(1) if moneda == "VES" else Decimal(str(tasa_bcv or 0))
     if tasa <= 0: raise ErrorFacturaPlataforma("Falta la tasa BCV del día")
     iva_pct = Decimal(cfg["iva_pct"])

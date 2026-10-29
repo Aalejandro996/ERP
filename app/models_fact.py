@@ -68,7 +68,7 @@ class DocumentoVenta(db.Model):
     cliente_direccion = db.Column(db.Text)
     cliente_telefono = db.Column(db.Text)
     # Moneda: la operación puede expresarse en divisas, pero el documento muestra el equivalente en Bs a la tasa BCV
-    moneda = db.Column(db.String(3), nullable=False, default="VES")
+    moneda = db.Column(db.String(4), nullable=False, default="VES")
     tasa_bcv = db.Column(db.Numeric(18, 6), nullable=False, default=1)
     condicion = db.Column(db.Text, nullable=False)  # Contado | Credito
     fecha_vencimiento = db.Column(db.Date)
@@ -114,7 +114,7 @@ class DocumentoVenta(db.Model):
         CheckConstraint("tipo IN ('FAC','NC','ND')", name="ck_docventa_tipo"),
         CheckConstraint("condicion IN ('Contado','Credito')", name="ck_docventa_condicion"),
         CheckConstraint("estado IN ('Emitido','Anulado')", name="ck_docventa_estado"),
-        CheckConstraint("moneda IN ('VES','USD','EUR') AND tasa_bcv > 0", name="ck_docventa_moneda"),
+        CheckConstraint("moneda IN ('VES','USD','EUR','USDT') AND tasa_bcv > 0", name="ck_docventa_moneda"),
         CheckConstraint("total >= 0 AND total_a_pagar >= total AND saldo_pendiente >= 0 AND saldo_pendiente <= total_a_pagar", name="ck_docventa_montos"),
         CheckConstraint("(tipo = 'FAC') = (documento_afectado_id IS NULL)", name="ck_docventa_afectado"),
     )
@@ -147,12 +147,12 @@ class PagoDocumentoVenta(db.Model):
     empresa_id = db.Column(db.Integer, nullable=False)
     fecha = db.Column(db.Date, nullable=False)
     forma = db.Column(db.Text, nullable=False)
-    moneda = db.Column(db.String(3), nullable=False)
+    moneda = db.Column(db.String(4), nullable=False)
     monto = db.Column(M, nullable=False)               # en la moneda del pago, aplicado al documento (sin IGTF)
     monto_bs = db.Column(M, nullable=False)
     igtf_bs = db.Column(M, nullable=False, default=0)
     referencia = db.Column(db.Text)
     __table_args__ = (
         ForeignKeyConstraint(["documento_id", "empresa_id"], ["documentos_venta.id", "documentos_venta.empresa_id"]),
-        CheckConstraint("monto > 0 AND monto_bs > 0 AND moneda IN ('VES','USD','EUR')", name="ck_pago_venta"),
+        CheckConstraint("monto > 0 AND monto_bs > 0 AND moneda IN ('VES','USD','EUR','USDT')", name="ck_pago_venta"),
     )

@@ -105,11 +105,11 @@ def factura_nueva(eid):
     datos_js = json.dumps({"clientes": {c.rif: [c.razon_social, c.direccion or "", c.telefono or ""] for c in clientes},
                            "productos": {p.codigo: [p.nombre, str(p.precio_venta), p.alicuota_iva, str(p.cantidad_actual)] for p in productos},
                            "alicuotas": {k: str(v) for k, v in alic.items()}, "igtf": bool(emp.es_sujeto_pasivo_especial),
-                           "tasas": {m: str(SF.tasa_del_dia(hoy_ve(), m) or "") for m in ("USD", "EUR")}})
+                           "tasas": {m: str(SF.tasa_del_dia(hoy_ve(), m) or "") for m in emp.divisas()}})
     datos_js = datos_js.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")  # un nombre con "</script>" no rompe el bloque
     return render_template("factura_nueva.html", titulo=f"Nueva {NOMBRE_DOC[tipo].lower()}", empresa=emp, tipo=tipo, afectado=afectado, lineas_af=lineas_af,
                            series=series, clientes=clientes, productos=productos, datos_js=datos_js, n_lineas=N_LINEAS, n_pagos=N_PAGOS, hoy=hoy(),
-                           tasa=SF.tasa_del_dia(hoy_ve()), formas=calc.FORMAS_PAGO, monedas=calc.MONEDAS, alic_txt=ALIC_TXT, form=request.form)
+                           tasa=SF.tasa_del_dia(hoy_ve()), formas=calc.FORMAS_PAGO, monedas=["VES", *emp.divisas()], alic_txt=ALIC_TXT, form=request.form)
 
 
 @ruta("/e/<int:eid>/facturacion/<int:did>", "facturacion.ver")
@@ -123,7 +123,7 @@ def factura_ver(eid, did):
     afectado = db.session.get(DocumentoVenta, d.documento_afectado_id) if d.documento_afectado_id else None
     notas = db.session.execute(select(DocumentoVenta).where(DocumentoVenta.documento_afectado_id == d.id).order_by(DocumentoVenta.id)).scalars().all()
     return render_template("factura.html", titulo=f"{NOMBRE_DOC[d.tipo]} {SF.numero_completo(d)}", empresa=emp, d=d, serie=serie, lineas=lineas, pagos=pagos,
-                           afectado=afectado, notas=notas, nombre_doc=NOMBRE_DOC, num=SF.numero_completo, formas=calc.FORMAS_PAGO, monedas=calc.MONEDAS,
+                           afectado=afectado, notas=notas, nombre_doc=NOMBRE_DOC, num=SF.numero_completo, formas=calc.FORMAS_PAGO, monedas=["VES", *emp.divisas()],
                            hoy=hoy(), puede_emitir=tiene_permiso(g.usuario, "facturacion.emitir"), puede_anular=tiene_permiso(g.usuario, "facturacion.anular"),
                            es_hoy=d.fecha_emision == hoy_ve())
 
@@ -152,7 +152,8 @@ def series(eid):
     if request.method == "POST":
         a = F["accion"]
         def guardar():
-            desde, hasta = int(F["desde"]), int(F["hasta"])
+            if a == "monedas": desde = hasta = 1
+            else: desde, hasta = int(F["desde"]), int(F["hasta"])
             if desde < 1 or hasta < desde: raise ValueError("Rango de control inválido")
             if a == "serie":
                 serie = (F.get("serie") or "").strip().upper()[:3]
@@ -162,6 +163,11 @@ def series(eid):
                                                 control_hasta=hasta, imprenta_razon_social=F["imprenta"].strip(), imprenta_rif=imp_rif,
                                                 imprenta_providencia=F["providencia"].strip(), fecha_asignacion=parsear_fecha(F["fecha"])))
                 registrar(g.usuario.username, "SERIE_CREADA", f"empresa={eid} serie={serie} control={desde}-{hasta}")
+            elif a == "monedas":
+                elegidas = [m for m in ("USD", "EUR", "USDT") if m in F.getlist("monedas")]
+                emp = db.session.get(Empresa, eid); emp.monedas = ",".join(elegidas)
+                registrar(g.usuario.username, "MONEDAS_EMPRESA", f"empresa={eid} divisas={emp.monedas or 'ninguna'}")
+                db.session.commit(); return
             elif a == "rango":
                 s = db.session.execute(select(SerieFacturacion).where(SerieFacturacion.id == int(F["sid"]), SerieFacturacion.empresa_id == eid).with_for_update()).scalar_one_or_none()
                 if s is None: raise ValueError("Serie no encontrada")
@@ -179,6 +185,11 @@ def series(eid):
              tabla=dict(cols=["Serie", "Próx. factura", "Próx. NC", "Próx. ND", "Próx. control", "Control hasta", "Disponibles", "Imprenta", "Providencia"], num=[1, 2, 3, 6], filas=[
                  dict(cells=[s.serie or "(sin serie)", s.siguiente_fac, s.siguiente_nc, s.siguiente_nd, calc.control_fmt(s.control_prefijo, s.control_siguiente),
                              calc.control_fmt(s.control_prefijo, s.control_hasta), max(s.control_hasta - s.control_siguiente + 1, 0), f"{s.imprenta_razon_social} ({s.imprenta_rif})", s.imprenta_providencia]) for s in ss])),
+        dict(titulo="Monedas con las que factura la empresa", nota="El bolívar siempre está disponible. Las divisas marcadas aparecen al facturar y al cobrar; "
+                                                                  "USDT se convierte con la tasa BCV del dólar y, como pago en divisas, genera IGTF si la empresa es contribuyente especial.",
+             form=dict(action=request.path, boton="Guardar monedas", campos=[campo("accion", "", "hidden", valor="monedas"),
+                       campo("monedas", "Divisas", "checks", req=False, opciones=[("USD", "Dólares (USD)"), ("EUR", "Euros (EUR)"), ("USDT", "USDT")],
+                             valor=db.session.get(Empresa, eid).divisas())])),
         dict(titulo="Nueva serie", form=dict(action=request.path, boton="Crear serie", campos=[
             h("serie"), campo("serie", "Serie (vacío = sin serie)", req=False), campo("prefijo", "Prefijo de control", valor="00"), campo("desde", "Control desde", "number"), campo("hasta", "Control hasta", "number"),
             campo("imprenta", "Imprenta autorizada (razón social)"), campo("imprenta_rif", "RIF de la imprenta"), campo("providencia", "Providencia de la imprenta (N° y fecha)"),

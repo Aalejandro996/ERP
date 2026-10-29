@@ -10,7 +10,8 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 D2, D4 = Decimal("0.01"), Decimal("0.0001")
 ALICUOTAS = ("G", "R", "A", "E")
 FORMAS_PAGO = ("Efectivo", "Transferencia", "Pago móvil", "Punto de venta", "Depósito", "Zelle", "Otro")
-MONEDAS = ("VES", "USD", "EUR")
+MONEDAS = ("VES", "USD", "EUR", "USDT")   # USDT: equivalente en Bs a la tasa BCV del dólar
+DIVISAS = MONEDAS[1:]
 
 
 class ErrorFactura(ValueError):
@@ -76,10 +77,11 @@ def calcular(lineas, pct, moneda="VES", tasa=1):
             "total_divisa": q2(total / tasa) if moneda != "VES" else None}
 
 
-def aplicar_pagos(total_bs, pagos, tasa, igtf_pct=0, aplica_igtf=False):
+def aplicar_pagos(total_bs, pagos, tasa, igtf_pct=0, aplica_igtf=False, tasas=None):
     """pagos: [{forma, moneda, monto, referencia}] — monto APLICADO al documento en la moneda del pago.
     Valida que cubran exactamente el total (tolerancia de 1 céntimo por pago en divisas, absorbida por el último)
-    y calcula el IGTF sobre los pagos en divisas. Devuelve (pagos_normalizados, igtf_base, igtf_total)."""
+    y calcula el IGTF sobre los pagos en divisas (incluido USDT). `tasas`: {moneda: tasa BCV} para pagar en una divisa distinta
+    a la del documento (USDT usa la del dólar); sin ella se usa `tasa`. Devuelve (pagos_normalizados, igtf_base, igtf_total)."""
     tasa, total_bs, igtf_pct = _dec(tasa), _dec(total_bs), _dec(igtf_pct)
     norm, suma, divisas = [], Decimal(0), []
     for i, p in enumerate(pagos, 1):
@@ -88,7 +90,13 @@ def aplicar_pagos(total_bs, pagos, tasa, igtf_pct=0, aplica_igtf=False):
         if mon not in MONEDAS: raise ErrorFactura(f"Moneda inválida (pago {i})")
         m = q2(_dec(p.get("monto"), f"Monto (pago {i})"))
         if m <= 0: raise ErrorFactura(f"El monto del pago {i} debe ser mayor que cero")
-        mbs = m if mon == "VES" else q2(m * tasa)
+        if mon == "VES": t_pago = Decimal(1)
+        elif tasas is not None:
+            if not tasas.get(mon): raise ErrorFactura(f"Falta la tasa BCV de {mon} (pago {i})")
+            t_pago = _dec(tasas[mon], "Tasa")
+        else: t_pago = _dec(tasa, "Tasa")
+        if t_pago <= 0: raise ErrorFactura(f"Tasa inválida (pago {i})")
+        mbs = m if mon == "VES" else q2(m * t_pago)
         x = {"forma": p["forma"], "moneda": mon, "monto": m, "monto_bs": mbs, "igtf_bs": Decimal(0), "referencia": (p.get("referencia") or "")[:120]}
         norm.append(x); suma += mbs
         if mon != "VES": divisas.append(x)

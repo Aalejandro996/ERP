@@ -95,6 +95,7 @@ def tasa_vigente(fecha, moneda="USD"):
     """Última tasa con vigencia ≤ fecha para USD o EUR (None si no hay)."""
     from .models2 import TasaCambio
     if moneda == "VES": return Decimal(1)
+    if moneda == "USDT": moneda = "USD"   # el BCV no publica USDT: se usa la tasa oficial del dólar
     if fecha >= hoy_ve(): actualizar_si_falta()
     col = TasaCambio.tasa_eur_ves if moneda == "EUR" else TasaCambio.tasa_usd_ves
     return db.session.execute(select(col).where(TasaCambio.fecha <= fecha, col.is_not(None)).order_by(TasaCambio.fecha.desc()).limit(1)).scalar()

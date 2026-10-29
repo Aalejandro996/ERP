@@ -56,7 +56,7 @@ def entorno():
     with app_owner.app_context():
         db.session.execute(text("CREATE EXTENSION IF NOT EXISTS citext")); db.session.commit()
         db.create_all()
-        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql"):
+        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql"):
             db.session.execute(text(pathlib.Path("migrations", m).read_text(encoding="utf-8"))); db.session.commit()
     with owner.connect() as c:
         c.execute(text("GRANT USAGE ON SCHEMA public TO erp_app"))
@@ -228,6 +228,11 @@ def test_flujo_completo(entorno):
     a.post(f"/e/{eid_a}/facturacion/{did2}/cobro", data={"fecha": hoy_ve().isoformat(), "forma": "Transferencia", "moneda": "VES", "monto": "40"})
     r = a.post(f"/e/{eid_a}/facturacion/{did2}/anular", data={"motivo": "error"}, follow_redirects=True)
     assert "nota de crédito".encode() in r.data
+    # Divisas de la empresa: sin habilitar USDT se rechaza; al habilitarla se factura en USDT con la tasa del dólar
+    r = emitir(a, eid_a, moneda="USDT", tasa="36.5", l1_desc="X", l1_cant="1", l1_precio="1", p1_forma="Otro", p1_moneda="USDT", p1_monto="1.16")
+    assert "no tiene habilitado".encode() in r.data
+    a.post(f"/e/{eid_a}/facturacion/series", data={"accion": "monedas", "monedas": ["USD", "EUR", "USDT"]})
+    assert dueño(f"SELECT monedas FROM empresas WHERE id={eid_a}") == "USD,EUR,USDT"
     # NC sobre la factura 1 con devolución al inventario
     r = a.post(f"/e/{eid_a}/facturacion/nueva", data={"tipo": "NC", "afectado": d1.id, "serie_id": sid, "fecha": hoy_ve().isoformat(), "motivo": "Devolución",
                                                      "reintegrar": "1", "l1_prod": "P1", "l1_desc": "Producto uno", "l1_cant": "1", "l1_precio": "10", "l1_alic": "G"})
@@ -333,14 +338,15 @@ def test_flujo_completo(entorno):
                                             "imprenta_razon_social": "Imprenta Digital SA", "imprenta_rif": "J-44444444-4", "imprenta_providencia": "SENIAT/2026/1"})
     root.post("/plataforma/facturas", data={"accion": "rango", "desde": "1", "hasta": "50", "fecha": "2026-10-01"})
     n = len(entorno["correos_lic"])
-    r = root.post("/plataforma/facturas", data={"accion": "orden", "ref": ref}, follow_redirects=True)
-    assert "Factura emitida".encode() in r.data and len(entorno["correos_lic"]) == n + 1 and entorno["correos_lic"][-1][0] == "b@beta.test"
+    r = root.post("/plataforma/facturas", data={"accion": "cliente", "org": org_b}, follow_redirects=True)   # solo se elige el cliente
+    assert "construida".encode() in r.data and len(entorno["correos_lic"]) == n + 1 and entorno["correos_lic"][-1][0] == "b@beta.test"
+    r = root.get("/plataforma/facturas/ejemplo")
+    assert r.status_code == 200 and "EJEMPLO".encode() in r.data and b"gigadevs.png" in r.data
     r = root.get("/plataforma/facturas/1")
     assert r.status_code == 200 and b"FACTURA" in r.data and b"gigadevs.png" in r.data and b"J-33333333-3" in r.data
     assert "script-src 'none'" in r.headers["Content-Security-Policy"]
-    r = root.post("/plataforma/facturas", data={"accion": "crear", "org": "", "cliente_nombre": "Externo", "cliente_rif": "v-12345678-9", "moneda": "USD",
-                                                "l1_desc": "Implementación", "l1_cant": "1", "l1_precio": "100", "l1_alic": "G"})
-    assert r.status_code == 302 and "/plataforma/facturas/2" in r.headers["Location"]
+    r = root.post("/plataforma/facturas", data={"accion": "cliente", "org": org_b}, follow_redirects=True)
+    assert "no tiene ventas pendientes".encode() in r.data
     assert a.get("/plataforma/facturas").status_code == 403
     with owner.connect() as c:
         assert c.execute(text("SELECT count(*) FROM equipos")).scalar() == 2

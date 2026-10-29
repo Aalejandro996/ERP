@@ -79,6 +79,7 @@ def emitir_documento(eid, u, datos, modulos) -> DocumentoVenta:
         cliente = datos["cliente"]
         if not cliente.get("rif") or not cliente.get("nombre"): raise ErrorFactura("Indique RIF/cédula y nombre o razón social del adquirente")
         moneda, condicion = datos.get("moneda", "VES"), datos.get("condicion", "Contado")
+        if moneda != "VES" and moneda not in emp.divisas(): raise ErrorFactura(f"La empresa no tiene habilitado facturar en {moneda} (Facturación → Series y control)")
     if condicion not in ("Contado", "Credito"): raise ErrorFactura("Condición de pago inválida")
     tasa = datos.get("tasa") or (tasa_del_dia(f, moneda) if moneda != "VES" else 1)
     if moneda != "VES" and not tasa: raise ErrorFactura("Indique la tasa BCV del día para operaciones en divisas")
@@ -93,7 +94,11 @@ def emitir_documento(eid, u, datos, modulos) -> DocumentoVenta:
     pagos, igtf_base, igtf = [], Decimal(0), Decimal(0)
     if tipo != "NC" and condicion == "Contado":
         if aplica_igtf and "IGTF" not in alic: raise ErrorFactura("Falta la alícuota de IGTF vigente (la carga el administrador de la plataforma)")
-        pagos, igtf_base, igtf = F.aplicar_pagos(calc["total"], datos.get("pagos") or [], calc["tasa_bcv"], alic.get("IGTF", 0), aplica_igtf)
+        permitidas = {"VES", *emp.divisas()}
+        if any(p.get("moneda") not in permitidas for p in datos.get("pagos") or []): raise ErrorFactura("Un pago está en una moneda que la empresa no tiene habilitada")
+        tasas_pago = {m: (calc["tasa_bcv"] if m == moneda else tasa_del_dia(f, m)) for m in permitidas - {"VES"}}
+        tasas_pago = {m: t for m, t in tasas_pago.items() if t}
+        pagos, igtf_base, igtf = F.aplicar_pagos(calc["total"], datos.get("pagos") or [], calc["tasa_bcv"], alic.get("IGTF", 0), aplica_igtf, tasas_pago)
     elif tipo == "FAC" and condicion == "Credito":
         venc = parsear_fecha(datos.get("vencimiento") or f)
         if venc < f: raise ErrorFactura("El vencimiento no puede ser anterior a la emisión")
@@ -180,6 +185,7 @@ def registrar_cobro_doc(eid, u, did, fecha, forma, moneda, monto, tasa, referenc
     if d.estado != "Emitido" or d.tipo == "NC" or d.saldo_pendiente <= 0: raise ErrorFactura("El documento no tiene saldo por cobrar")
     f = parsear_fecha(fecha)
     if forma not in F.FORMAS_PAGO or moneda not in F.MONEDAS: raise ErrorFactura("Forma de pago o moneda inválida")
+    if moneda != "VES" and moneda not in db.session.get(Empresa, eid).divisas(): raise ErrorFactura(f"La empresa no tiene habilitado cobrar en {moneda}")
     m = F.q2(F._dec(monto, "Monto"))
     if m <= 0: raise ErrorFactura("El monto debe ser mayor que cero")
     t = F._dec(tasa or tasa_del_dia(f, moneda) or 0, "Tasa") if moneda != "VES" else Decimal(1)

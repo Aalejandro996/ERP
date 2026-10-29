@@ -10,7 +10,7 @@
       <div>Fecha: {{ d.fecha_emision.strftime('%d/%m/%Y') }} · Hora: {{ (d.emitido_en|hora_ve).strftime('%I:%M %p') }}</div><div class="peq">Página 1 de 1</div></div></div>
   <div class="doc-bloques"><div><b>Adquirente</b><br>{{ d.cliente_nombre }}<br>RIF/C.I.: {{ d.cliente_rif }}<br>{{ d.cliente_direccion or '' }} {{ d.cliente_telefono or '' }}</div>
     <div><b>Condiciones</b><br>Pago: {{ 'Contado' if d.condicion == 'Contado' else 'Crédito' }}{% if d.fecha_vencimiento %} · vence {{ d.fecha_vencimiento.strftime('%d/%m/%Y') }}{% endif %}<br>
-      Moneda: {{ d.moneda }}{% if not ve %} · Tasa BCV: {{ '%.4f'|format(d.tasa_bcv) }} Bs/{{ d.moneda }}{% endif %}
+      Moneda: {{ d.moneda }}{% if not ve %} · Tasa BCV: {{ '%.4f'|format(d.tasa_bcv) }} Bs/{{ d.moneda }}{% if d.moneda == 'USDT' %} (tasa oficial del dólar){% endif %}{% endif %}
       {% if afectado %}<br><b>Factura afectada:</b> N° {{ num(afectado) }} del {{ afectado.fecha_emision.strftime('%d/%m/%Y') }} (control {{ afectado.numero_control }}){% endif %}
       {% if d.motivo %}<br><b>Motivo:</b> {{ d.motivo }}{% endif %}</div></div>
   <div class="tabla-wrap"><table><thead><tr><th>Descripción</th><th class="n">Cant.</th><th class="n">Precio unit. ({{ d.moneda }})</th><th class="n">Desc. %</th><th class="n">Monto (Bs)</th></tr></thead><tbody>

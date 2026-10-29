@@ -247,7 +247,7 @@ def admin_licencia():
         if ordenes:
             secs.append(dict(titulo="Mis órdenes", tabla=dict(cols=["Orden", "Plan", "Meses", "Moneda", "Monto", "Estado"], num=[4], filas=[
                 dict(cells=[x["ref"], x["plan"], x["meses"], x["moneda"], x["monto"], x["estado"].replace("_", " ")], url=url_for("web.admin_licencia", orden=x["ref"])) for x in ordenes])))
-    planes = [dict(cells=[p["nombre"], ", ".join(MODULOS[m] for m in sorted(p["modulos"]))]) for p in PLANES.values()]
+    planes = [dict(cells=[p["nombre"], ", ".join(MODULOS[m] for m in sorted(p["modulos"])) or "A su medida: elija los módulos con Gigadevs"]) for p in PLANES.values()]
     secs += [dict(titulo="Activar licencia", nota="Pegue la clave que recibió por correo. Cada clave se vincula a su organización.",
                   form=dict(action=request.path, boton="Activar", campos=[h("activar"), campo("clave", "Clave de licencia")])),
              dict(titulo="Renovar ahora", nota="Trae de inmediato los cambios de plan o de topes hechos por el proveedor.", form=dict(action=request.path, boton="Renovar", campos=[h("renovar")])),

@@ -183,3 +183,15 @@ button.peligro{background:var(--danger);color:#fff}
   .documento{border:0;box-shadow:none;padding:0}
   @page{size:letter;margin:14mm}
 }
+
+/* casillas múltiples (p. ej. módulos del plan personalizado) */
+.checks{display:flex;flex-wrap:wrap;gap:6px 14px;padding:.4rem 0}
+label.check{flex-direction:row;align-items:center;gap:6px;font-size:.9rem;color:var(--text);font-weight:500}
+label.check input{width:auto}
+/* paginación de tablas */
+.paginacion{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:12px;font-size:.85rem;color:var(--muted)}
+.paginacion nav{display:flex;gap:4px;flex-wrap:wrap}
+.paginacion a,.paginacion span.actual{min-width:34px;text-align:center;padding:.35rem .6rem;border-radius:8px;border:1px solid var(--line);text-decoration:none;color:var(--ink)}
+.paginacion a:hover{border-color:var(--ink)}
+.paginacion span.actual{background:var(--ink);color:var(--surface);border-color:var(--ink)}
+.paginacion span.gap{padding:.35rem .2rem}
