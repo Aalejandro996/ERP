@@ -72,3 +72,13 @@ class ClienteAdmin:
     def confirmar(self, ref, autor): return self._req("POST", f"/admin/v1/ordenes/{ref}/confirmar", {"autor": autor})
     def rechazar(self, ref, motivo): return self._req("POST", f"/admin/v1/ordenes/{ref}/rechazar", {"motivo": motivo})
     def verificar(self, ref): return self._req("POST", f"/admin/v1/ordenes/{ref}/verificar", {})
+    # facturación de Gigadevs
+    def fx_config(self): return self._req("GET", "/admin/v1/facturacion/config")
+    def fx_guardar(self, **d): return self._req("PUT", "/admin/v1/facturacion/config", d)
+    def fx_rango(self, **d): return self._req("POST", "/admin/v1/facturacion/rango", d)
+    def facturas(self): return self._req("GET", "/admin/v1/facturas")["facturas"]
+    def factura(self, fid): return self._req("GET", f"/admin/v1/facturas/{int(fid)}")["factura"]
+    def crear_factura(self, **d): return self._req("POST", "/admin/v1/facturas", d)
+    def reenviar_factura(self, fid): return self._req("POST", f"/admin/v1/facturas/{int(fid)}/reenviar", {})
+    def anular_factura(self, fid, motivo): return self._req("POST", f"/admin/v1/facturas/{int(fid)}/anular", {"motivo": motivo})
+    def facturar_orden(self, ref): return self._req("POST", f"/admin/v1/ordenes/{ref}/facturar", {})

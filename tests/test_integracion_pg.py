@@ -326,6 +326,22 @@ def test_flujo_completo(entorno):
     root.post("/plataforma/pagos", data={"accion": "confirmar", "ref": ref})                       # doble clic: no reenvía
     assert len(entorno["correos_lic"]) == n + 1 and entorno["correos_lic"][-1][0] == "b@beta.test"
     assert a.post("/admin/licencia", data={"accion": "informar", "ref": ref, "referencia": "1234"}).status_code == 302   # otra organización: rechazado
+    # Facturación Gigadevs: sin configurar la licencia se entregó igual; se configura y se factura la orden pendiente
+    assert b"Licencias pagadas sin factura" in root.get("/plataforma/facturas").data
+    root.post("/plataforma/facturas", data={"accion": "emisor", "razon_social": "Gigadevs Corp", "rif": "J-50000000-1", "domicilio": "Caracas",
+                                            "contribuyente_especial": "0", "iva_pct": "16", "serie": "A", "control_prefijo": "00",
+                                            "imprenta_razon_social": "Imprenta Digital SA", "imprenta_rif": "J-44444444-4", "imprenta_providencia": "SENIAT/2026/1"})
+    root.post("/plataforma/facturas", data={"accion": "rango", "desde": "1", "hasta": "50", "fecha": "2026-10-01"})
+    n = len(entorno["correos_lic"])
+    r = root.post("/plataforma/facturas", data={"accion": "orden", "ref": ref}, follow_redirects=True)
+    assert "Factura emitida".encode() in r.data and len(entorno["correos_lic"]) == n + 1 and entorno["correos_lic"][-1][0] == "b@beta.test"
+    r = root.get("/plataforma/facturas/1")
+    assert r.status_code == 200 and b"FACTURA" in r.data and b"gigadevs.png" in r.data and b"J-33333333-3" in r.data
+    assert "script-src 'none'" in r.headers["Content-Security-Policy"]
+    r = root.post("/plataforma/facturas", data={"accion": "crear", "org": "", "cliente_nombre": "Externo", "cliente_rif": "v-12345678-9", "moneda": "USD",
+                                                "l1_desc": "Implementación", "l1_cant": "1", "l1_precio": "100", "l1_alic": "G"})
+    assert r.status_code == 302 and "/plataforma/facturas/2" in r.headers["Location"]
+    assert a.get("/plataforma/facturas").status_code == 403
     with owner.connect() as c:
         assert c.execute(text("SELECT count(*) FROM equipos")).scalar() == 2
 

@@ -117,7 +117,8 @@ def create_app(config_obj=None):
     @app.after_request
     def cabeceras(resp):
         resp.headers["Content-Security-Policy"] = ("default-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; "
-                                                   "base-uri 'self'; form-action 'self'")
+                                                   "base-uri 'self'; form-action 'self'"
+                                                   + ("; style-src 'self' 'unsafe-inline'; script-src 'none'" if getattr(g, "csp_estilos_en_linea", False) else ""))
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["X-Frame-Options"] = "DENY"
         # same-origin: el Referer solo viaja dentro del ERP (lo exige la protección CSRF sobre HTTPS) y nunca a otros sitios

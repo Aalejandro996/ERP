@@ -258,3 +258,66 @@ def test_pago_movil_en_bolivares_lo_confirma_el_maestro(e):
     e.admin.confirmar(o["ref"], "maestro"); e.admin.confirmar(o["ref"], "maestro")       # doble clic
     assert len(e.correos) == 1 and e.correos[0][0] == "adm@alfa.test"
     with pytest.raises(ErrorAdmin): e.admin.crear_orden(organizacion_ref="9", cliente="A", correo="x@y.test", plan="CASH", meses=7, moneda="VES", tasa_bcv="36")
+
+
+# ------------------------------------------------------------------ facturación de Gigadevs
+def _configurar_facturacion(e):
+    e.admin.fx_guardar(razon_social="Gigadevs Corp", rif="j-50000000-1", domicilio="Caracas, Venezuela", iva_pct="16", serie="A",
+                       imprenta_razon_social="Imprenta Digital SA", imprenta_rif="J-44444444-4", imprenta_providencia="SENIAT/INTI/2026/0001")
+    e.admin.fx_rango(desde=1, hasta=3, fecha="2026-10-01")
+
+
+def test_licencia_pagada_llega_con_su_factura_en_un_segundo_correo(e):
+    _configurar_facturacion(e)
+    e.admin.fijar_precio(plan="CASH", meses=1, monto_usd="25", max_usuarios=3, max_empresas=1, max_equipos=2)
+    o = e.admin.crear_orden(organizacion_ref="5", cliente="Bodega SA", correo="a@b.test", plan="CASH", meses=1, moneda="USDT",
+                            tasa_bcv="887.302", cliente_rif="J-12345678-9")
+    e.t[0] += 60; e.bf.pago(o["monto_esperado"], e.t[0], "T1")
+    e.app.extensions["revisar_pendientes"](); e.app.extensions["revisar_pendientes"]()
+    assert [c[1] for c in e.correos] == ["Su licencia ERP (CASH)", "Factura N° A00000001 · ERP"]       # clave y luego factura, una vez
+    f = e.admin.facturas()[0]
+    exacto = Decimal(o["monto_esperado"])
+    assert f["orden_ref"] == o["ref"] and f["numero_control"] == "00-00000001" and f["cliente_rif"] == "J-12345678-9"
+    assert Decimal(f["total"]) == (exacto * Decimal("887.302")).quantize(Decimal("0.01"))               # el total es lo cobrado (IVA incluido)
+    assert Decimal(f["base"]) + Decimal(f["iva"]) == Decimal(f["total"]) and Decimal(f["iva_pct"]) == 16
+    assert "Gigadevs Corp" in e.correos[1][2] and "N° de Control" not in e.correos[0][2]
+    e.admin.facturar_orden(o["ref"])                                                                    # idempotente
+    assert len(e.admin.facturas()) == 1
+
+
+def test_sin_rango_la_licencia_se_entrega_y_se_factura_despues(e):
+    e.admin.fijar_precio(plan="CASH", meses=1, monto_usd="25", max_usuarios=3, max_empresas=1, max_equipos=2)
+    o = e.admin.crear_orden(organizacion_ref="9", cliente="Alfa", correo="adm@alfa.test", plan="CASH", meses=1, moneda="VES", tasa_bcv="887.30",
+                            cliente_rif="J-11111111-1")
+    e.admin.informar_pago(o["ref"], organizacion_ref="9", referencia="00123456")
+    e.admin.confirmar(o["ref"], "maestro")
+    assert len(e.correos) == 1 and e.admin.facturas() == []                                            # licencia sí, factura pendiente
+    with pytest.raises(ErrorAdmin, match="Configure"): e.admin.facturar_orden(o["ref"])
+    _configurar_facturacion(e)
+    e.admin.facturar_orden(o["ref"])
+    f = e.admin.facturas()[0]
+    assert f["moneda"] == "VES" and Decimal(f["total"]) == Decimal(o["monto"]) and len(e.correos) == 2
+
+
+def test_construir_factura_manual_anular_y_cadena(e):
+    _configurar_facturacion(e)
+    r = e.admin.crear_factura(cliente_nombre="Cliente Externo", cliente_rif="V-12345678-9", cliente_correo="x@y.test", moneda="USD", tasa_bcv="887.302",
+                              lineas=[{"descripcion": "Implementación", "cantidad": "2", "precio": "100", "alicuota": "G"},
+                                      {"descripcion": "Capacitación", "cantidad": "1", "precio": "50", "alicuota": "E"}])
+    f = e.admin.factura(r["id"])
+    assert f["numero_completo"] == "A00000001" and Decimal(f["iva"]) == (Decimal("177460.40") * Decimal("0.16")).quantize(Decimal("0.01"))
+    assert Decimal(f["exento"]) == Decimal("44365.10") and len(e.correos) == 1 and "Capacitación" in e.correos[0][2]
+    with pytest.raises(ErrorAdmin, match="RIF"): e.admin.crear_factura(cliente_nombre="X", cliente_rif="123", moneda="VES", lineas=[{"descripcion": "a", "cantidad": "1", "precio": "1", "alicuota": "G"}])
+    with pytest.raises(ErrorAdmin, match="motivo"): e.admin.anular_factura(r["id"], "")
+    e.admin.anular_factura(r["id"], "Error en el adquirente")
+    assert e.admin.factura(r["id"])["estado"] == "Anulada"
+    with pytest.raises(ErrorAdmin): e.admin.anular_factura(r["id"], "otra vez")
+    e.admin.crear_factura(cliente_nombre="Y", cliente_rif="J-22222222-2", moneda="VES", lineas=[{"descripcion": "a", "cantidad": "1", "precio": "1", "alicuota": "G"}], enviar=False)
+    e.admin.crear_factura(cliente_nombre="Z", cliente_rif="J-33333333-3", moneda="VES", lineas=[{"descripcion": "a", "cantidad": "1", "precio": "1", "alicuota": "G"}], enviar=False)
+    with pytest.raises(ErrorAdmin, match="control"):                                                   # rango 1..3 agotado
+        e.admin.crear_factura(cliente_nombre="W", cliente_rif="J-44444444-4", moneda="VES", lineas=[{"descripcion": "a", "cantidad": "1", "precio": "1", "alicuota": "G"}])
+    assert e.admin.fx_config()["cadena_integra"] is True
+    from licensing_server import facturas as fx
+    from sqlalchemy import update
+    with e.st.eng.begin() as c: c.execute(update(fx.facturas).where(fx.facturas.c.id == 2).values(total=Decimal("1")))
+    assert e.admin.fx_config()["cadena_integra"] is False                                               # alterar una factura se detecta

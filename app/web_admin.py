@@ -184,8 +184,9 @@ def admin_licencia():
                 tasa = SFT.tasa_vigente(hoy_ve(), "USD") if moneda == "VES" else None
                 if moneda == "VES" and not tasa: raise ValueError("No hay tasa BCV cargada; intente más tarde.")
                 plan, meses = F["oferta"].split(":", 1)
+                tasa = tasa or SFT.tasa_vigente(hoy_ve(), "USD")  # también en USDT: la factura lleva el equivalente en Bs
                 o = adm.crear_orden(organizacion_ref=str(org.id), cliente=org.nombre, correo=g.usuario.email, plan=plan, meses=int(meses), moneda=moneda,
-                                    tasa_bcv=str(tasa) if tasa else None)
+                                    tasa_bcv=str(tasa) if tasa else None, cliente_rif=org.rif)
                 registrar(g.usuario.username, "ORDEN_LICENCIA", f"{o['ref']} {plan} {meses}m {o['monto']} {moneda}"); db.session.commit()
                 return redirect(url_for("web.admin_licencia", orden=o["ref"]))
             if a == "verificar":

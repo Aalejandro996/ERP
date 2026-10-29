@@ -70,13 +70,15 @@ ordenes = Table(
     Column("estado", String(14), nullable=False, default="pendiente"), Column("checkout_url", Text), Column("prepay_id", Text),
     Column("referencia_pago", Text), Column("detalle_pago", Text), Column("licencia_id", Integer),
     Column("creada_en", Float, nullable=False), Column("pagada_en", Float), Column("entregada_en", Float), Column("motivo", Text),
-    Column("monto_esperado", Numeric(18, 4)), Column("expira_en", Float), Column("instrucciones", Text))
+    Column("monto_esperado", Numeric(18, 4)), Column("expira_en", Float), Column("instrucciones", Text),
+    Column("cliente_rif", Text), Column("cliente_direccion", Text))
 # Cada transacción de Binance paga como máximo UNA orden (la clave primaria lo impone en la base de datos)
 pagos_usados = Table(
     "lic_pagos_usados", md,
     Column("pago_id", String(120), primary_key=True), Column("orden_ref", String(32), nullable=False),
     Column("monto", Numeric(18, 8), nullable=False), Column("registrado_en", Float, nullable=False))
-COLUMNAS_NUEVAS = {"lic_ordenes": [("monto_esperado", "NUMERIC(18,4)"), ("expira_en", "FLOAT"), ("instrucciones", "TEXT")]}
+COLUMNAS_NUEVAS = {"lic_ordenes": [("monto_esperado", "NUMERIC(18,4)"), ("expira_en", "FLOAT"), ("instrucciones", "TEXT"),
+                                   ("cliente_rif", "TEXT"), ("cliente_direccion", "TEXT")]}
 
 
 def _h(clave: str) -> str:
@@ -94,6 +96,16 @@ def _dec(v, nombre="monto") -> Decimal:
         raise ValueError(f"{nombre} inválido") from e
     if not d.is_finite() or d <= 0 or d > Decimal("1000000000"):
         raise ValueError(f"{nombre} fuera de rango")
+    return d
+
+
+def _tasa(v) -> Decimal:
+    """Tasa BCV con su precisión publicada (hasta 6 decimales); no se redondea a céntimos."""
+    try:
+        d = Decimal(str(v)).quantize(Decimal("0.000001"), ROUND_HALF_UP)
+    except (InvalidOperation, ValueError, TypeError) as e:
+        raise ValueError("tasa BCV inválida") from e
+    if not d.is_finite() or d <= 0 or d > Decimal("100000000"): raise ValueError("tasa BCV fuera de rango")
     return d
 
 
@@ -115,6 +127,8 @@ class Almacen:
         self.eng = create_engine(url, pool_pre_ping=True)
         self.reloj = reloj
         md.create_all(self.eng)
+        from . import facturas as fx
+        fx.instalar(self.eng)
         from sqlalchemy import inspect, text
         with self.eng.begin() as c:  # bases creadas antes: se agregan las columnas nuevas (nombres fijos, no hay datos del usuario)
             for tabla, cols in COLUMNAS_NUEVAS.items():
@@ -317,6 +331,10 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
             lic = con.execute(select(licencias).where(licencias.c.id == lid)).first()
             enviar_clave(con, lid, clave, o.correo, o.cliente, o.plan, lic.vence_en, f"Recibimos su pago (orden {ref}). Esta es su licencia:")
             con.execute(update(ordenes).where(ordenes.c.id == o.id).values(estado="entregada", entregada_en=reloj()))
+        try:  # segundo correo: la factura. Si falla (p. ej. sin rango de control) la licencia ya está entregada y el Maestro factura después.
+            facturar_orden(ref)
+        except Exception as e:  # noqa: BLE001
+            with st.eng.begin() as c: st.log(c, lid, "factura_pendiente", f"orden={ref} {str(e)[:200]}")
         return {"estado": "entregada", "licencia_id": lid}
 
     # ------------------------------------------------------------------ API admin (Maestro), firmada
@@ -414,12 +432,15 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         with st.eng.connect() as c:
             p = c.execute(select(precios).where(precios.c.plan == plan, precios.c.meses == meses)).first()
         if p is None: raise ValueError("Ese plan/período no está a la venta")
-        tasa = _dec(d.get("tasa_bcv"), "tasa BCV") if moneda == "VES" else None
+        tasa = _tasa(d.get("tasa_bcv")) if moneda == "VES" else (_tasa(d["tasa_bcv"]) if d.get("tasa_bcv") else None)
+        cliente_rif = str(d.get("cliente_rif") or "").strip().upper()[:15]
+        if cliente_rif and not re.fullmatch(r"[VEJPGC]-\d{8}-\d", cliente_rif): raise ValueError("RIF del cliente inválido")
         monto = p.monto_usd if moneda == "USDT" else (p.monto_usd * tasa).quantize(Decimal("0.01"), ROUND_HALF_UP)
         ref = "ERP" + secrets.token_hex(8).upper()
         fila = dict(ref=ref, organizacion_ref=org, cliente=str(d.get("cliente") or "Cliente")[:200], correo=d["correo"], plan=plan, meses=meses,
                     max_usuarios=p.max_usuarios, max_empresas=p.max_empresas, max_equipos=p.max_equipos, moneda=moneda, monto=monto,
-                    monto_usd=p.monto_usd, tasa_bcv=tasa, proveedor="binance" if moneda == "USDT" else "pago_movil", estado="pendiente", creada_en=reloj())
+                    monto_usd=p.monto_usd, tasa_bcv=tasa, proveedor="binance" if moneda == "USDT" else "pago_movil", estado="pendiente", creada_en=reloj(),
+                    cliente_rif=cliente_rif or None, cliente_direccion=str(d.get("cliente_direccion") or "")[:300] or None)
         resp = {"ref": ref, "monto": str(monto), "moneda": moneda}
         if moneda == "USDT":
             if binance is None or not cfg.get("binance_pay_id"): raise ValueError("El cobro en USDT no está habilitado")
@@ -550,6 +571,110 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
                 with st.eng.begin() as c: st.log(c, o.licencia_id, "entrega_pendiente", f"orden={o.ref} {str(e)[:150]}")
         return n
 
+    # ------------------------------------------------------------------ facturación de Gigadevs
+    from . import facturas as fx
+    from app import plantilla_correo as pc
+
+    def enviar_factura(fid, intro=None):
+        if correo is None: raise RuntimeError("Correo no configurado")
+        with st.eng.connect() as c:
+            f = fx.como_dict(c.execute(select(fx.facturas).where(fx.facturas.c.id == fid)).first())
+        if not f.get("cliente_correo"): raise ValueError("La factura no tiene correo del cliente")
+        intro = intro or (f"Estimado(a) {f['cliente_nombre']}: adjuntamos la factura de su compra. Su clave de licencia llegó en un correo aparte."
+                          if f.get("orden_ref") else f"Estimado(a) {f['cliente_nombre']}: le enviamos su factura.")
+        correo(f["cliente_correo"], f"Factura N° {f['numero_completo']} · ERP", fx_texto(f, intro), html=pc.factura_html(f, cfg.get("url_erp") or "", intro))
+        with st.eng.begin() as c:
+            c.execute(update(fx.facturas).where(fx.facturas.c.id == fid).values(correo_enviado_en=reloj()))
+        return f
+
+    def fx_texto(f, intro): return intro + "\n\n" + pc.factura_texto(f)
+
+    def facturar_orden(ref):
+        """Factura de una orden pagada (idempotente: una orden, una factura)."""
+        with st.eng.begin() as con:
+            o = con.execute(select(ordenes).where(ordenes.c.ref == ref).with_for_update()).first()
+            if o is None: raise LookupError("Orden inexistente")
+            if o.estado != "entregada": raise ValueError("Solo se facturan órdenes pagadas y entregadas")
+            ya = con.execute(select(fx.facturas.c.id).where(fx.facturas.c.orden_ref == ref)).scalar()
+            if ya: return ya
+            if not o.cliente_rif: raise ValueError("La orden no tiene el RIF del cliente")
+            usdt = o.moneda == "USDT"
+            f = fx.emitir(con, cliente_nombre=o.cliente, cliente_rif=o.cliente_rif, cliente_direccion=o.cliente_direccion, cliente_correo=o.correo,
+                          moneda="USD" if usdt else "VES", tasa_bcv=o.tasa_bcv, monto_con_iva=(o.monto_esperado or o.monto) if usdt else o.monto,
+                          concepto=f"Licencia de uso ERP — plan {o.plan}, {o.meses} mes(es)", forma_pago="USDT por Binance" if usdt else "Pago móvil (Bs)",
+                          orden_ref=ref, licencia_id=o.licencia_id, reloj=reloj)
+            st.log(con, o.licencia_id, "factura_emitida", f"orden={ref} factura={f['serie']}{f['numero']} control={f['numero_control']}")
+        enviar_factura(f["id"])
+        return f["id"]
+
+    @app.get("/admin/v1/facturacion/config")
+    def a_fx_config():
+        with st.eng.connect() as c:
+            d = fx.leer_config(c); ok, rota = fx.verificar_cadena(c)
+        return jsonify(config={k: (str(v) if isinstance(v, Decimal) else v) for k, v in d.items()}, cadena_integra=ok, rota_en=rota)
+
+    @app.put("/admin/v1/facturacion/config")
+    def a_fx_guardar():
+        fx.guardar_config(st.eng, cuerpo()); return jsonify(ok=True)
+
+    @app.post("/admin/v1/facturacion/rango")
+    def a_fx_rango():
+        d = cuerpo(); fx.nuevo_rango(st.eng, d.get("desde"), d.get("hasta"), d.get("fecha"), d.get("providencia")); return jsonify(ok=True)
+
+    @app.get("/admin/v1/facturas")
+    def a_fx_listar():
+        with st.eng.connect() as c:
+            fs = [fx.como_dict(r) for r in c.execute(select(fx.facturas).order_by(fx.facturas.c.id.desc()).limit(500))]
+        return jsonify(facturas=fs)
+
+    @app.get("/admin/v1/facturas/<int:fid>")
+    def a_fx_ver(fid):
+        with st.eng.connect() as c:
+            r = c.execute(select(fx.facturas).where(fx.facturas.c.id == fid)).first()
+        if r is None: raise LookupError("Factura inexistente")
+        return jsonify(factura=fx.como_dict(r))
+
+    @app.post("/admin/v1/facturas")
+    def a_fx_crear():
+        """«Construir la factura»: el Maestro emite una factura manual (líneas sin IVA) o la de una licencia (monto con IVA)."""
+        d = cuerpo()
+        correo_cli = str(d.get("cliente_correo") or "").strip().lower() or None
+        if correo_cli and not RE_CORREO.match(correo_cli): raise ValueError("Correo del cliente inválido")
+        with st.eng.begin() as con:
+            f = fx.emitir(con, cliente_nombre=str(d.get("cliente_nombre") or "").strip() or "Cliente", cliente_rif=str(d.get("cliente_rif") or ""),
+                          cliente_direccion=d.get("cliente_direccion"), cliente_correo=correo_cli, moneda=d.get("moneda", "USD"), tasa_bcv=d.get("tasa_bcv"),
+                          lineas=d.get("lineas"), monto_con_iva=d.get("monto_con_iva"), concepto=str(d.get("concepto") or "")[:300] or None,
+                          forma_pago=d.get("forma_pago"), licencia_id=d.get("licencia_id"), reloj=reloj)
+            st.log(con, d.get("licencia_id"), "factura_manual", f"factura={f['serie']}{f['numero']} por {d.get('autor', '')}")
+        if correo_cli and d.get("enviar", True): enviar_factura(f["id"])
+        return jsonify(id=f["id"]), 201
+
+    @app.post("/admin/v1/facturas/<int:fid>/reenviar")
+    def a_fx_reenviar(fid):
+        enviar_factura(fid); return jsonify(ok=True)
+
+    @app.post("/admin/v1/facturas/<int:fid>/anular")
+    def a_fx_anular(fid):
+        from app.tiempo import hoy_ve
+        motivo = str(cuerpo().get("motivo") or "").strip()[:300]
+        if not motivo: raise ValueError("Indique el motivo de la anulación")
+        with st.eng.begin() as c:
+            f = c.execute(select(fx.facturas).where(fx.facturas.c.id == fid).with_for_update()).first()
+            if f is None: raise LookupError("Factura inexistente")
+            if f.estado != "Emitida": raise ValueError("La factura ya está anulada")
+            if f.fecha != str(hoy_ve()): raise ValueError("Solo se anula el mismo día de emisión; después corresponde una nota de crédito")
+            c.execute(update(fx.facturas).where(fx.facturas.c.id == fid).values(estado="Anulada", motivo_anulacion=motivo, anulada_en=reloj()))
+        return jsonify(ok=True)
+
+    @app.post("/admin/v1/ordenes/<ref>/facturar")
+    def a_fx_orden(ref):
+        if not RE_REF.match(ref): raise ValueError("Referencia inválida")
+        return jsonify(id=facturar_orden(ref))
+
+    @app.errorhandler(fx.ErrorFacturaPlataforma)
+    def _efx(e): return jsonify(message=str(e)[:300]), 400
+
+    app.extensions["facturar_orden"] = facturar_orden
     app.extensions["verificar_binance"] = verificar_binance
     app.extensions["revisar_pendientes"] = revisar_pendientes
     app.extensions["entregar_orden"] = entregar_orden

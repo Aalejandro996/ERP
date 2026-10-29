@@ -70,3 +70,83 @@ def texto(titulo, parrafos, boton=None, destacado=None, filas=(), nota=None, nom
     if nota: partes += [nota, ""]
     partes += ["—", f"{nombre} · un producto de Gigadevs Corp"]
     return "\n".join(partes)
+
+
+def _bs(v) -> str:
+    from decimal import Decimal
+    return f"{Decimal(str(v)):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def factura_html(f: dict, base_url: str, intro=None) -> str:
+    """Factura de Gigadevs (venta de licencias) lista para correo: tablas y estilos en línea, logos de ERP y Gigadevs."""
+    e, em = escape, f["emisor"]
+    base = base_url.rstrip("/")
+    divisa = f["moneda"] != "VES"
+    filas = ""
+    for l in f["lineas"]:
+        filas += (f'<tr><td style="padding:10px 8px;border-bottom:1px solid {LINEA};font-size:13px;color:{TEXTO}">{e(l["descripcion"])}{" (E)" if l["alicuota"] == "E" else ""}</td>'
+                  f'<td align="right" style="padding:10px 8px;border-bottom:1px solid {LINEA};font-size:13px">{e(str(l["cantidad"]).rstrip("0").rstrip(".") or "1")}</td>'
+                  f'<td align="right" style="padding:10px 8px;border-bottom:1px solid {LINEA};font-size:13px">{e(_bs(l["precio"]))}</td>'
+                  f'<td align="right" style="padding:10px 8px;border-bottom:1px solid {LINEA};font-size:13px;font-weight:600">{e(_bs(l["base_bs"]))}</td></tr>')
+    tot = [("Monto exento (E)", f["exento"])] if float(f["exento"]) else []
+    tot += [(f"Base imponible alícuota general {e(str(f['iva_pct']).rstrip('0').rstrip('.'))}%", f["base"]), (f"IVA {e(str(f['iva_pct']).rstrip('0').rstrip('.'))}%", f["iva"])]
+    totales = "".join(f'<tr><td style="padding:6px 8px;font-size:13px;color:{SUAVE}">{k}</td><td align="right" style="padding:6px 8px;font-size:13px">{e(_bs(v))}</td></tr>' for k, v in tot)
+    totales += (f'<tr><td style="padding:10px 8px;border-top:2px solid {TINTA};font-size:16px;font-weight:800;color:{TINTA}">TOTAL (Bs)</td>'
+                f'<td align="right" style="padding:10px 8px;border-top:2px solid {TINTA};font-size:16px;font-weight:800;color:{TINTA}">{e(_bs(f["total"]))}</td></tr>')
+    if divisa and f.get("total_divisa"):
+        totales += f'<tr><td style="padding:6px 8px;font-size:13px;color:{SUAVE}">Total equivalente ({e(f["moneda"])})</td><td align="right" style="padding:6px 8px;font-size:13px">{e(_bs(f["total_divisa"]))}</td></tr>'
+    anulada = f.get("estado") == "Anulada"
+    return f"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light">
+<title>Factura {e(f['numero_completo'])}</title></head><body style="margin:0;padding:0;background:{FONDO};font-family:{FUENTE}">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{FONDO}"><tr><td align="center" style="padding:28px 10px">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:680px">
+ <tr><td style="background:{TINTA};border-radius:16px 16px 0 0;padding:20px 26px">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+   <td valign="middle"><table role="presentation" cellpadding="0" cellspacing="0"><tr>
+     <td style="padding-right:10px"><img src="{e(base)}/static/marca/icono-192.png" width="38" height="38" alt="ERP" style="display:block;border:0;border-radius:9px"></td>
+     <td><div style="font-size:20px;font-weight:800;color:#fff">ERP</div><div style="font-size:11px;color:#a3a3a3">Tu empresa en orden. Tu fisco al día.</div></td></tr></table></td>
+   <td align="right" valign="middle"><img src="{e(base)}/static/marca/gigadevs.png" width="58" height="58" alt="Gigadevs Corp" style="display:block;border:0"></td>
+  </tr></table></td></tr>
+ <tr><td style="height:4px;background:{LIMA};font-size:0;line-height:0">&nbsp;</td></tr>
+ <tr><td style="background:#ffffff;padding:26px;border:1px solid {LINEA};border-top:0;border-radius:0 0 16px 16px">
+  {f'<p style="margin:0 0 18px;font-size:14px;line-height:1.6;color:{TEXTO}">{e(intro)}</p>' if intro else ''}
+  {'<div style="margin:0 0 16px;padding:10px 14px;border:2px solid #c8372d;border-radius:10px;color:#c8372d;font-weight:800;text-align:center">FACTURA ANULADA</div>' if anulada else ''}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-bottom:2px solid {TINTA};padding-bottom:12px;margin-bottom:14px"><tr>
+   <td valign="top" style="font-size:13px;line-height:1.55;color:{TEXTO}"><div style="font-size:16px;font-weight:800;color:{TINTA}">{e(em['razon_social'])}</div>
+     RIF: <b>{e(em['rif'])}</b><br>Domicilio fiscal: {e(em['domicilio'])}{('<br>Teléfono: ' + e(em['telefono'])) if em.get('telefono') else ''}
+     {('<br><b>Contribuyente Especial</b>') if em.get('contribuyente_especial') in ('1', 1, 'True') else ''}</td>
+   <td valign="top" align="right" style="font-size:13px;line-height:1.6;color:{TEXTO}"><div style="font-size:20px;font-weight:800;letter-spacing:.04em;color:{TINTA}">FACTURA</div>
+     N° <b>{e(f['numero_completo'])}</b><br><span style="display:inline-block;border:2px solid {TINTA};border-radius:8px;padding:2px 8px;font-weight:700">N° de Control: {e(f['numero_control'])}</span>
+     <br>Fecha: {e('/'.join(reversed(f['fecha'].split('-'))))}</td></tr></table>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px"><tr>
+   <td valign="top" width="50%" style="background:{FONDO};border-radius:10px;padding:12px;font-size:13px;line-height:1.55;color:{TEXTO}"><b>Adquirente</b><br>{e(f['cliente_nombre'])}<br>RIF/C.I.: {e(f['cliente_rif'])}{('<br>' + e(f['cliente_direccion'])) if f.get('cliente_direccion') else ''}</td>
+   <td width="12"></td>
+   <td valign="top" width="50%" style="background:{FONDO};border-radius:10px;padding:12px;font-size:13px;line-height:1.55;color:{TEXTO}"><b>Condiciones</b><br>Pago: Contado{(' · ' + e(f['forma_pago'])) if f.get('forma_pago') else ''}<br>
+     Moneda: {e(f['moneda'])}{(' · Tasa BCV: ' + e(_bs(f['tasa_bcv'])) + ' Bs/' + e(f['moneda'])) if divisa else ''}{('<br>Orden: ' + e(f['orden_ref'])) if f.get('orden_ref') else ''}</td></tr></table>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+   <th align="left" style="padding:8px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:{SUAVE};border-bottom:1px solid {LINEA}">Descripción</th>
+   <th align="right" style="padding:8px;font-size:11px;text-transform:uppercase;color:{SUAVE};border-bottom:1px solid {LINEA}">Cant.</th>
+   <th align="right" style="padding:8px;font-size:11px;text-transform:uppercase;color:{SUAVE};border-bottom:1px solid {LINEA}">Precio unit. ({e(f['moneda'])})</th>
+   <th align="right" style="padding:8px;font-size:11px;text-transform:uppercase;color:{SUAVE};border-bottom:1px solid {LINEA}">Monto (Bs)</th></tr>{filas}</table>
+  <table role="presentation" cellpadding="0" cellspacing="0" align="right" style="margin-top:12px;min-width:300px">{totales}</table>
+  <div style="clear:both"></div>
+  <p style="margin:22px 0 0;font-size:11px;line-height:1.55;color:{SUAVE};border-top:1px dashed #bbb;padding-top:10px">
+   {('Operación pactada en ' + e(f['moneda']) + '; el equivalente en bolívares se calculó a la tasa oficial del BCV vigente en la fecha de emisión. ') if divisa else ''}
+   Imprenta autorizada: {e(em['imprenta_razon_social'])} · RIF {e(em['imprenta_rif'])} · {e(em['imprenta_providencia'])} · Números de control asignados hasta
+   {e(em['control_prefijo'])}-{int(em['control_hasta'] or 0):08d}{(' el ' + e(em['fecha_asignacion'])) if em.get('fecha_asignacion') else ''}.<br>Huella del documento: {e(f['hash'][:16])}</p>
+ </td></tr>
+ <tr><td style="padding:18px 8px;text-align:center;font-size:12px;line-height:1.6;color:{SUAVE}">Conserve este correo: es su factura. Para cualquier consulta responda al soporte de Gigadevs Corp.<br>
+   <strong style="color:{TINTA}">ERP</strong> · un producto de Gigadevs Corp · Venezuela</td></tr>
+</table></td></tr></table></body></html>"""
+
+
+def factura_texto(f: dict) -> str:
+    em = f["emisor"]
+    lineas = "\n".join(f"  - {l['descripcion']}  x{l['cantidad']}  Bs {_bs(l['base_bs'])}" for l in f["lineas"])
+    return (f"FACTURA N° {f['numero_completo']} · N° de Control {f['numero_control']} · Fecha {f['fecha']}\n"
+            f"Emisor: {em['razon_social']} · RIF {em['rif']} · {em['domicilio']}\n"
+            f"Adquirente: {f['cliente_nombre']} · RIF/C.I. {f['cliente_rif']}\n\n{lineas}\n\n"
+            f"Base imponible: Bs {_bs(f['base'])}\nIVA {f['iva_pct']}%: Bs {_bs(f['iva'])}\nTOTAL: Bs {_bs(f['total'])}"
+            + (f"\nEquivalente: {f['moneda']} {_bs(f['total_divisa'])} (tasa BCV {_bs(f['tasa_bcv'])})" if f["moneda"] != "VES" and f.get("total_divisa") else "")
+            + f"\n\nImprenta autorizada: {em['imprenta_razon_social']} · RIF {em['imprenta_rif']} · {em['imprenta_providencia']}\n"
+              "Conserve este correo: es su factura.\n—\nERP · un producto de Gigadevs Corp")
