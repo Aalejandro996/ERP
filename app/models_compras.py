@@ -85,10 +85,12 @@ class WhatsappConfig(db.Model):
     """Número de WhatsApp Business (Cloud API de Meta) de una empresa. Token y secreto cifrados en reposo (Fernet)."""
     __tablename__ = "whatsapp_config"
     empresa_id = db.Column(db.ForeignKey("empresas.id"), primary_key=True)
-    phone_number_id = db.Column(db.Text, nullable=False)
+    proveedor = db.Column(db.Text, nullable=False, default="meta", server_default=db.text("'meta'"))   # meta | wasender
+    api_url = db.Column(db.Text)                    # WasenderAPI: URL base (vacía = la oficial)
+    phone_number_id = db.Column(db.Text)            # Meta: Phone Number ID (con WasenderAPI no aplica)
     numero_visible = db.Column(db.Text)
-    token_cifrado = db.Column(db.Text, nullable=False)
-    app_secret_cifrado = db.Column(db.Text, nullable=False)
+    token_cifrado = db.Column(db.Text, nullable=False)        # Meta: token permanente · WasenderAPI: clave de API de la sesión
+    app_secret_cifrado = db.Column(db.Text, nullable=False)   # Meta: App Secret · WasenderAPI: secreto de webhook
     verify_token = db.Column(db.Text, nullable=False)
     clave_webhook = db.Column(db.Text, nullable=False, unique=True)   # parte secreta de la URL del webhook
     bienvenida = db.Column(db.Text)

@@ -53,7 +53,7 @@ La clave de una licencia **solo** viaja por correo (Brevo, remitente Gigadevs Co
 - **Demo de 72 h** de Facturación + Inventario: el Administrador la pide en Organización → Licencia (una vez) o el Maestro la emite.
 
 ## WhatsApp, pedidos y órdenes de compra
-Administración → **Bot de WhatsApp**: cargue el Phone Number ID, el token permanente y el App Secret de su app de Meta (WhatsApp Business
+Administración → **Bot de WhatsApp** admite dos conexiones: **WasenderAPI** (WhatsApp por código QR: se escanea con el WhatsApp Business del teléfono, se cargan la clave de API de la sesión y el secreto de webhook, y se pega en WasenderAPI la URL del webhook que muestra Contax; no oficial, WhatsApp puede bloquear números con envíos masivos) o la **Cloud API oficial de Meta**: cargue el Phone Number ID, el token permanente y el App Secret de su app de Meta (WhatsApp Business
 Cloud API) y pegue en Meta la URL del webhook y el token de verificación que muestra la pantalla (campo `messages`). Los clientes piden
 por el chat (catálogo con precios e inventario) y los proveedores confirman sus **órdenes de compra** o envían ofertas. Las órdenes de
 compra (Administración → Órdenes de compra) siguen el modelo de la factura de Gigadevs con los datos de la empresa emisora y del
