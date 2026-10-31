@@ -48,6 +48,12 @@ class Config:
     SMTP_SSL = os.environ.get("SMTP_SSL", "0") == "1"
     PRODUCCION = os.environ.get("FLASK_ENV", "production") == "production"
 
+    # Buscadores y protección pública
+    GOOGLE_SITE_VERIFICATION = os.environ.get("GOOGLE_SITE_VERIFICATION", "")   # contenido de la meta de Search Console
+    BING_SITE_VERIFICATION = os.environ.get("BING_SITE_VERIFICATION", "")
+    CONTACTO_SEGURIDAD = os.environ.get("CONTACTO_SEGURIDAD", "mailto:aalejandro996@icloud.com")   # /.well-known/security.txt
+    MANTENIMIENTO = os.environ.get("MANTENIMIENTO", "0") == "1"   # 1 = toda la app responde 503 «en mantenimiento»
+
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"

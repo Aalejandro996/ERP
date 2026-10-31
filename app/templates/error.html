@@ -1,3 +1,24 @@
-{% extends "base.html" %}{% block titulo %}{{ titulo }}{% endblock %}
-{% block contenido %}<section><span class="chip gris">Error {{ codigo }}</span><h1>{{ titulo }}</h1><p>{{ mensaje }}</p>
-<div class="form-pie"><a class="btn" href="/">Ir al inicio</a></div></section>{% endblock %}
+<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ codigo }} · {{ titulo }} · {{ config.APP_NOMBRE }}</title><meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="{{ url_for('static', filename='marca/favicon.ico') }}" sizes="any"><meta name="theme-color" content="#191919">
+<link rel="stylesheet" href="{{ url_for('static', filename='estilo.css') }}"></head>
+{#- Independiente de base.html: no consulta menú, empresas ni licencia, así funciona aunque la base de datos esté caída. -#}
+<body class="err">
+<header class="err-barra"><a class="lp-marca" href="/"><img src="{{ url_for('static', filename='marca/logo-icono.svg') }}" alt="" width="30" height="30"><span>Conta<b>x</b><sup>®</sup></span></a></header>
+<main class="err-caja">
+  <div class="err-codigo" aria-hidden="true">{{ codigo }}</div>
+  <span class="err-chip">Error {{ codigo }}</span>
+  <h1>{{ titulo }}</h1>
+  <p class="err-msg">{{ mensaje }}</p>
+  {% if consejo %}<p class="err-consejo">{{ consejo }}</p>{% endif %}
+  {% if referencia %}<p class="err-ref">Código de referencia para soporte: <code>{{ referencia }}</code></p>{% endif %}
+  <div class="err-acc">
+    {% if codigo == 503 %}<a class="lp-btn" href="">Reintentar</a>
+    {% elif codigo in (401, 402) or (codigo == 403 and not autenticado) %}<a class="lp-btn" href="{{ url_for('auth.login') }}">Iniciar sesión</a><a class="lp-btn lp-btn-linea" href="/">Ir al inicio</a>
+    {% else %}<a class="lp-btn" href="/">Ir al inicio</a>{% if codigo in (400, 405, 413, 429, 500) and request.referrer and request.referrer.startswith(request.host_url) %}<a class="lp-btn lp-btn-linea" href="{{ request.referrer }}">Volver</a>{% endif %}{% endif %}
+    <a class="lp-btn lp-btn-linea" href="https://wa.me/584242588321?text=Hola%20Gigadevs%2C%20necesito%20ayuda%20con%20Contax%20(error%20{{ codigo }}{% if referencia %}%20ref%20{{ referencia }}{% endif %})" target="_blank" rel="noopener">Soporte por WhatsApp</a>
+  </div>
+</main>
+<footer class="err-pie">© {{ config.APP_NOMBRE }}® · una marca registrada de Gigadevs Corp
+  <span class="pie-legal"><a href="/legal/terminos">Términos</a><a href="/legal/privacidad">Privacidad</a><a href="/legal/cookies">Cookies</a></span></footer>
+</body></html>

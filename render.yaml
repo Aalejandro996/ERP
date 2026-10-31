@@ -63,6 +63,10 @@ projects:
                 sync: false
               - key: PAGO_MOVIL_INSTRUCCIONES    # banco, teléfono y RIF para pagos en bolívares
                 sync: false
+              - key: GOOGLE_SITE_VERIFICATION    # Search Console → «Etiqueta HTML»: solo el valor de content="…"
+                sync: false
+              - key: MANTENIMIENTO               # 1 = página «en mantenimiento» (503) para todos
+                value: "0"
 
           # ------------------------------------------------------------- servidor de licencias y muro de pago
           - type: web

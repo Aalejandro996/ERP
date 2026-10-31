@@ -778,3 +778,46 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
         assert titulo in t and "Gigadevs Corp" in t
     assert "__Host-erp" in _cliente(app).get("/legal/cookies").get_data(as_text=True)
     assert "Términos y condiciones" in _cliente(app).get("/login").get_data(as_text=True)
+
+
+def test_paginas_publicas_seo_y_errores(entorno):
+    app = entorno["app"]; c = app.test_client()
+    r = c.get("/robots.txt"); assert r.status_code == 200 and b"Disallow: /" in r.data   # fuera de producción no se indexa
+    app.config["PRODUCCION"] = True
+    try:
+        t = c.get("/robots.txt").get_data(as_text=True)
+        assert "Allow: /legal" in t and "Disallow: /e/" in t and "Disallow: /plataforma" in t and "Sitemap: https://erp.test/sitemap.xml" in t
+        r = c.get("/"); h = r.get_data(as_text=True)
+        assert r.status_code == 200 and "X-Robots-Tag" not in r.headers and "upgrade-insecure-requests" in r.headers["Content-Security-Policy"]
+        assert 'rel="canonical" href="https://erp.test/"' in h and 'og:image" content="https://erp.test/static/marca/og-contax.png' in h
+        assert re.search(r'"@type": ?"SoftwareApplication"', h) and re.search(r'"priceCurrency": ?"USD"', h)
+        assert "google-site-verification" not in h
+        app.config["GOOGLE_SITE_VERIFICATION"] = "tok-123"
+        assert b'name="google-site-verification" content="tok-123"' in c.get("/").data
+    finally:
+        app.config["PRODUCCION"] = False; app.config["GOOGLE_SITE_VERIFICATION"] = ""
+    s = c.get("/sitemap.xml"); assert s.mimetype == "application/xml" and b"<loc>https://erp.test/legal/privacidad</loc>" in s.data
+    assert b"Contact: mailto:" in c.get("/.well-known/security.txt").data
+    assert c.get("/favicon.ico").status_code == 200
+    assert c.get("/legal/terminos").headers.get("X-Robots-Tag") is None
+    assert c.get("/login").headers["X-Robots-Tag"] == "noindex, nofollow"             # lo privado nunca se indexa
+    r = c.get("/no-existe"); h = r.get_data(as_text=True)
+    assert r.status_code == 404 and "Página no encontrada" in h and 'class="err"' in h and r.headers["X-Robots-Tag"] == "noindex, nofollow"
+    assert c.get("/.env").status_code == 404 and c.get("/wp-login.php").data == b"No encontrado"
+    r = c.delete("/legal/terminos"); assert r.status_code == 405 and "Acción no permitida" in r.get_data(as_text=True)
+    assert c.get("/plataforma").status_code == 302                                    # sin sesión → login
+
+    def _falla(**_k):
+        raise RuntimeError("SELECT secreto FROM tabla")
+    original = app.view_functions["web.legal"]; app.view_functions["web.legal"] = _falla
+    app.testing = False; app.config["PROPAGATE_EXCEPTIONS"] = False
+    try:
+        r = c.get("/legal/terminos"); h = r.get_data(as_text=True)
+        assert r.status_code == 500 and "Algo salió mal" in h and "SELECT" not in h and "Traceback" not in h
+        assert re.search(r"<code>[0-9A-F]{8}</code>", h)                               # código de referencia para soporte
+        app.config["MANTENIMIENTO"] = True
+        r = c.get("/"); assert r.status_code == 503 and r.headers["Retry-After"] == "300" and "mantenimiento" in r.get_data(as_text=True)
+        assert c.get("/salud").status_code == 200
+    finally:
+        app.view_functions["web.legal"] = original
+        app.testing = True; app.config["PROPAGATE_EXCEPTIONS"] = None; app.config["MANTENIMIENTO"] = False

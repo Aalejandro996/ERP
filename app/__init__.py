@@ -6,7 +6,7 @@ from .planes import MODULOS, modulos_de, nombre_plan
 
 RUTAS_LIBRES = {"salud", "auth.login", "auth.logout", "auth.mfa_verificar", "auth.mfa_configurar", "auth.mfa_codigos", "auth.cambiar_clave",
                 "auth.verificar_correo", "auth.correo_confirmar", "auth.invitacion", "auth.recuperar", "auth.recuperar_token",
-                "auth.cuenta", "web.admin_licencia", "static", "web.legal"}
+                "auth.cuenta", "web.admin_licencia", "static", "web.legal", "robots", "sitemap", "security_txt", "favicon"}
 
 
 class AlmacenLicenciaOrg:
@@ -124,7 +124,7 @@ def create_app(config_obj=None):
     @app.after_request
     def cabeceras(resp):
         resp.headers["Content-Security-Policy"] = ("default-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; "
-                                                   "base-uri 'self'; form-action 'self'"
+                                                   "base-uri 'self'; form-action 'self'" + ("; upgrade-insecure-requests" if app.config.get("PRODUCCION") else "")
                                                    + ("; style-src 'self' 'unsafe-inline'; script-src " + ("'self'" if getattr(g, "csp_scripts_propios", False) else "'none'")
                                                       if getattr(g, "csp_estilos_en_linea", False) else ""))
         resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -139,24 +139,7 @@ def create_app(config_obj=None):
             resp.headers["Cache-Control"] = "no-store"
         return resp
 
-    errores = {401: ("Sesión requerida", "Inicie sesión para continuar."), 403: ("Acceso denegado", "Su rol o el plan de su licencia no incluye esta función."),
-               404: ("No encontrado", "El recurso no existe o no pertenece a su organización."), 429: ("Demasiadas solicitudes", "Espere unos minutos e intente de nuevo."),
-               500: ("Error interno", "Ocurrió un error. Quedó registrado; intente de nuevo.")}
-
-    def manejador(codigo):
-        def h(_e):  # nunca se filtran trazas ni SQL al usuario
-            if codigo == 401: return redirect(url_for("auth.login"))
-            if codigo == 500: db.session.rollback()
-            t, m = errores[codigo]
-            return render_template("error.html", codigo=codigo, titulo=t, mensaje=m), codigo
-        return h
-    for c in errores: app.register_error_handler(c, manejador(c))
-
-    from flask_wtf.csrf import CSRFError
-
-    @app.errorhandler(CSRFError)
-    def csrf_vencido(_e):  # formulario vencido o enviado desde otro sitio: se explica en vez de un "Bad Request" crudo
-        return render_template("error.html", codigo=400, titulo="El formulario expiró",
-                               mensaje="Por seguridad, vuelva a la página anterior, recárguela e intente de nuevo."), 400
+    from . import publico
+    publico.instalar(app, db)  # robots, sitemap, filtro de rastreos, mantenimiento y páginas de error
 
     return app
