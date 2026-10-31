@@ -821,3 +821,16 @@ def test_paginas_publicas_seo_y_errores(entorno):
     finally:
         app.view_functions["web.legal"] = original
         app.testing = True; app.config["PROPAGATE_EXCEPTIONS"] = None; app.config["MANTENIMIENTO"] = False
+
+
+def test_salud_y_estaticos_no_cuentan_para_el_limite(entorno):
+    """El chequeo de salud de Render (cada 5–10 s) agotaba el límite general y Render daba el servicio por caído."""
+    from app.extensions import _sin_limite, limiter
+    app = entorno["app"]
+    assert _sin_limite in limiter._request_filters
+    for ruta, exenta in (("/salud", True), ("/static/estilo.css", True), ("/robots.txt", True), ("/sitemap.xml", True),
+                         ("/favicon.ico", True), ("/legal/terminos", False), ("/login", False), ("/", False)):
+        with app.test_request_context(ruta):
+            from flask import request
+            request.url_rule = app.url_map.bind("localhost").match(ruta, return_rule=True)[0]
+            assert _sin_limite() is exenta, ruta
