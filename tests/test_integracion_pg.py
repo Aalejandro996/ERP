@@ -56,7 +56,7 @@ def entorno():
     with app_owner.app_context():
         db.session.execute(text("CREATE EXTENSION IF NOT EXISTS citext")); db.session.commit()
         db.create_all()
-        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql"):
+        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql"):
             db.session.execute(text(pathlib.Path("migrations", m).read_text(encoding="utf-8"))); db.session.commit()
     with owner.connect() as c:
         c.execute(text("GRANT USAGE ON SCHEMA public TO erp_app"))
@@ -667,6 +667,30 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     assert "Factura N° B00000002" in ws_env[-1][1]["text"], ws_env[-1][1]["text"]
     assert uno("SELECT cantidad_actual FROM productos WHERE empresa_id=:e AND codigo='A001'", e=eid) == Decimal("53")
 
+    # --- Presupuestos de la empresa: manual, por el bot (automático y manual), aceptación por WhatsApp y facturación
+    cli = uno("SELECT id FROM clientes_facturacion WHERE empresa_id=:e AND rif='J-12345678-9'", e=eid)
+    r = a.post(f"/e/{eid}/presupuestos", data={"cliente": cli, "telefono": "584149990000", "validez": "10", "l1_cod": "A001", "l1_cant": "2", "l2_desc": "Flete", "l2_cant": "1", "l2_precio": "15"})
+    assert "/presupuestos/" in r.headers["Location"], alerta(a.get(f"/e/{eid}/presupuestos"))
+    pr_url = r.headers["Location"]
+    t = a.get(pr_url).get_data(as_text=True)
+    assert "PRESUPUESTO" in t and "PR-000001" in t and "Comercial Beta CA" in t and "91,00" in t and "Epsilon Market CA" in t
+    r = a.post(pr_url, data={"accion": "whatsapp"}, follow_redirects=True)
+    assert "enviado por WhatsApp" in r.get_data(as_text=True) and "Presupuesto N° 1" in ws_env[-1][1]["text"]
+    pv_pub = re.search(r"https://erp\.test(/pv/[\w.\-]+)", ws_env[-1][1]["text"]).group(1)
+    assert "PR-000001" in anon.get(pv_pub).get_data(as_text=True)
+    luis = lambda txt, i: ws_aviso({"key": {"id": f"L{i}", "fromMe": False, "remoteJid": "584125550000@s.whatsapp.net"}, "pushName": "Luis", "message": {"conversation": txt}})
+    for i, txt in enumerate(["1", "A001 3", "6"]): luis(txt, i)
+    assert "Presupuesto N° 2" in ws_env[-1][1]["text"] and "/pv/" in ws_env[-1][1]["text"]                      # modo automático
+    luis("ACEPTO 2", 3)
+    assert uno("SELECT estado FROM presupuestos_venta WHERE empresa_id=:e AND numero=2", e=eid) == "Aceptado"
+    a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "guardar", "proveedor": "wasender", "activo": "1", "factura_automatica": "1", "serie_id": str(sid), "presupuesto_modo": "manual"})
+    for i, txt in enumerate(["A001 1", "presupuesto"], start=4): luis(txt, i)
+    assert "Un asesor lo revisará" in ws_env[-1][1]["text"]
+    assert uno("SELECT estado FROM presupuestos_venta WHERE empresa_id=:e AND numero=3", e=eid) == "Borrador"
+    r = a.post(pr_url, data={"accion": "facturar", "serie_id": str(sid), "dias": "5"}, follow_redirects=True)
+    assert "Factura N° B00000003" in r.get_data(as_text=True), r.get_data(as_text=True)[-800:]
+    assert uno("SELECT estado FROM presupuestos_venta WHERE empresa_id=:e AND numero=1", e=eid) == "Facturado"
+
     # --- Maestro: cliente que no se registró en 72 h → reenviar invitación o eliminarlo
     from app import totp
     from app.extensions import db
@@ -694,3 +718,17 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     r = root.post("/plataforma", data={"accion": "eliminar", "oid": oz, "confirmar": "J-88888888-8"}, follow_redirects=True)
     assert any("eliminado" in m for m in alerta(r)) and uno("SELECT count(*) FROM organizaciones WHERE id=:o", o=oz) == 0
     assert uno("SELECT count(*) FROM usuarios WHERE username='adminZ'") == 0
+
+    # --- Maestro: presupuesto de Gigadevs con precios vigentes (anual) + servicio, envío por correo y actualización de precios
+    assert "Precios vigentes (mensual y anual)" in root.get("/plataforma/presupuestos").get_data(as_text=True)
+    r = root.post("/plataforma/presupuestos", data={"accion": "crear", "cliente_nombre": "General de Suministros Orituco", "cliente_correo": "compras@orituco.test",
+                                                    "periodo": "anual", "items": ["plan:ALL_IN_ONE"], "validez": "15", "condiciones": "Pago 50/50",
+                                                    "l1_desc": "Implementación y migración", "l1_cant": "1", "l1_precio": "100", "l1_alic": "G"})
+    assert "/plataforma/presupuestos/" in r.headers["Location"], alerta(root.get("/plataforma/presupuestos"))
+    t = root.get(r.headers["Location"]).get_data(as_text=True)
+    assert "PRESUPUESTO" in t and "P-000001" in t and "General de Suministros Orituco" in t and "All in One" in t and "806,00" in t and "Conta" in t
+    n = len(entorno["correos_lic"])
+    root.post(r.headers["Location"], data={"accion": "enviar"})
+    assert len(entorno["correos_lic"]) == n + 1 and entorno["correos_lic"][-1][0] == "compras@orituco.test"
+    root.post("/plataforma/presupuestos", data={"accion": "precio", "plan": "CASH", "meses": "12", "monto": "260"})
+    assert "260.00" in root.get("/plataforma/presupuestos").get_data(as_text=True)

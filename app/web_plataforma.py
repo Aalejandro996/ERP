@@ -1,6 +1,7 @@
 """Consola de PLATAFORMA (Maestro del proveedor): alta de clientes (organizaciones) con su primer administrador,
 suspensión, estado de licencias y parámetros legales GLOBALES (UT, tarifa ISLR, retenciones, INPC, tasa BCV, alícuotas).
 El Maestro no tiene acceso a la contabilidad ni a la facturación de ningún cliente (RLS lo impide en la BD)."""
+import re
 import secrets
 
 from flask import current_app, flash, g, get_flashed_messages, redirect, request, url_for
@@ -577,3 +578,146 @@ def maestro_factura_ver(fid):
 def csrf_token_seguro():
     from flask_wtf.csrf import generate_csrf
     return generate_csrf()
+
+
+# ====================================================================== presupuestos de Gigadevs (Contax y servicios)
+CONDICIONES_PX = ("Validez de la oferta según la fecha indicada.\n50% de anticipo para iniciar y 50% a la entrega (servicios); licencias, pago total al activar.\n"
+                  "Pago en USDT (Binance Pay) o en bolívares a la tasa BCV del día de pago.\nIncluye soporte por WhatsApp y correo en horario laboral.")
+
+
+def _lineas_catalogo(cat, periodo, elegidos, iva):
+    """Elementos del catálogo → líneas al precio VIGENTE (mensual o anual). El catálogo incluye IVA: se cotiza sin IVA."""
+    from decimal import Decimal
+    from .planes import MODULOS, PLANES
+    sin_iva = lambda v: (Decimal(str(v)) * 100 / (100 + Decimal(str(iva)))).quantize(Decimal("0.01"))
+    meses = "12 meses" if periodo == "anual" else "1 mes"
+    out = []
+    for x in elegidos:
+        tipo, _, clave = x.partition(":")
+        if tipo == "plan":
+            p = next((p for p in cat["planes"] if p["plan"] == clave), None)
+            if p is None or not p.get(periodo): raise ValueError(f"El plan {clave} no tiene precio {periodo}")
+            out.append(dict(descripcion=f"Licencia Contax® {PLANES.get(clave, {}).get('nombre', clave)} — {meses}",
+                            detalle=f"Módulos: {', '.join(MODULOS[m] for m in sorted(PLANES.get(clave, {}).get('modulos', [])))}. {p.get('topes', '')}.",
+                            cantidad="1", precio=str(sin_iva(p[periodo])), alicuota="G"))
+        elif tipo == "combo":
+            c = next((c for c in cat["combos"] if str(c["id"]) == clave), None)
+            if c is None: raise ValueError("Combo no disponible")
+            out.append(dict(descripcion=f"Licencia Contax® — combo {c['nombre']} — {c['meses']} mes(es)",
+                            detalle=f"Módulos: {', '.join(MODULOS.get(m, m) for m in c['modulos'].split(','))}. {c['max_usuarios']} usuarios, {c['max_empresas']} empresas.",
+                            cantidad="1", precio=str(sin_iva(c["monto_usd"])), alicuota="G"))
+        elif tipo == "mod":
+            m = next((m for m in cat["modulos"] if m["modulo"] == clave), None)
+            if m is None: raise ValueError("Módulo sin precio")
+            out.append(dict(descripcion=f"Módulo Contax® {MODULOS.get(clave, clave)} — {meses}", detalle="", cantidad="1", precio=str(sin_iva(m[periodo])), alicuota="G"))
+    return out
+
+
+@ruta("/plataforma/presupuestos", "plataforma", ("GET", "POST"))
+def maestro_presupuestos():
+    from .licensing.admin import ErrorAdmin
+    from .planes import MODULOS, PLANES
+    orgs = db.session.execute(select(Organizacion).order_by(Organizacion.nombre)).scalars().all()
+    if request.method == "POST":
+        a, autor = F["accion"], g.usuario.username
+        try:
+            adm = _admin()
+            if a == "crear":
+                datos = adm.px_catalogo()
+                periodo = F.get("periodo") if F.get("periodo") in ("mensual", "anual", "unico") else "anual"
+                lineas = _lineas_catalogo(datos["catalogo"], "anual" if periodo == "unico" else periodo, F.getlist("items"), datos["iva_pct"])
+                lineas += [dict(descripcion=F.get(f"l{i}_desc"), detalle=F.get(f"l{i}_det"), cantidad=F.get(f"l{i}_cant") or "1",
+                                precio=F.get(f"l{i}_precio") or "0", alicuota=F.get(f"l{i}_alic") or "G") for i in range(1, 7) if (F.get(f"l{i}_desc") or "").strip()]
+                org = next((o for o in orgs if str(o.id) == F.get("org")), None)
+                cli = dict(cliente_nombre=F.get("cliente_nombre") or (org.nombre if org else ""), cliente_rif=F.get("cliente_rif") or (org.rif if org else ""),
+                           cliente_correo=F.get("cliente_correo") or (org.correo_contacto if org else ""), organizacion_ref=str(org.id) if org else None)
+                r = adm.crear_presupuesto(**cli, cliente_direccion=F.get("cliente_direccion"), cliente_telefono=F.get("cliente_telefono"), atencion=F.get("atencion"),
+                                          titulo=F.get("titulo"), periodo=periodo, lineas=lineas, validez_dias=F.get("validez") or 15, condiciones=F.get("condiciones"), autor=autor)
+                registrar(autor, "PRESUPUESTO_EMITIDO", f"id={r['id']} cliente={cli['cliente_nombre'][:60]}", org=None); db.session.commit()
+                return redirect(url_for("web.maestro_presupuesto_ver", pid=r["id"]))
+            if a == "precio":
+                cat = adm.px_catalogo()["catalogo"]
+                p = next((p for p in cat["planes"] if p["plan"] == F["plan"]), None)
+                topes = [int(x) for x in re.findall(r"\d+", p["topes"])] if p else [5, 2, 5]
+                adm.fijar_precio(plan=F["plan"], meses=int(F["meses"]), monto_usd=F["monto"], max_usuarios=topes[0], max_empresas=topes[1], max_equipos=topes[2])
+                msg = "Precio actualizado: rige para los presupuestos nuevos y para la tienda"
+            elif a == "precio_modulo":
+                adm.fijar_precio_modulo(F["modulo"], F["monto"]); msg = "Precio del módulo actualizado"
+            else: raise ValueError("Acción inválida")
+            registrar(autor, "PRESUPUESTO_" + a.upper(), F.get("plan") or F.get("modulo") or "", org=None); db.session.commit(); flash(msg)
+        except (ErrorAdmin, ValueError, OSError) as e:
+            db.session.rollback(); flash(str(e))
+        return redirect(request.url)
+    try:
+        adm = _admin(); ps, datos = adm.presupuestos(), adm.px_catalogo()
+    except (ErrorAdmin, ValueError, OSError) as e:
+        flash(str(e)); ps, datos = [], {"catalogo": {"planes": [], "combos": [], "modulos": []}, "iva_pct": "16"}
+    cat = datos["catalogo"]
+    items = [(f"plan:{p['plan']}", f"{PLANES.get(p['plan'], {}).get('nombre', p['plan'])} · ${p.get('mensual', '—')}/mes · ${p.get('anual', '—')}/año") for p in cat["planes"]]
+    items += [(f"combo:{c['id']}", f"Combo {c['nombre']} · ${c['monto_usd']} ({'mensual' if c['meses'] == 1 else str(c['meses']) + ' meses'})") for c in cat["combos"]]
+    items += [(f"mod:{m['modulo']}", f"Módulo {MODULOS.get(m['modulo'], m['modulo'])} · ${m['mensual']}/mes · ${m['anual']}/año") for m in cat["modulos"]]
+    lineas = sum([[campo(f"l{i}_desc", f"Servicio {i}", req=False), campo(f"l{i}_det", "Detalle", req=False), campo(f"l{i}_cant", "Cant.", "number", req=False),
+                   campo(f"l{i}_precio", "Precio USD sin IVA", "number", req=False), campo(f"l{i}_alic", "IVA", "select", opciones=[("G", "Gravado"), ("E", "Exento")])] for i in range(1, 7)], [])
+    planes_sel = [(k, v["nombre"]) for k, v in PLANES.items() if k not in ("PERSONALIZADO", "DEMO")]
+    secs = [dict(kpis=[("Presupuestos", len(ps)), ("Enviados", sum(p["estado"] == "Enviado" for p in ps)), ("Aceptados", sum(p["estado"] == "Aceptado" for p in ps)),
+                       ("Monto aceptado USD", f"{sum(float(p['total']) for p in ps if p['estado'] == 'Aceptado'):,.2f}")]),
+            dict(titulo="Presupuestos emitidos", tabla=dict(cols=["N°", "Fecha", "Cliente", "Período", "Total USD", "Válido hasta", "Estado"], num=[4], filas=[
+                dict(cells=[p["numero_txt"], p["fecha"], p["cliente_nombre"], p["periodo"], p["total"], p["valido_hasta"], p["estado"]],
+                     url=url_for("web.maestro_presupuesto_ver", pid=p["id"])) for p in ps])),
+            dict(titulo="Nuevo presupuesto", abierto=True, nota=f"Los planes, combos y módulos se cotizan al precio VIGENTE del período que elija el cliente "
+                 f"(los precios del catálogo ya incluyen IVA {datos['iva_pct']}%). Los servicios se cargan sin IVA.",
+                 form=dict(action=request.path, boton="Emitir presupuesto", campos=[h("crear"),
+                     campo("org", "Cliente registrado (opcional)", "select", req=False, opciones=[("", "— Cliente nuevo —")] + [(o.id, f"{o.nombre} ({o.rif})") for o in orgs]),
+                     campo("cliente_nombre", "Cliente (si es nuevo)", req=False), campo("cliente_rif", "RIF", req=False), campo("cliente_correo", "Correo", "email", req=False),
+                     campo("cliente_direccion", "Dirección", req=False), campo("cliente_telefono", "Teléfono", req=False), campo("atencion", "Atención a", req=False),
+                     campo("titulo", "Título (p. ej. «Implementación de Contax All in One»)", req=False),
+                     campo("periodo", "Período", "select", opciones=[("anual", "Anual (12 meses, 2 de regalo)"), ("mensual", "Mensual"), ("unico", "Pago único (servicios)")]),
+                     campo("items", "Del catálogo (precio vigente)", "checks", req=False, opciones=items),
+                     campo("validez", "Validez (días)", "number", valor=15),
+                     campo("condiciones", "Condiciones (una por línea)", "textarea", req=False, valor=CONDICIONES_PX, filas=5)] + lineas)),
+            dict(titulo="Precios vigentes (mensual y anual)", nota="Son los que usan los presupuestos nuevos y la tienda en línea. Precios en USD con IVA incluido.",
+                 tabla=dict(cols=["Plan", "Mensual USD", "Anual USD", "Incluye"], num=[1, 2], filas=[
+                     dict(cells=[PLANES.get(p["plan"], {}).get("nombre", p["plan"]), p.get("mensual", "—"), p.get("anual", "—"), p.get("topes", "")]) for p in cat["planes"]]
+                     + [dict(cells=[f"Módulo {MODULOS.get(m['modulo'], m['modulo'])}", m["mensual"], m["anual"], "Para combos a medida"]) for m in cat["modulos"]])),
+            dict(titulo="Actualizar precio de un plan", form=dict(action=request.path, boton="Actualizar", campos=[h("precio"), campo("plan", "Plan", "select", opciones=planes_sel),
+                 campo("meses", "Período", "select", opciones=[(1, "Mensual"), (12, "Anual")]), campo("monto", "Precio USD (IVA incluido)", "number")])),
+            dict(titulo="Actualizar precio mensual de un módulo", form=dict(action=request.path, boton="Actualizar", campos=[h("precio_modulo"),
+                 campo("modulo", "Módulo", "select", opciones=list(MODULOS.items())), campo("monto", "USD por mes", "number")]))]
+    return pagina("Presupuestos", None, secs)
+
+
+@ruta("/plataforma/presupuestos/<int:pid>", "plataforma", ("GET", "POST"))
+def maestro_presupuesto_ver(pid):
+    from flask import Response
+    from .licensing.admin import ErrorAdmin
+    from . import plantilla_correo as pc
+    if request.method == "POST":
+        try:
+            adm = _admin()
+            if F.get("accion") == "enviar": adm.enviar_presupuesto(pid, (F.get("correo") or "").strip() or None); flash("Presupuesto enviado al cliente")
+            elif F.get("accion") in ("Aceptado", "Rechazado", "Anulado"): adm.estado_presupuesto(pid, F["accion"]); flash(f"Presupuesto {F['accion'].lower()}")
+            registrar(g.usuario.username, "PRESUPUESTO_" + str(F.get("accion")).upper(), str(pid), org=None); db.session.commit()
+        except (ErrorAdmin, ValueError, OSError) as e:
+            db.session.rollback(); flash(str(e))
+        return redirect(request.url)
+    try:
+        r = _admin().presupuesto(pid)
+    except (ErrorAdmin, ValueError, OSError) as e:
+        flash(str(e)); return redirect(url_for("web.maestro_presupuestos"))
+    p = r["presupuesto"]
+    st = "padding:10px 14px;border-radius:10px;font-weight:700;cursor:pointer"
+    form = lambda accion, texto, estilo, extra="": (f'<form method="post" action="{url_for("web.maestro_presupuesto_ver", pid=pid)}"><input type="hidden" name="csrf_token" value="{csrf_token_seguro()}">'
+                                                   f'<input type="hidden" name="accion" value="{accion}">{extra}<button style="{st};{estilo}">{texto}</button></form>')
+    barra = (f'<div class="no-print" style="max-width:720px;margin:16px auto 0;font-family:sans-serif;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+             f'<a href="{url_for("web.maestro_presupuestos")}" style="{st};border:1px solid #ccc;color:#191919;text-decoration:none;background:#fff">← Volver</a>'
+             f'<button type="button" data-imprimir style="{st};border:1px solid #ccc;background:#fff">Imprimir / PDF</button>'
+             + form("enviar", "Enviar por correo", "border:0;background:#87e64b;color:#1a4200",
+                    f'<input name="correo" type="email" placeholder="{escape(p.get("cliente_correo") or "correo del cliente")}" style="padding:9px;border:1px solid #ccc;border-radius:10px;margin-right:4px">')
+             + (form("Aceptado", "Marcar aceptado", "border:0;background:#191919;color:#fff") + form("Rechazado", "Rechazado", "border:1px solid #ccc;background:#fff")
+                if p["estado"] in ("Emitido", "Enviado") else "")
+             + '</div>' + "".join(f'<div class="no-print" role="alert" style="max-width:720px;margin:10px auto 0;padding:10px 14px;border-radius:10px;background:#eef9e6;font-family:sans-serif">{escape(m)}</div>'
+                                  for m in get_flashed_messages())
+             + f'<script src="{url_for("static", filename="app.js")}" defer></script><style>@media print{{.no-print{{display:none!important}}}}</style>')
+    html = pc.presupuesto_html(p, r["emisor"], current_app.config["APP_BASE_URL"]).replace("</body>", barra + "</body>", 1)
+    g.csp_estilos_en_linea = g.csp_scripts_propios = True
+    return Response(html, mimetype="text/html")

@@ -59,6 +59,14 @@ por el chat (catálogo con precios e inventario) y los proveedores confirman sus
 compra (Administración → Órdenes de compra) siguen el modelo de la factura de Gigadevs con los datos de la empresa emisora y del
 proveedor o cliente, y se envían por correo o WhatsApp.
 
+## Presupuestos
+- **Gigadevs (consola Maestro → Presupuestos):** presupuestos con formato Contax a precios VIGENTES del catálogo (planes, combos y
+  módulos), mensual o anual según elija el cliente, más servicios a la medida; envío por correo y estado (aceptado/rechazado). En la misma
+  pantalla se ven y actualizan los precios mensuales y anuales.
+- **Cada empresa (Facturación → Presupuestos):** cotizaciones a sus clientes, manuales o por el bot de WhatsApp (el cliente escribe
+  «presupuesto»). Modo automático (el bot lo envía al instante) o manual (queda en borrador para revisión). El cliente acepta con
+  «ACEPTO N» y el presupuesto se factura con un clic.
+
 ## Plan de cuentas existente
 Contabilidad → Catálogo de cuentas → «¿Ya tiene su plan de cuentas? Impórtelo»: Excel (.xlsx), CSV/TXT o texto pegado. También hay una
 plantilla CSV y un plan modelo VEN-NIF.

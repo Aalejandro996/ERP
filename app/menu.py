@@ -13,6 +13,7 @@ MENU = [
     ("Facturación", [
         ("web.facturas", "🧾", "Documentos de venta", "facturacion.ver"),
         ("web.factura_nueva", "➕", "Nueva factura", "facturacion.emitir"),
+        ("web.presupuestos", "📑", "Presupuestos", "presupuestos.ver"),
         ("web.libro_ventas", "📗", "Libro de ventas", "facturacion.ver"),
         ("web.clientes_fact", "👥", "Clientes", "facturacion.ver"),
         ("web.series", "🔢", "Series y control", "facturacion.configurar")]),

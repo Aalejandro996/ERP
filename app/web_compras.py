@@ -406,6 +406,7 @@ def whatsapp_config(eid):
                 cfg.serie_id = int(sid) if sid else None
                 if cfg.factura_automatica and not cfg.serie_id: raise ValueError("Para facturar automáticamente elija la serie")
                 cfg.dias_credito = max(0, min(int(F.get("dias_credito") or 0), 120))
+                if F.get("presupuesto_modo") in ("automatico", "manual"): cfg.presupuesto_modo = F["presupuesto_modo"]
                 cfg.usuario_id = g.usuario.id      # el bot emite en nombre de quien lo configuró (queda en la bitácora)
                 cfg.activo = F.get("activo", "1") == "1"
                 registrar(g.usuario.username, "WHATSAPP_CONFIGURADO", f"empresa={eid} activo={cfg.activo}")
@@ -461,6 +462,9 @@ def whatsapp_config(eid):
                                  ("1", "Emitir la FACTURA automáticamente con lo disponible")], valor="1" if cfg and cfg.factura_automatica else "0"),
                            campo("serie_id", "Serie para facturar", "select", req=False, opciones=[("", "—")] + series, valor=cfg.serie_id if cfg else None),
                            campo("dias_credito", "Días de crédito de esas facturas", "number", req=False, valor=cfg.dias_credito if cfg else 0),
+                           campo("presupuesto_modo", "Cuando un cliente pida un presupuesto", "select", opciones=[
+                                 ("automatico", "El bot lo envía al instante con los precios del inventario"),
+                                 ("manual", "Queda en borrador: una persona lo revisa y lo envía")], valor=cfg.presupuesto_modo if cfg else "automatico"),
                            campo("activo", "Bot", "select", opciones=[("1", "Activo"), ("0", "Pausado")], valor="1" if (cfg is None or cfg.activo) else "0")]))]
     if cfg and ws:
         secs.append(dict(titulo="Verificar la conexión con WasenderAPI", form=dict(action=request.path, boton="Verificar", campos=[h("estado")])))
