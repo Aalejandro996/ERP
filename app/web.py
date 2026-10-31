@@ -188,9 +188,34 @@ def crear_empresa(form, archivos=None) -> Empresa:
     return e
 
 
+def portada():
+    """Página principal pública de Contax. Los precios salen del catálogo vigente (servidor de licencias); si no responde,
+    se muestran los de referencia."""
+    from decimal import Decimal
+    from .planes import MODULOS, PLANES
+    ref = {"CASH": ("25.00", "250.00", "3 usuarios · 1 empresa"), "ERP_ADMIN": ("23.00", "230.00", "5 usuarios · 2 empresas"),
+           "ERP_CONTABLE": ("45.00", "450.00", "5 usuarios · 5 empresas"), "ALL_IN_ONE": ("69.00", "690.00", "10 usuarios · 5 empresas")}
+    precios = {}
+    adm = current_app.extensions.get("admin_licencias")
+    try:
+        for p in (adm().precios() if adm else []):
+            x = precios.setdefault(p["plan"], {})
+            x["mensual" if p["meses"] == 1 else "anual" if p["meses"] == 12 else "otro"] = p["monto_usd"]
+            x["topes"] = f"{p['max_usuarios']} usuarios · {p['max_empresas']} empresas"
+    except Exception:  # noqa: BLE001 — la portada no depende del servidor de licencias
+        precios = {}
+    fmt = lambda v: f"{Decimal(str(v)):,.0f}".replace(",", ".") if v is not None and Decimal(str(v)) == Decimal(str(v)).to_integral() else (f"{Decimal(str(v)):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if v else None)
+    planes = []
+    for k in ("CASH", "ERP_ADMIN", "ERP_CONTABLE", "ALL_IN_ONE"):
+        x = precios.get(k) or dict(zip(("mensual", "anual", "topes"), ref[k]))
+        planes.append(dict(nombre=PLANES[k]["nombre"].replace(" — Facturación", ""), modulos=", ".join(MODULOS[m] for m in sorted(PLANES[k]["modulos"])),
+                           mensual=fmt(x.get("mensual")), anual=fmt(x.get("anual")), topes=x.get("topes") or ref[k][2], destacado=k == "ALL_IN_ONE"))
+    return render_template("portada.html", planes=planes)
+
+
 @bp.route("/", methods=["GET", "POST"])
 def inicio():
-    if g.usuario is None: return redirect(url_for("auth.login"))
+    if g.usuario is None: return portada()
     if g.usuario.rol == "Maestro": return redirect(url_for("web.plataforma"))
     if request.method == "GET" and g.usuario.rol == "Administrador" and g.licencia:
         from .models import Organizacion

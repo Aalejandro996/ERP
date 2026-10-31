@@ -1,0 +1,129 @@
+<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ config.APP_NOMBRE }}® · Facturación, contabilidad y ventas por WhatsApp para empresas venezolanas</title>
+<meta name="description" content="Contax: facturación según la Providencia SNAT/2011/00071, contabilidad VEN-NIF, inventario, compras y un bot de WhatsApp que toma pedidos. Prueba gratis 72 horas.">
+<link rel="icon" href="{{ url_for('static', filename='marca/favicon.ico') }}" sizes="any"><link rel="icon" href="{{ url_for('static', filename='marca/logo-icono.svg') }}" type="image/svg+xml">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename='marca/apple-touch-icon.png') }}"><meta name="theme-color" content="#191919">
+<meta property="og:title" content="Contax® · Tu empresa en orden. Tu fisco al día."><meta property="og:image" content="{{ config.APP_BASE_URL }}/static/marca/icono-512.png">
+<link rel="stylesheet" href="{{ url_for('static', filename='estilo.css') }}"></head>
+<body class="lp">
+{% set wa = 'https://wa.me/584242588321?text=' %}
+<header class="lp-barra"><div class="lp-c lp-barra-in">
+  <a class="lp-marca" href="/"><img src="{{ url_for('static', filename='marca/logo-icono.svg') }}" alt="" width="34" height="34"><span>Conta<b>x</b><sup>®</sup></span></a>
+  <nav class="lp-nav"><a href="#funciones">Funciones</a><a href="#whatsapp">WhatsApp</a><a href="#planes">Planes</a><a href="#preguntas">Preguntas</a></nav>
+  <div class="lp-barra-acc"><a class="lp-btn lp-btn-linea" href="{{ url_for('auth.login') }}">Iniciar sesión</a>
+    <a class="lp-btn" href="{{ wa }}Hola%20Gigadevs%2C%20quiero%20probar%20Contax%20gratis%2072%20horas" target="_blank" rel="noopener">Probar gratis</a></div>
+</div></header>
+
+<section class="lp-hero"><div class="lp-c lp-hero-in">
+  <div class="lp-hero-txt">
+    <span class="lp-chip">Hecho en Venezuela · para la normativa venezolana</span>
+    <h1>Factura, lleva tu contabilidad y vende por WhatsApp. <span>Y que todo cuadre.</span></h1>
+    <p>Contax reúne facturación con número de control, contabilidad VEN-NIF, inventario, compras y un bot que atiende a tus clientes por WhatsApp. En la web, desde cualquier equipo, con tus datos aislados y protegidos.</p>
+    <div class="lp-cta"><a class="lp-btn lp-btn-xl" href="{{ wa }}Hola%20Gigadevs%2C%20quiero%20probar%20Contax%20gratis%2072%20horas" target="_blank" rel="noopener">Probar gratis 72 horas</a>
+      <a class="lp-btn lp-btn-xl lp-btn-linea-claro" href="#planes">Ver planes</a></div>
+    <ul class="lp-checks"><li>Sin tarjeta</li><li>Bolívares, dólares, euros y USDT</li><li>Migra desde Galac, Profit Plus o Excel</li></ul>
+  </div>
+  <div class="lp-hero-vis" aria-hidden="true">
+    <div class="lp-factura"><div class="lp-f-cab"><span>Factura A00000128</span><b>Control 00-00000128</b></div>
+      <div class="lp-f-total">Bs 4.234,00</div>
+      <div class="lp-f-fila"><span>Base imponible 16 %</span><b>Bs 3.650,00</b></div><div class="lp-f-fila"><span>IVA 16 %</span><b>Bs 584,00</b></div>
+      <div class="lp-f-fila"><span>Equivalente</span><b>116,00 USD · BCV</b></div><div class="lp-f-ok">✔ Libro de ventas · CxC · asiento</div></div>
+    <div class="lp-chat"><div class="lp-burb lp-cli"><i>PDF</i> Orden de compra 778</div>
+      <div class="lp-burb lp-bot">🧾 Factura lista con lo disponible.<br><b>Total Bs 4.234,00</b> · Pague en caja</div></div>
+  </div>
+</div></section>
+
+<div class="lp-tira"><div class="lp-c">{% for t in ['Prov. SNAT/2011/00071', 'VEN-NIF · NIIF 18', 'IVA · IGTF · ISLR', 'Retenciones y TXT', 'Tasa BCV diaria', 'Libros de compras y ventas'] %}<span>{{ t }}</span>{% endfor %}</div></div>
+
+<section class="lp-sec" id="funciones"><div class="lp-c">
+  <h2 class="lp-h2">Todo lo que tu empresa necesita, <span>en un solo lugar</span></h2>
+  <p class="lp-sub">Activa solo los módulos que usas. Cada factura, compra y movimiento de inventario llega solo a tus libros.</p>
+  <div class="lp-grid">
+    {% for ic, t, d in [
+      ('🧾', 'Facturación SENIAT', 'Facturas, notas de crédito y débito con número de control de tu imprenta digital, en Bs o divisas con la tasa BCV del día, IVA e IGTF calculados.'),
+      ('📒', 'Contabilidad VEN-NIF', 'Plan de cuentas, asientos, diario, mayor, balances, estado de resultados (NIC 1 y NIIF 18) y cierres. Importa tu plan de cuentas en un clic.'),
+      ('💬', 'Bot de WhatsApp', 'Atiende a tus clientes 24/7: catálogo, pedidos y presupuestos. Si te envían su orden de compra en PDF, la lee y deja la factura lista.'),
+      ('📦', 'Inventario y compras', 'Kardex promedio o PEPS, órdenes de compra con tu logo y recepción que entra al inventario y al libro de compras.'),
+      ('✅', 'Libros que cuadran', 'El cuadre de libros compara ventas, compras, inventario y cuentas por cobrar y pagar con la contabilidad, y contabiliza lo pendiente.'),
+      ('📥', 'Migración sin dolor', 'Trae clientes, proveedores, inventario y saldos desde Galac, Profit Plus o Excel. Tú validas fila por fila antes de cargar.'),
+      ('🇻🇪', 'Fiscal Venezuela', 'ISLR con tarifa N° 2, ajuste por inflación, retenciones de IVA e ISLR con su TXT, y parámetros legales al día con la Gaceta Oficial.'),
+      ('🕵️', 'Auditoría', 'Pruebas de integridad, hallazgos, papeles de trabajo y una bitácora inalterable de cada operación.')] %}
+    <article class="lp-card"><div class="lp-ic">{{ ic }}</div><h3>{{ t }}</h3><p>{{ d }}</p></article>{% endfor %}
+  </div>
+</div></section>
+
+<section class="lp-sec lp-oscuro" id="whatsapp"><div class="lp-c lp-dos">
+  <div><span class="lp-chip lp-chip-lima">Nuevo</span>
+    <h2 class="lp-h2">Tu WhatsApp <span>ahora vende y factura</span></h2>
+    <p class="lp-sub lp-sub-claro">Conecta el WhatsApp Business de tu empresa con un código QR o con la API oficial de Meta. El bot responde con tu catálogo y tus existencias reales.</p>
+    <ul class="lp-lista">
+      <li><b>Pedidos y presupuestos</b> con los precios de tu inventario, al instante o revisados por tu equipo.</li>
+      <li><b>Órdenes de compra en PDF:</b> las lee, ajusta a lo disponible y emite la factura o una orden de venta.</li>
+      <li><b>Proveedores:</b> confirman tus órdenes de compra y te envían ofertas desde el chat.</li>
+      <li><b>Cómo pagar:</b> cada respuesta lleva el total, el enlace al documento y tus datos de pago o retiro.</li></ul></div>
+  <div class="lp-tel" aria-hidden="true"><div class="lp-tel-cab">Comercial Beta · WhatsApp</div>
+    <div class="lp-burb lp-cli">Hola, ¿tienen harina?</div>
+    <div class="lp-burb lp-bot">📦 <b>A001</b> Harina PAN 1kg — Bs 45,50 ✅<br>Escriba el código y la cantidad.</div>
+    <div class="lp-burb lp-cli">A001 20</div>
+    <div class="lp-burb lp-bot">📑 <b>Presupuesto N° 31</b><br>Total Bs 1.055,60 (IVA incluido)<br>Responda <b>ACEPTO 31</b> para confirmar.</div>
+    <div class="lp-burb lp-cli">ACEPTO 31</div></div>
+</div></section>
+
+<section class="lp-sec"><div class="lp-c">
+  <h2 class="lp-h2">Empieza hoy <span>en tres pasos</span></h2>
+  <div class="lp-pasos">{% for n, t, d in [('1', 'Pide tu demo de 72 horas', 'Facturación e inventario completos, gratis y sin tarjeta.'),
+                                         ('2', 'Sigue el tutorial', 'Crea tu empresa con su logo, elige tus módulos y configura tus documentos en minutos.'),
+                                         ('3', 'Trae tus datos y factura', 'Importa tu plan de cuentas, clientes e inventario y emite tu primera factura.')] %}
+    <div class="lp-paso"><span>{{ n }}</span><h3>{{ t }}</h3><p>{{ d }}</p></div>{% endfor %}</div>
+</div></section>
+
+<section class="lp-sec lp-gris"><div class="lp-c lp-dos">
+  <div><h2 class="lp-h2">Seguridad de banco <span>para tus datos</span></h2>
+    <p class="lp-sub">Tu información es tuya. La protegemos con las mismas prácticas de los sistemas financieros.</p></div>
+  <div class="lp-seg">{% for t, d in [('Verificación en dos pasos', 'Obligatoria para todos los usuarios.'), ('Datos aislados', 'Cada empresa en su propio espacio, separada en la base de datos.'),
+                                       ('Bitácora inalterable', 'Cada factura y asiento queda registrado y no se puede borrar.'), ('Cifrado y respaldos', 'Conexión segura y copias periódicas.')] %}
+    <div class="lp-seg-i"><b>{{ t }}</b><span>{{ d }}</span></div>{% endfor %}</div>
+</div></section>
+
+<section class="lp-sec" id="planes"><div class="lp-c">
+  <h2 class="lp-h2">Planes <span>claros</span></h2>
+  <p class="lp-sub">Precios en dólares con IVA incluido. Paga en USDT o en bolívares a la tasa BCV del día.</p>
+  <div class="lp-periodo"><input type="radio" name="lp-p" id="lp-mes" checked><label for="lp-mes">Mensual</label>
+    <input type="radio" name="lp-p" id="lp-anio"><label for="lp-anio">Anual <small>2 meses de regalo</small></label>
+  <div class="lp-planes">{% for p in planes %}
+    <article class="lp-plan {{ 'lp-plan-dest' if p.destacado }}">{% if p.destacado %}<span class="lp-plan-tag">Más completo</span>{% endif %}
+      <h3>{{ p.nombre }}</h3><p class="lp-plan-d">{{ p.modulos }}</p>
+      <div class="lp-precio lp-p-mes">{% if p.mensual %}<b>${{ p.mensual }}</b><span>/mes</span>{% else %}<b>—</b>{% endif %}</div>
+      <div class="lp-precio lp-p-anio">{% if p.anual %}<b>${{ p.anual }}</b><span>/año</span>{% else %}<b>—</b>{% endif %}</div>
+      <p class="peq">{{ p.topes }}</p>
+      <a class="lp-btn {{ '' if p.destacado else 'lp-btn-linea' }}" href="{{ wa }}{{ ('Hola Gigadevs, me interesa el plan ' ~ p.nombre ~ ' de Contax')|urlencode }}" target="_blank" rel="noopener">Lo quiero</a></article>{% endfor %}
+    <article class="lp-plan lp-plan-medida"><h3>A tu medida</h3><p class="lp-plan-d">Elige solo los módulos que usas, con pago mensual o anual. También integramos Contax con tu sistema actual.</p>
+      <div class="lp-precio"><b>Combo</b></div><p class="peq">Te armamos el presupuesto</p>
+      <a class="lp-btn lp-btn-linea" href="{{ wa }}Hola%20Gigadevs%2C%20quiero%20un%20combo%20a%20mi%20medida%20de%20Contax" target="_blank" rel="noopener">Cotizar</a></article>
+  </div></div>
+</div></section>
+
+<section class="lp-sec lp-gris" id="preguntas"><div class="lp-c lp-faq">
+  <h2 class="lp-h2">Preguntas <span>frecuentes</span></h2>
+  {% for q, a in [
+    ('¿Contax sirve para facturar ante el SENIAT?', 'Contax emite facturas, notas de crédito y débito con la numeración y los datos que exige la Providencia SNAT/2011/00071, usando el rango de números de control que te asigna tu imprenta digital autorizada, y genera tu libro de ventas.'),
+    ('¿Puedo facturar en dólares?', 'Sí. Facturas en bolívares, dólares, euros o USDT con el equivalente en bolívares a la tasa oficial del BCV del día, que Contax actualiza automáticamente. El IGTF se calcula cuando corresponde.'),
+    ('¿Qué pasa con mis datos de Galac, Profit Plus o Excel?', 'Los importas con la herramienta de migración: reconoce las columnas, te muestra fila por fila lo que va a cargar y solo carga cuando lo validas. Los saldos iniciales se llevan a la contabilidad con un asiento de apertura.'),
+    ('¿Cómo funciona la prueba de 72 horas?', 'Te activamos Facturación e Inventario por 72 horas, gratis y sin tarjeta. Si te gusta, eliges tu plan y sigues trabajando con los mismos datos.'),
+    ('¿El bot de WhatsApp usa mi número?', 'Sí, el WhatsApp Business de tu empresa. Lo conectas con un código QR o con la API oficial de Meta. Te recomendamos usarlo para atender clientes, no para envíos masivos.'),
+    ('¿Mi contador puede trabajar en Contax?', 'Sí. Invitas a tu equipo con roles (contador, auxiliar, cajero, auditor), cada uno con su clave y su verificación en dos pasos, y le asignas las empresas que puede ver.')] %}
+  <details class="lp-q"><summary>{{ q }}</summary><p>{{ a }}</p></details>{% endfor %}
+</div></section>
+
+<section class="lp-final"><div class="lp-c"><h2>Tu empresa en orden. <span>Tu fisco al día.</span></h2>
+  <p>Pruébalo 72 horas gratis. Te acompañamos en la puesta en marcha.</p>
+  <a class="lp-btn lp-btn-xl" href="{{ wa }}Hola%20Gigadevs%2C%20quiero%20probar%20Contax%20gratis%2072%20horas" target="_blank" rel="noopener">Escríbenos por WhatsApp</a></div></section>
+
+<footer class="lp-pie"><div class="lp-c lp-pie-in">
+  <div><a class="lp-marca" href="/"><img src="{{ url_for('static', filename='marca/logo-icono.svg') }}" alt="" width="30" height="30"><span>Conta<b>x</b><sup>®</sup></span></a>
+    <p>Contax® es una marca registrada de Gigadevs Corp · Venezuela</p></div>
+  <nav><a href="{{ url_for('auth.login') }}">Iniciar sesión</a><a href="{{ url_for('web.legal', pagina='terminos') }}">Términos y condiciones</a>
+    <a href="{{ url_for('web.legal', pagina='privacidad') }}">Privacidad</a><a href="{{ url_for('web.legal', pagina='cookies') }}">Cookies</a>
+    <a href="https://gigadevs-corp.onrender.com" target="_blank" rel="noopener">Gigadevs Corp</a></nav>
+</div></footer>
+</body></html>
