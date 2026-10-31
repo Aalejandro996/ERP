@@ -66,6 +66,14 @@ class ClienteAdmin:
     # precios y órdenes
     def precios(self): return self._req("GET", "/admin/v1/precios")["precios"]
     def fijar_precio(self, **d): return self._req("PUT", "/admin/v1/precios", d)
+    def sembrar_precios(self): return self._req("POST", "/admin/v1/precios/referencia", {})
+    # combos personalizados (módulos a elección, mensual o anual) y demo de 72 h
+    def combos(self, activos=False): return self._req("GET", "/admin/v1/combos", params={"activos": "1" if activos else None})
+    def crear_combo(self, **d): return self._req("POST", "/admin/v1/combos", d)
+    def activar_combo(self, cid, activo): return self._req("PATCH", f"/admin/v1/combos/{int(cid)}", {"activo": bool(activo)})
+    def precio_sugerido(self, modulos, meses): return self._req("GET", "/admin/v1/combos/sugerido", params={"modulos": ",".join(modulos), "meses": meses})["monto_usd"]
+    def fijar_precio_modulo(self, modulo, mensual_usd): return self._req("PUT", "/admin/v1/precios-modulo", {"modulo": modulo, "mensual_usd": mensual_usd})
+    def solicitar_demo(self, **d): return self._req("POST", "/admin/v1/demo", d)
     def crear_orden(self, **d): return self._req("POST", "/admin/v1/ordenes", d)
     def ordenes(self, org=None): return self._req("GET", "/admin/v1/ordenes", params={"org": org})["ordenes"]
     def informar_pago(self, ref, **d): return self._req("POST", f"/admin/v1/ordenes/{ref}/referencia", d)

@@ -52,7 +52,7 @@ def create_app(config_obj=None):
     app.extensions["admin_licencias"] = (lambda: ClienteAdmin(app.config["LICENSE_ADMIN_URL"], app.config["LICENSE_ADMIN_SECRET"])) \
         if app.config.get("LICENSE_ADMIN_SECRET") else None
 
-    from . import models, models2, models_fact  # noqa: F401  (registra tablas)
+    from . import models, models2, models_fact, models_compras  # noqa: F401  (registra tablas)
     from .cifrado import CifradorCampos
     app.extensions["cifrador"] = CifradorCampos(app.config["FIELD_ENCRYPTION_KEY"])
 
@@ -112,13 +112,21 @@ def create_app(config_obj=None):
 
     @app.context_processor
     def contexto():
-        return {"MODULOS": MODULOS, "modulos": getattr(g, "modulos", frozenset()), "plan_nombre": nombre_plan(getattr(g, "licencia", None))}
+        lic = getattr(g, "licencia", None) or {}
+        demo = None
+        if lic.get("plan") == "DEMO":  # tiempo que le queda a la demo de 72 h
+            import time
+            s = max(int(lic.get("vence_licencia", lic.get("exp", 0))) - int(time.time()), 0)
+            demo = f"quedan {s // 3600} h {(s % 3600) // 60} min" if s else "vencida"
+        return {"MODULOS": MODULOS, "modulos": getattr(g, "modulos", frozenset()), "plan_nombre": nombre_plan(getattr(g, "licencia", None)),
+                "demo_restante": demo}
 
     @app.after_request
     def cabeceras(resp):
         resp.headers["Content-Security-Policy"] = ("default-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; "
                                                    "base-uri 'self'; form-action 'self'"
-                                                   + ("; style-src 'self' 'unsafe-inline'; script-src 'none'" if getattr(g, "csp_estilos_en_linea", False) else ""))
+                                                   + ("; style-src 'self' 'unsafe-inline'; script-src " + ("'self'" if getattr(g, "csp_scripts_propios", False) else "'none'")
+                                                      if getattr(g, "csp_estilos_en_linea", False) else ""))
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["X-Frame-Options"] = "DENY"
         # same-origin: el Referer solo viaja dentro del ERP (lo exige la protección CSRF sobre HTTPS) y nunca a otros sitios

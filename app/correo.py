@@ -20,7 +20,7 @@ def url_absoluta(ruta: str) -> str:
     return current_app.config["APP_BASE_URL"].rstrip("/") + ruta
 
 
-def enviar(destino: str, asunto: str, cuerpo: str, boton=None, titulo=None, destacado=None, filas=(), nota=None):
+def enviar(destino: str, asunto: str, cuerpo: str, boton=None, titulo=None, destacado=None, filas=(), nota=None, html=None):
     """cuerpo: párrafos separados por una línea en blanco. boton: (texto, url). Se envía en HTML (plantilla con el estilo
     de la aplicación) y en texto plano equivalente."""
     cfg = current_app.config
@@ -28,7 +28,7 @@ def enviar(destino: str, asunto: str, cuerpo: str, boton=None, titulo=None, dest
     titulo = titulo or asunto
     pie = "Mensaje automático: no responda a este correo. Si no reconoce esta acción, contacte de inmediato al administrador de su organización."
     txt = plantilla_correo.texto(titulo, parrafos, boton, destacado, filas, nota, cfg["APP_NOMBRE"]) + "\n" + pie
-    htm = plantilla_correo.html(titulo, parrafos, cfg["APP_BASE_URL"], cfg["APP_NOMBRE"], cfg.get("APP_LEMA", ""), boton, destacado, filas, nota, pie)
+    htm = html or plantilla_correo.html(titulo, parrafos, cfg["APP_BASE_URL"], cfg["APP_NOMBRE"], cfg.get("APP_LEMA", ""), boton, destacado, filas, nota, pie)
     msg = EmailMessage()
     msg["From"], msg["To"], msg["Subject"] = cfg["MAIL_FROM"], destino, f"{asunto} · {cfg['APP_NOMBRE']}"
     msg.set_content(txt)

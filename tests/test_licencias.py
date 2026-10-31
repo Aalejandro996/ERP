@@ -274,7 +274,7 @@ def test_licencia_pagada_llega_con_su_factura_en_un_segundo_correo(e):
                             tasa_bcv="887.302", cliente_rif="J-12345678-9")
     e.t[0] += 60; e.bf.pago(o["monto_esperado"], e.t[0], "T1")
     e.app.extensions["revisar_pendientes"](); e.app.extensions["revisar_pendientes"]()
-    assert [c[1] for c in e.correos] == ["Su licencia ERP (CASH)", "Factura N° A00000001 · ERP"]       # clave y luego factura, una vez
+    assert [c[1] for c in e.correos] == ["Su licencia ERP (Cash — Facturación)", "Factura N° A00000001 · ERP"]       # clave y luego factura, una vez
     f = e.admin.facturas()[0]
     exacto = Decimal(o["monto_esperado"])
     assert f["orden_ref"] == o["ref"] and f["numero_control"] == "00-00000001" and f["cliente_rif"] == "J-12345678-9"
@@ -361,3 +361,54 @@ def test_factura_construida_solo_con_el_cliente(e):
     assert len(ids) == 1 and e.admin.pendientes_factura(org="7") == [] and e.admin.factura(ids[0])["numero_completo"] == "A00000002"
     with pytest.raises(ErrorAdmin, match="RIF"):
         e.admin.crear_licencia(cliente="X", correo="x@y.test", organizacion_ref="8", plan="CASH", venta={"monto": "1", "cliente_rif": "malo"})
+
+
+# ------------------------------------------------------------------ precios de referencia, combos personalizados y demo de 72 h
+def test_precios_de_referencia_sin_pisar_los_existentes(e):
+    precios = {(p["plan"], p["meses"]): p for p in e.admin.precios()}
+    assert precios[("CASH", 1)]["monto_usd"] == "25.00" and precios[("CASH", 12)]["monto_usd"] == "250.00"      # mensual y anual (10 meses)
+    assert {("ERP_CONTABLE", 1), ("ERP_ADMIN", 12), ("ALL_IN_ONE", 1), ("ALL_IN_ONE", 12)} <= set(precios)
+    e.admin.fijar_precio(plan="CASH", meses=1, monto_usd="19.99", max_usuarios=2, max_empresas=1, max_equipos=2)
+    assert e.st.sembrar_referencia() == 0                                       # ya se sembró una vez
+    assert e.admin.sembrar_precios()["agregados"] == 0                          # forzado: no falta nada…
+    assert next(p for p in e.admin.precios() if p["plan"] == "CASH" and p["meses"] == 1)["monto_usd"] == "19.99"   # …y lo del Maestro queda
+
+
+def test_combo_personalizado_mensual_y_anual_segun_lo_que_incluye(e):
+    pm = e.admin.combos()["precios_modulo"]
+    assert pm["facturacion"] == "18.00" and pm["contabilidad"] == "25.00"
+    assert e.admin.precio_sugerido(["facturacion", "contabilidad"], 1) == "43.00"
+    assert e.admin.precio_sugerido(["facturacion", "contabilidad"], 12) == "430.00"          # anual: 10 de 12 meses
+    e.admin.fijar_precio_modulo("facturacion", "20")
+    mensual = e.admin.crear_combo(nombre="Tienda + Contable", modulos=["facturacion", "contabilidad"], meses=1)["id"]
+    anual = e.admin.crear_combo(nombre="Tienda + Contable", modulos=["facturacion", "contabilidad"], meses=12, monto_usd="399")["id"]
+    cs = {c["id"]: c for c in e.admin.combos()["combos"]}
+    assert cs[mensual]["monto_usd"] == "45.00" and cs[anual]["monto_usd"] == "399.00" and cs[mensual]["modulos"] == "contabilidad,facturacion"
+    with pytest.raises(ErrorAdmin, match="módulo"): e.admin.crear_combo(nombre="Vacío", modulos=[], meses=1)
+    # el cliente compra el combo anual por pago móvil: recibe una licencia PERSONALIZADA con exactamente esos módulos
+    o = e.admin.crear_orden(organizacion_ref="5", cliente="Beta", correo="b@beta.test", combo_id=anual, moneda="VES", tasa_bcv="40", cliente_rif="J-12345678-9")
+    assert Decimal(o["monto"]) == Decimal("15960.00")
+    e.admin.confirmar(o["ref"], "maestro")
+    claims = e.gestor("srvC").activar(_clave_de_correo(e.correos[0][2])).claims
+    assert claims["plan"] == "PERSONALIZADO" and claims["modulos"] == ["contabilidad", "facturacion"]
+    e.admin.activar_combo(anual, False)                                                       # retirado de la venta
+    assert all(c["id"] != anual for c in e.admin.combos(activos=True)["combos"])
+    with pytest.raises(ErrorAdmin, match="no está a la venta"):
+        e.admin.crear_orden(organizacion_ref="5", cliente="Beta", correo="b@beta.test", combo_id=anual, moneda="VES", tasa_bcv="40")
+
+
+def test_demo_de_72_horas_una_sola_vez(e):
+    from app.planes import modulos_de
+    r = e.admin.solicitar_demo(organizacion_ref="7", cliente="Gamma", correo="g@gamma.test", cliente_rif="J-11111111-1")
+    assert r["vence_en"] == e.t[0] + 72 * 3600
+    gd = e.gestor("srvD")
+    claims = gd.activar(_clave_de_correo(e.correos[-1][2])).claims
+    assert claims["plan"] == "DEMO" and modulos_de(claims) == {"facturacion", "inventario"} and claims["max_empresas"] == 1
+    for otra in (dict(organizacion_ref="7", correo="otro@gamma.test"), dict(organizacion_ref="8", correo="g@gamma.test"),
+                 dict(organizacion_ref="9", correo="z@z.test", cliente_rif="J-11111111-1")):
+        with pytest.raises(ErrorAdmin, match="ya utilizó"): e.admin.solicitar_demo(cliente="Gamma", **otra)
+    e.t[0] += 72 * 3600 + 1
+    assert not gd.renovar().valida                                               # a las 72 h deja de servir
+    lid, _ = e.clave(plan="DEMO", dias=365)                                      # emitida por el Maestro: igual dura 72 h
+    l = next(x for x in e.admin.licencias() if x["id"] == lid)
+    assert l["vence_en"] - l["creada_en"] == 72 * 3600

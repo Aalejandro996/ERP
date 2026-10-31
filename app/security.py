@@ -75,12 +75,13 @@ PERMISOS = {
     "Administrador": {"*"},
     "Contador": {"asientos.ver", "asientos.crear", "asientos.anular", "periodos.cerrar", "cuentas.editar", "reportes.ver",
                  "cartera.ver", "cartera.operar", "inventario.ver", "inventario.operar", "fiscal.ver", "fiscal.operar", "config.contable",
-                 "facturacion.ver", "facturacion.emitir", "facturacion.anular", "facturacion.configurar"},
+                 "facturacion.ver", "facturacion.emitir", "facturacion.anular", "facturacion.configurar",
+                 "compras.ver", "compras.operar", "whatsapp.ver", "whatsapp.operar"},
     "Auxiliar": {"asientos.ver", "asientos.crear", "reportes.ver", "cartera.ver", "cartera.operar", "inventario.ver", "inventario.operar",
-                 "fiscal.ver", "facturacion.ver", "facturacion.emitir"},
+                 "fiscal.ver", "facturacion.ver", "facturacion.emitir", "compras.ver", "compras.operar", "whatsapp.ver", "whatsapp.operar"},
     "Auditor Financiero": {"asientos.ver", "reportes.ver", "cartera.ver", "inventario.ver", "fiscal.ver", "facturacion.ver",
-                           "auditoria.ver", "auditoria.crear"},  # solo lectura + hallazgos (segregación de funciones)
-    "Cajero": {"facturacion.ver", "facturacion.emitir", "inventario.ver"},
+                           "auditoria.ver", "auditoria.crear", "compras.ver"},  # solo lectura + hallazgos (segregación de funciones)
+    "Cajero": {"facturacion.ver", "facturacion.emitir", "inventario.ver", "whatsapp.ver", "whatsapp.operar"},
 }
 MFA_OBLIGATORIO = set(PERMISOS)  # MFA para TODOS los roles (sistema expuesto en Internet)
 

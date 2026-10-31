@@ -185,10 +185,16 @@ def admin_licencia():
                 if moneda == "VES" and not tasa: raise ValueError("No hay tasa BCV cargada; intente más tarde.")
                 plan, meses = F["oferta"].split(":", 1)
                 tasa = tasa or SFT.tasa_vigente(hoy_ve(), "USD")  # también en USDT: la factura lleva el equivalente en Bs
-                o = adm.crear_orden(organizacion_ref=str(org.id), cliente=org.nombre, correo=g.usuario.email, plan=plan, meses=int(meses), moneda=moneda,
-                                    tasa_bcv=str(tasa) if tasa else None, cliente_rif=org.rif)
-                registrar(g.usuario.username, "ORDEN_LICENCIA", f"{o['ref']} {plan} {meses}m {o['monto']} {moneda}"); db.session.commit()
+                pedido = dict(combo_id=int(meses)) if plan == "COMBO" else dict(plan=plan, meses=int(meses))
+                o = adm.crear_orden(organizacion_ref=str(org.id), cliente=org.nombre, correo=g.usuario.email, moneda=moneda,
+                                    tasa_bcv=str(tasa) if tasa else None, cliente_rif=org.rif, **pedido)
+                registrar(g.usuario.username, "ORDEN_LICENCIA", f"{o['ref']} {plan} {meses} {o['monto']} {moneda}"); db.session.commit()
                 return redirect(url_for("web.admin_licencia", orden=o["ref"]))
+            if a == "demo":
+                adm.solicitar_demo(organizacion_ref=str(org.id), cliente=org.nombre, correo=g.usuario.email, cliente_rif=org.rif, autor=g.usuario.username)
+                registrar(g.usuario.username, "DEMO_SOLICITADA", "72 h facturación+inventario"); db.session.commit()
+                flash(f"Demo de 72 horas emitida: la clave llegó a {g.usuario.email}. Péguela en «Activar licencia».")
+                return redirect(url_for("web.admin_licencia"))
             if a == "verificar":
                 _orden_de_mi_org(adm, F["ref"])  # solo órdenes de SU organización
                 r = adm.verificar(F["ref"])
@@ -215,9 +221,9 @@ def admin_licencia():
     # ---- muro de pago
     if adm_f is not None:
         try:
-            adm = adm_f(); precios, ordenes = adm.precios(), adm.ordenes(org=str(org.id))
+            adm = adm_f(); precios, ordenes, combos = adm.precios(), adm.ordenes(org=str(org.id)), adm.combos(activos=True)["combos"]
         except (ErrorAdmin, ValueError, OSError) as e:
-            precios, ordenes = [], []; flash(f"Tienda de licencias no disponible: {e}")
+            precios, ordenes, combos = [], [], []; flash(f"Tienda de licencias no disponible: {e}")
         ref = request.args.get("orden", "")
         o = next((x for x in ordenes if x["ref"] == ref), None)
         if o:
@@ -238,12 +244,19 @@ def admin_licencia():
                                  form=dict(action=request.path, boton="Informar pago", campos=[campo("accion", "", "hidden", valor="informar"), campo("ref", "", "hidden", valor=o["ref"]),
                                            campo("referencia", "N° de referencia"), campo("banco", "Banco de origen", req=False), campo("telefono", "Teléfono de origen", req=False)])
                                  if o["estado"] == "pendiente" else None))
-        if precios:
-            ofertas = [(f"{p['plan']}:{p['meses']}", f"{PLANES[p['plan']]['nombre']} · {p['meses']} mes(es) · {p['monto_usd']} USD · {p['max_usuarios']} usuarios, "
-                                                    f"{p['max_empresas']} empresas, {p['max_equipos']} equipos") for p in precios]
+        periodo = lambda m: {1: "Mensual", 12: "Anual"}.get(int(m), f"{m} meses")
+        if precios or combos:
+            ofertas = [(f"{p['plan']}:{p['meses']}", f"{PLANES[p['plan']]['nombre']} · {periodo(p['meses'])} · {p['monto_usd']} USD · {p['max_usuarios']} usuarios, "
+                                                    f"{p['max_empresas']} empresas, {p['max_equipos']} equipos") for p in precios if p["plan"] in PLANES]
+            ofertas += [(f"COMBO:{c['id']}", f"Combo {c['nombre']} ({', '.join(MODULOS.get(m, m) for m in c['modulos'].split(','))}) · {periodo(c['meses'])} · "
+                                             f"{c['monto_usd']} USD · {c['max_usuarios']} usuarios, {c['max_empresas']} empresas") for c in combos]
             secs.append(dict(titulo="Comprar o renovar licencia", nota="USDT por Binance (verificación automática) o bolívares por pago móvil a la tasa BCV del día. La clave llega por correo una sola vez.",
                              form=dict(action=request.path, boton="Continuar al pago", campos=[campo("accion", "", "hidden", valor="comprar"), campo("oferta", "Plan", "select", opciones=ofertas),
                                        campo("moneda", "Pagar en", "select", opciones=[("USDT", "USDT (Binance)"), ("VES", "Bolívares (pago móvil)")])])))
+        if not (est.claims or {}).get("plan") or (est.claims or {}).get("plan") == "DEMO" or not est.valida:
+            secs.append(dict(titulo="Probar gratis 72 horas", nota="Demo de los módulos de Facturación e Inventario (2 usuarios, 1 empresa). Una sola vez por organización; "
+                                                                   "la clave llega a su correo y vence 72 horas después de emitida.",
+                             form=dict(action=request.path, boton="Solicitar demo de 72 h", campos=[h("demo")])))
         if ordenes:
             secs.append(dict(titulo="Mis órdenes", tabla=dict(cols=["Orden", "Plan", "Meses", "Moneda", "Monto", "Estado"], num=[4], filas=[
                 dict(cells=[x["ref"], x["plan"], x["meses"], x["moneda"], x["monto"], x["estado"].replace("_", " ")], url=url_for("web.admin_licencia", orden=x["ref"])) for x in ordenes])))

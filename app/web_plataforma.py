@@ -180,6 +180,12 @@ def maestro_licencias():
                 cambios = {k: F.get(k) for k in ("plan", "estado", "max_usuarios", "max_empresas", "max_equipos", "max_instancias", "dias_extra") if F.get(k)}
                 if F.getlist("modulos"): cambios["modulos"] = F.getlist("modulos")
                 adm.modificar(int(F["lid"]), autor=autor, **cambios); detalle = f"licencia={F['lid']} {sorted(cambios)}"
+            elif a == "demo":
+                org = por_id.get(F["org"])
+                if org is None: raise ValueError("Organización inexistente")
+                r = adm.crear_licencia(cliente=org.nombre, correo=(F.get("correo") or org.correo_contacto or "").strip().lower(), organizacion_ref=str(org.id),
+                                       plan="DEMO", dias=3, max_usuarios=2, max_empresas=1, max_equipos=2, max_instancias=1, autor=autor)
+                detalle = f"licencia={r['id']} org={org.rif} plan=DEMO 72h"
             elif a == "liberar":
                 adm.liberar(int(F["lid"]), autor); detalle = f"licencia={F['lid']}"
             elif a == "reenviar":
@@ -187,7 +193,7 @@ def maestro_licencias():
             else: raise ValueError("Acción inválida")
             registrar(autor, "LICENCIA_" + a.upper(), detalle, org=None); db.session.commit()
         try:
-            hacer(); flash({"crear": "Licencia emitida: la clave se envió por correo (una sola vez).", "reenviar": "Se generó y envió una clave nueva; la anterior quedó anulada."}.get(a, "Hecho"))
+            hacer(); flash({"crear": "Licencia emitida: la clave se envió por correo (una sola vez).", "demo": "Demo de 72 h emitida: la clave se envió por correo.", "reenviar": "Se generó y envió una clave nueva; la anterior quedó anulada."}.get(a, "Hecho"))
         except (ErrorAdmin, ValueError, OSError) as e:
             db.session.rollback(); flash(str(e))
         return redirect(request.url)
@@ -222,6 +228,10 @@ def maestro_licencias():
                        campo("precio", "Precio cobrado, IVA incluido (vacío = sin factura)", "number", req=False),
                        campo("moneda_venta", "Moneda del cobro", "select", opciones=[("USD", "USD"), ("USDT", "USDT"), ("EUR", "EUR"), ("VES", "Bolívares")]),
                        campo("forma_pago", "Forma de pago", req=False)])),
+        dict(titulo="Emitir demo de 72 horas", nota="Facturación + Inventario, 2 usuarios, 1 empresa, 2 equipos. Vence a las 72 h exactas. "
+                  "El administrador del cliente también puede pedirla él mismo (una vez) desde Organización → Licencia.",
+             form=dict(action=request.path, boton="Emitir demo", campos=[h("demo"), campo("org", "Organización", "select", opciones=[(o.id, f"{o.nombre} ({o.rif})") for o in orgs]),
+                       campo("correo", "Enviar a (vacío = contacto del cliente)", "email", req=False)])),
         dict(titulo="Modificar licencia", nota="Plan, topes y estado llegan al cliente en su próxima renovación (≤ 7 días) o cuando su administrador pulse «Renovar».",
              form=dict(action=request.path, boton="Guardar cambios", campos=[h("modificar"), campo("lid", "Licencia", "select", opciones=ids),
                        campo("plan", "Plan (sin cambio)", "select", req=False, opciones=[("", "—")] + planes),
@@ -248,6 +258,13 @@ def maestro_pagos():
             adm = _admin()
             if a == "precio":
                 adm.fijar_precio(plan=F["plan"], meses=int(F["meses"]), monto_usd=F["monto"], max_usuarios=int(F["usuarios"]), max_empresas=int(F["empresas"]), max_equipos=int(F["equipos"]))
+            elif a == "combo":
+                if not F.getlist("modulos"): raise ValueError("Elija los módulos que incluye el combo")
+                adm.crear_combo(nombre=F["nombre"], modulos=F.getlist("modulos"), meses=int(F["meses"]), monto_usd=F.get("monto") or None,
+                                max_usuarios=int(F["usuarios"]), max_empresas=int(F["empresas"]), max_equipos=int(F["equipos"]))
+            elif a == "combo_estado": adm.activar_combo(int(F["cid"]), F.get("activo") == "1")
+            elif a == "precio_modulo": adm.fijar_precio_modulo(F["modulo"], F["monto"])
+            elif a == "referencia": flash(f"Precios de referencia agregados: {adm.sembrar_precios()['agregados']} (los existentes no se modificaron)")
             elif a == "confirmar": adm.confirmar(F["ref"], g.usuario.username)
             elif a == "rechazar": adm.rechazar(F["ref"], F.get("motivo") or "Pago no verificado")
             elif a == "verificar": flash(f"Binance: {adm.verificar(F['ref'])}")
@@ -258,9 +275,9 @@ def maestro_pagos():
             db.session.rollback(); flash(str(e))
         return redirect(request.url)
     try:
-        adm = _admin(); ords, precs = adm.ordenes(), adm.precios()
+        adm = _admin(); ords, precs, cmb = adm.ordenes(), adm.precios(), adm.combos()
     except (ErrorAdmin, ValueError, OSError) as e:
-        flash(str(e)); ords, precs = [], []
+        flash(str(e)); ords, precs, cmb = [], [], {"combos": [], "precios_modulo": {}, "descuento_anual_pct": "16.67"}
     orgs = {str(o.id): o.nombre for o in db.session.execute(select(Organizacion)).scalars()}
     import json as _json
     def acciones(o):
@@ -270,15 +287,20 @@ def maestro_pagos():
             return dict(action=request.path, boton="Buscar pago en Binance", campos=[h("verificar"), campo("ref", "", "hidden", valor=o["ref"])])
         return None
     ref_pago = lambda o: ", ".join(f"{k}: {v}" for k, v in _json.loads(o["referencia_pago"]).items() if v) if o.get("referencia_pago") else ""
-    from .planes import PLANES_TIENDA
+    from .planes import MODULOS, PLANES_TIENDA
     planes = [(k, PLANES[k]["nombre"]) for k in PLANES_TIENDA]
+    periodo = lambda m: {1: "Mensual", 12: "Anual"}.get(int(m), f"{m} meses")
+    nombre_combo = {c["id"]: c["nombre"] for c in cmb["combos"]}
+    plan_orden = lambda o: (f"Combo «{nombre_combo.get(o.get('combo_id'), o.get('combo_id'))}»" if o.get("combo_id") else PLANES.get(o["plan"], {}).get("nombre", o["plan"]))
+    mods_txt = lambda v: ", ".join(MODULOS.get(m, m) for m in (v or "").split(",") if m)
+    pm = cmb["precios_modulo"]
     return pagina("Pagos y precios", None, [
         dict(kpis=[("Órdenes", len(ords)), ("Por verificar (Bs)", sum(o["estado"] == "por_verificar" for o in ords)),
                    ("Entregadas", sum(o["estado"] == "entregada" for o in ords)), ("Cobrado USD", f"{sum(float(o['monto_usd']) for o in ords if o['estado'] == 'entregada'):,.2f}")]),
         dict(titulo="Órdenes", nota="USDT: cada orden tiene un monto único; el sistema revisa su historial de Binance cada 2 min y entrega la licencia sola. "
                   "Si un cliente pagó un monto distinto, verifíquelo en Binance y use «Confirmar». Bs (pago móvil): verifique en su banco y confirme aquí.",
              tabla=dict(cols=["Orden", "Cliente", "Plan", "Meses", "Moneda", "Monto", "Estado", "Pago informado", "Fecha (UTC)"], num=[5], accion=True,
-                        filas=[dict(cells=[o["ref"], orgs.get(o["organizacion_ref"], o["cliente"]), o["plan"], o["meses"], o["moneda"], o.get("monto_esperado") or o["monto"], o["estado"], ref_pago(o),
+                        filas=[dict(cells=[o["ref"], orgs.get(o["organizacion_ref"], o["cliente"]), plan_orden(o), o["meses"], o["moneda"], o.get("monto_esperado") or o["monto"], o["estado"], ref_pago(o),
                                            _fecha(o["creada_en"])], form=acciones(o)) for o in ords])),
         dict(titulo="Confirmar un pago manualmente", nota="Para pagos que no se emparejaron solos (p. ej. el cliente envió otro monto). Verifique primero en su Binance o banco: al confirmar se emite la licencia y se envía la clave.",
              form=dict(action=request.path, boton="Confirmar y entregar", campos=[h("confirmar"), campo("ref", "Orden", "select", opciones=[(o["ref"], f"{o['ref']} · {orgs.get(o['organizacion_ref'], o['cliente'])} · {o['moneda']} {o.get('monto_esperado') or o['monto']}") for o in ords if o["estado"] in ("pendiente", "por_verificar", "pagada")])])),
@@ -286,9 +308,32 @@ def maestro_pagos():
                                                                                            campo("motivo", "Motivo")])),
         dict(titulo="Catálogo de precios (USD / USDT)", nota="El monto de cada orden lo fija SIEMPRE este catálogo en el servidor; el cliente no puede alterarlo. En Bs se convierte a la tasa BCV del día.",
              tabla=dict(cols=["Plan", "Meses", "Precio USD", "Usuarios", "Empresas", "Equipos"], num=[2, 3, 4, 5], filas=[dict(cells=[PLANES[p["plan"]]["nombre"], p["meses"], p["monto_usd"], p["max_usuarios"], p["max_empresas"], p["max_equipos"]]) for p in precs])),
-        dict(titulo="Fijar precio", form=dict(action=request.path, boton="Guardar precio", campos=[h("precio"), campo("plan", "Plan", "select", opciones=planes), campo("meses", "Meses", "number", valor=12),
+        dict(titulo="Fijar precio", form=dict(action=request.path, boton="Guardar precio", campos=[h("precio"), campo("plan", "Plan", "select", opciones=planes),
+                                                                                                 campo("meses", "Período", "select", opciones=[(1, "Mensual (1 mes)"), (12, "Anual (12 meses)"), (3, "Trimestral"), (6, "Semestral")], valor=12),
                                                                                                  campo("monto", "Precio USD", "number"), campo("usuarios", "Usuarios", "number", valor=5),
-                                                                                                 campo("empresas", "Empresas", "number", valor=2), campo("equipos", "Equipos", "number", valor=5)]))])
+                                                                                                 campo("empresas", "Empresas", "number", valor=2), campo("equipos", "Equipos", "number", valor=5)])),
+        dict(titulo="Precios de referencia (mercado venezolano)", nota="Carga los precios mensuales y anuales de referencia de cada plan y de cada módulo SOLO donde falten: "
+                  "nunca cambia un precio que usted ya fijó. Anual = 10 meses (2 de regalo). Ajústelos luego con «Fijar precio».",
+             form=dict(action=request.path, boton="Cargar precios faltantes", campos=[h("referencia")])),
+        dict(titulo="Combos personalizados", nota="Paquetes a medida: el cliente los ve en su tienda junto a los planes y recibe una licencia con exactamente esos módulos. "
+                  "Desactivar un combo lo retira de la venta sin afectar las licencias ya vendidas.",
+             tabla=dict(cols=["#", "Combo", "Módulos incluidos", "Período", "Precio USD", "Usuarios", "Empresas", "Equipos", "Estado"], num=[4, 5, 6, 7], accion=True, filas=[
+                 dict(cells=[c["id"], c["nombre"], mods_txt(c["modulos"]), periodo(c["meses"]), c["monto_usd"], c["max_usuarios"], c["max_empresas"], c["max_equipos"],
+                             "A la venta" if c["activo"] else "Retirado"],
+                      form=dict(action=request.path, boton="Retirar" if c["activo"] else "Volver a vender", campos=[h("combo_estado"), campo("cid", "", "hidden", valor=c["id"]),
+                                                                                                                  campo("activo", "", "hidden", valor="0" if c["activo"] else "1")]))
+                 for c in cmb["combos"]])),
+        dict(titulo="Nuevo combo", nota=f"Deje el precio vacío y se calcula solo según lo que incluya: suma del precio mensual de cada módulo × meses "
+                                        f"(anual con {cmb['descuento_anual_pct']}% de descuento), redondeado al dólar.",
+             form=dict(action=request.path, boton="Crear combo", campos=[h("combo"), campo("nombre", "Nombre (p. ej. «Tienda + Contable»)"),
+                       campo("modulos", "Módulos que incluye", "checks", req=False, opciones=list(MODULOS.items())),
+                       campo("meses", "Período", "select", opciones=[(1, "Mensual"), (12, "Anual")], valor=1),
+                       campo("monto", "Precio USD (vacío = automático)", "number", req=False), campo("usuarios", "Usuarios", "number", valor=5),
+                       campo("empresas", "Empresas", "number", valor=2), campo("equipos", "Equipos", "number", valor=5)])),
+        dict(titulo="Precio mensual por módulo (base del cálculo de combos)", tabla=dict(cols=["Módulo", "USD / mes", "USD / año (sugerido)"], num=[1, 2], filas=[
+                 dict(cells=[MODULOS[m], pm.get(m, "—"), f"{float(pm[m]) * 12 * (100 - float(cmb['descuento_anual_pct'])) / 100:,.0f}" if m in pm else "—"]) for m in MODULOS])),
+        dict(titulo="Cambiar precio de un módulo", form=dict(action=request.path, boton="Guardar", campos=[h("precio_modulo"), campo("modulo", "Módulo", "select", opciones=list(MODULOS.items())),
+                                                                                                           campo("monto", "USD por mes", "number")]))])
 
 
 @ruta("/plataforma/base-datos", "plataforma", ("GET", "POST"))

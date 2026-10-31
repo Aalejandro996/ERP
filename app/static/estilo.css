@@ -195,3 +195,28 @@ label.check input{width:auto}
 .paginacion a:hover{border-color:var(--ink)}
 .paginacion span.actual{background:var(--ink);color:var(--surface);border-color:var(--ink)}
 .paginacion span.gap{padding:.35rem .2rem}
+
+/* ---------- navegación al estilo del escritorio (main.py) ---------- */
+.nav-grupo .ico{width:1.4em;display:inline-block;text-align:center;margin-right:6px;flex:none}
+.nav-grupo a,.nav-grupo .bloq{justify-content:flex-start}
+.nav-grupo .bloq::after{margin-left:auto}
+.nav-aviso{color:var(--dark-muted);padding:0 10px}
+.estado-emp{font-size:.78rem;font-weight:700;letter-spacing:.03em}
+.estado-emp.trabajando{color:#188038}.estado-emp.libre{color:var(--danger)}
+.chip-demo{font-size:.78rem;font-weight:700;padding:.3rem .7rem;border-radius:999px;background:var(--warn-soft);color:var(--warn);text-decoration:none}
+.pestanas{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--line);margin:-6px 0 18px}
+.pestanas a{padding:9px 14px;text-decoration:none;color:var(--muted);border-bottom:2px solid transparent;font-size:.92rem}
+.pestanas a:hover{color:var(--ink)}
+.pestanas a.activo{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+/* ---------- gráficos (SVG sin scripts; colores validados para daltonismo) ---------- */
+.viz{margin:0;--serie-1:#2a78d6;--serie-2:#eb6834;--viz-guia:#e6e6e3;--viz-eje:#707070}
+@media (prefers-color-scheme:dark){:root:where(:not([data-theme="light"])) .viz{--serie-1:#3987e5;--serie-2:#d95926;--viz-guia:#2c2c2c;--viz-eje:#9b9b9b}}
+:root[data-theme="dark"] .viz{--serie-1:#3987e5;--serie-2:#d95926;--viz-guia:#2c2c2c;--viz-eje:#9b9b9b}
+.viz-svg{width:100%;height:auto;display:block}
+.viz-svg .serie-1{fill:var(--serie-1)}.viz-svg .serie-2{fill:var(--serie-2)}
+.viz-guia{stroke:var(--viz-guia);stroke-width:1}.viz-base{stroke:var(--viz-eje);stroke-width:1}
+.viz-eje{fill:var(--viz-eje);font-size:11px}
+.viz-hit{fill:transparent}.viz-barra:hover .viz-hit{fill:var(--surface-2)}
+.viz-leyenda{display:flex;gap:16px;font-size:.85rem;color:var(--text);margin-bottom:8px}
+.viz-leyenda i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.viz-leyenda i.serie-1{background:var(--serie-1)}.viz-leyenda i.serie-2{background:var(--serie-2)}

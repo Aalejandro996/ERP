@@ -82,6 +82,29 @@ el libro fiscal (si hay Contabilidad) y crea su CxC (si hay Administración) —
   Maestro genera una nueva y la anterior deja de funcionar.
 - **Libro de compras** (Art. 75 RLIVA) generado desde CxP con número de control, exento, base, alícuota, IVA, retenciones e importaciones.
 
+## 6 ter. Navegación, plan de cuentas, compras, WhatsApp, combos y demo
+- **Navegación** (`app/menu.py`): mismo orden y ubicación de módulos que el sistema de escritorio (`main.py`): Catálogo de cuentas →
+  Asientos → Libro mayor → Libro diario → Balance general → Balance de comprobación → Estado de resultados → Dashboard → Libros fiscales →
+  Conciliación bancaria → Divisas → Configuración y cierres; luego Fiscal Venezuela, Administración y Auditoría. Lo que en escritorio
+  eran pestañas internas (`sub_notebook`) son pestañas arriba de la página. Una sola definición alimenta menú y pestañas.
+- **Plan de cuentas existente:** importación desde Excel (.xlsx), CSV/TXT o texto pegado (`app/calculos/plan_cuentas.py`): columnas por
+  nombre en cualquier orden, tipo deducido del primer dígito si falta, monetarias y categoría NIIF 18 inferidas, errores por línea, sin
+  duplicar ni cambiar el tipo de cuentas con movimientos. Plan modelo VEN‑NIF para quien no tiene uno.
+- **Órdenes de compra:** emitidas por la empresa (emisor) a un proveedor o cliente, con el mismo modelo visual de la factura de Gigadevs;
+  IVA por alícuota vigente, divisas con equivalente BCV, envío por correo o WhatsApp, enlace firmado de 60 días para el destinatario,
+  confirmación por el proveedor desde el chat y recepción que da entrada al kardex al costo en Bs.
+- **Bot de WhatsApp** (Cloud API de Meta, número propio de cada empresa): clientes ven el catálogo y hacen pedidos; proveedores ven,
+  confirman o rechazan sus órdenes de compra y envían ofertas que se convierten en OC. Webhook con URL secreta por empresa, verificación
+  `X-Hub-Signature-256`, deduplicación por id de mensaje, token y App Secret cifrados (Fernet). El webhook llega sin usuario: la función
+  `whatsapp_destino()` (SECURITY DEFINER) traduce la clave a su organización y desde ahí todo pasa por RLS. Solo atiende si la licencia
+  incluye Facturación o Inventario.
+- **Precios:** catálogo mensual y anual sembrado una vez con precios de referencia del mercado venezolano (solo donde falta precio; nunca
+  pisa lo fijado por el Maestro). **Combos personalizados:** módulos a elección, mensual o anual; el precio puede calcularse solo a partir
+  del precio mensual por módulo (anual = 10 de 12 meses). El cliente los compra en su tienda y recibe una licencia PERSONALIZADA con
+  exactamente esos módulos.
+- **Demo de 72 h** (plan `DEMO`: Facturación + Inventario, 2 usuarios, 1 empresa, 2 equipos): la pide el Administrador una sola vez
+  (por organización, correo y RIF) o la emite el Maestro; el servidor fija la vigencia a 72 h exactas y el ERP muestra el tiempo restante.
+
 ## 7. Despliegue
 Render (`render.yaml`, proyecto «ERP»): `erp-web` y `erp-licencias` (Gunicorn tras el proxy de Render, `ProxyFix` para la IP
 real), PostgreSQL sin acceso público (la app hace `SET ROLE erp_app`), Key Value para límites de tasa. Alternativa propia:

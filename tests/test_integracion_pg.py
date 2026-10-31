@@ -56,14 +56,14 @@ def entorno():
     with app_owner.app_context():
         db.session.execute(text("CREATE EXTENSION IF NOT EXISTS citext")); db.session.commit()
         db.create_all()
-        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql"):
+        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql"):
             db.session.execute(text(pathlib.Path("migrations", m).read_text(encoding="utf-8"))); db.session.commit()
     with owner.connect() as c:
         c.execute(text("GRANT USAGE ON SCHEMA public TO erp_app"))
         c.execute(text("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO erp_app"))
         c.execute(text("GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO erp_app"))
         c.execute(text("GRANT EXECUTE ON FUNCTION pg_control_system() TO erp_app"))
-        c.execute(text("GRANT EXECUTE ON FUNCTION maestro_resumen_organizaciones(), maestro_cadenas_bitacora() TO erp_app"))
+        c.execute(text("GRANT EXECUTE ON FUNCTION maestro_resumen_organizaciones(), maestro_cadenas_bitacora(), whatsapp_destino(text) TO erp_app"))
     app_url = re.sub(r"//[^@]+@", f"//erp_app:{APP_PW}@", URL)
     class CfgApp(CfgOwner):
         SQLALCHEMY_DATABASE_URI = app_url
@@ -279,7 +279,7 @@ def test_flujo_completo(entorno):
     assert b.get(f"/e/{eid_a}/facturacion").status_code == 404                                      # empresa de otro cliente
     assert b.get(f"/e/{eid_a}/facturacion/{d1.id}").status_code == 404
     assert b"Comercial Uno" in b.get("/").data
-    assert b'title="No incluido en su plan">Libro diario' in b.get(f"/e/{eid_b}/facturacion").data                # menú bloqueado por plan
+    assert re.search(r'title="No incluido en su plan"><span class="ico"[^>]*>[^<]*</span>Libro diario', b.get(f"/e/{eid_b}/facturacion").get_data(as_text=True))               # menú bloqueado por plan
     assert root.get(f"/e/{eid_a}/asientos").status_code == 403                                      # el Maestro no ve libros
     assert a.get("/plataforma").status_code == 403
 
@@ -331,6 +331,24 @@ def test_flujo_completo(entorno):
     root.post("/plataforma/pagos", data={"accion": "confirmar", "ref": ref})                       # doble clic: no reenvía
     assert len(entorno["correos_lic"]) == n + 1 and entorno["correos_lic"][-1][0] == "b@beta.test"
     assert a.post("/admin/licencia", data={"accion": "informar", "ref": ref, "referencia": "1234"}).status_code == 302   # otra organización: rechazado
+    # Precios de referencia del mercado VE, combos personalizados (mensual/anual según módulos) y demo de 72 h
+    pagos = root.get("/plataforma/pagos").get_data(as_text=True)
+    assert "Combos personalizados" in pagos and "All in One" in pagos and "69.00" in pagos               # precio de referencia sembrado
+    r = root.post("/plataforma/pagos", data={"accion": "combo", "nombre": "Tienda + Contable", "modulos": ["facturacion", "contabilidad"], "meses": "12",
+                                            "usuarios": "3", "empresas": "1", "equipos": "3"}, follow_redirects=True)
+    assert "Tienda + Contable" in r.get_data(as_text=True) and "430.00" in r.get_data(as_text=True), re.findall(r'role="alert">([^<]+)', r.get_data(as_text=True))
+    tienda = b.get("/admin/licencia").get_data(as_text=True)
+    assert "Combo Tienda + Contable" in tienda and "Anual" in tienda
+    cid = re.search(r'value="COMBO:(\d+)"', tienda).group(1)
+    r = b.post("/admin/licencia", data={"accion": "comprar", "oferta": f"COMBO:{cid}", "moneda": "VES"})
+    assert "15695.00".encode() in b.get(r.headers["Location"]).data                                   # 430 USD × 36,5
+    r = root.post("/plataforma/licencias", data={"accion": "demo", "org": org_b}, follow_redirects=True)
+    assert "Demo de 72 h emitida".encode() in r.data and "Demo 72 h" in entorno["correos_lic"][-1][1], re.findall(r'role="alert">([^<]+)', r.get_data(as_text=True))
+    r = b.post("/admin/licencia", data={"accion": "demo"}, follow_redirects=True)
+    assert "ya utilizó su demo".encode() in r.data                                                      # una sola demo por organización
+    planes[org_b] = ("DEMO", 2, 1)
+    assert "DEMO · quedan".encode() in b.get("/").data
+    planes[org_b] = ("CASH", 10, 5, 1)
     # Facturación Gigadevs: sin configurar la licencia se entregó igual; se configura y se factura la orden pendiente
     assert b"Licencias pagadas sin factura" in root.get("/plataforma/facturas").data
     root.post("/plataforma/facturas", data={"accion": "emisor", "razon_social": "Gigadevs Corp", "rif": "J-50000000-1", "domicilio": "Caracas",
@@ -359,3 +377,139 @@ def test_flujo_completo(entorno):
     assert otro.post(enlace, data={"nueva": "Otra-Clave#2026z", "repetir": "Otra-Clave#2026z"}).status_code == 302
     assert a.get("/").headers["Location"].endswith("/login")                                        # sesión anterior invalidada
     r = otro.post("/recuperar", data={"email": "nadie@x.test"}); assert r.status_code == 302         # respuesta genérica
+
+
+def _org_con_admin(entorno, nombre, rif, usuario):
+    """Organización con su Administrador ya activado (correo verificado y MFA): entra con clave + TOTP."""
+    from app import totp
+    from app.extensions import db
+    from app.models import Organizacion, Usuario
+    from app.security import hashear
+    with entorno["app_owner"].app_context():
+        org = Organizacion(nombre=nombre, rif=rif, correo_contacto=f"{usuario}@x.test"); db.session.add(org); db.session.flush()
+        sec = totp.nuevo_secreto()
+        db.session.add(Usuario(organizacion_id=org.id, username=usuario, email=f"{usuario}@x.test", email_verificado=True, rol="Administrador",
+                               password_hash=hashear(CLAVE), debe_cambiar_clave=False, mfa_activo=True,
+                               mfa_secreto_cifrado=entorno["app_owner"].extensions["cifrador"].cifrar(sec)))
+        db.session.commit(); oid = org.id
+    c = _cliente(entorno["app"])
+    c.post("/login", data={"usuario": usuario, "clave": CLAVE})
+    assert c.post("/mfa/verificar", data={"codigo": totp.codigo(sec)}).status_code == 302
+    return oid, c
+
+
+def test_contabilidad_compras_y_bot_de_whatsapp(entorno):
+    import hashlib, hmac, io, json
+    from sqlalchemy import text
+    app, owner = entorno["app"], entorno["owner"]
+    hoy = hoy_ve().isoformat()
+    with owner.connect() as c:   # parámetros legales (los carga el Maestro)
+        for cod, pct in (("G", "16"), ("R", "8"), ("A", "15"), ("IGTF", "3")):
+            c.execute(text("INSERT INTO alicuotas_impuesto(codigo, porcentaje, fecha_vigencia) VALUES (:c, :p, '2025-06-01') ON CONFLICT DO NOTHING"), {"c": cod, "p": pct})
+        c.execute(text("INSERT INTO tasa_cambio(fecha, tasa_usd_ves, tasa_eur_ves, fuente) VALUES (:f, 40, 44, 'prueba') ON CONFLICT DO NOTHING"), {"f": hoy})
+        c.commit()
+    tasa = owner.connect().execute(text("SELECT tasa_usd_ves FROM tasa_cambio WHERE fecha=:f"), {"f": hoy}).scalar()
+    org, a = _org_con_admin(entorno, "Delta Comercial", "J-44444444-4", "adminD")
+    _, x = _org_con_admin(entorno, "Intrusa SA", "J-55555555-5", "adminX")
+    a.post("/", data={"razon_social": "Delta Comercial CA", "rif": "J-44444444-4", "spe": "0", "direccion": "Av. Bolívar, Valencia"})
+    eid = owner.connect().execute(text("SELECT id FROM empresas WHERE rif='J-44444444-4'")).scalar()
+    alerta = lambda r: re.findall(r'role="alert">([^<]+)', r.get_data(as_text=True))
+
+    # --- Plan de cuentas: el cliente sube el que ya tiene (CSV de su sistema anterior) y además carga el modelo VEN-NIF
+    csv_ = "Código;Descripción;Naturaleza\n1.1.01;Caja;Activo\n1.1.02;Bancos;Activo\n1.1.07;Inventario;Activo\n2.1.01;Proveedores;Pasivo\n4.1.01;Ventas;Ingreso\n6.1.01;Sueldos;Gasto\n¿?;malo;x\n"
+    r = a.post(f"/e/{eid}/cuentas", data={"accion": "importar", "modo": "omitir", "archivo": (io.BytesIO(csv_.encode("cp1252")), "plan.csv")},
+               content_type="multipart/form-data", follow_redirects=True)
+    assert any("6 cuenta(s) nueva(s)" in m for m in alerta(r)) and any("código inválido" in m for m in alerta(r)), alerta(r)
+    r = a.post(f"/e/{eid}/cuentas", data={"accion": "importar", "modo": "actualizar", "texto": "1.1.01;Caja principal;Activo"}, follow_redirects=True)
+    assert any("1 actualizada" in m for m in alerta(r))
+    r = a.post(f"/e/{eid}/cuentas", data={"accion": "modelo"}, follow_redirects=True)
+    assert "Caja principal".encode() in r.data and "Capital social".encode() in r.data                 # el modelo no pisó lo importado
+    assert a.get(f"/e/{eid}/cuentas?plantilla=1").data.startswith("﻿codigo;".encode())
+
+    # --- Contabilidad en el orden del escritorio: cada módulo responde y las pestañas enlazan a sus hermanos
+    a.post(f"/e/{eid}/asientos", data={"fecha": hoy, "concepto": "Venta de contado", "c1": "1.1.01", "d1": "500", "c2": "4.1.01", "h2": "500"})
+    a.post(f"/e/{eid}/asientos", data={"fecha": hoy, "concepto": "Pago de sueldos", "c1": "6.1.01", "d1": "200", "c2": "1.1.02", "h2": "200"})
+    for ruta in ("cuentas", "asientos", "mayor", "diario", "balance-general", "comprobacion", "resultados", "dashboard", "fiscal/libros", "bancos", "divisas", "cierres",
+                 "fiscal/islr", "fiscal/retenciones", "cxc", "cxp", "cxp/libro-compras", "compras/ordenes", "compras/proveedores", "inventario", "whatsapp/pedidos", "whatsapp/bot"):
+        assert a.get(f"/e/{eid}/{ruta}").status_code == 200, ruta
+    html = a.get(f"/e/{eid}/balance-general").get_data(as_text=True)
+    assert 'class="pestanas"' in html and f"/e/{eid}/dashboard" in html and "CUADRA" in html
+    assert html.index("Catálogo de cuentas") < html.index("Asientos contables") < html.index("Libro mayor") < html.index("Libro diario") < html.index("Conciliación bancaria")
+    dash = a.get(f"/e/{eid}/dashboard").get_data(as_text=True)
+    assert "<svg" in dash and "Ingresos " + hoy[:7] in dash and "500" in dash
+    assert "Pago de sueldos" in a.get(f"/e/{eid}/diario").get_data(as_text=True)
+    conv = a.get(f"/e/{eid}/divisas?monto=10&de=USD").get_data(as_text=True)
+    assert "Equivalente en bolívares" in conv and str((tasa * 10).quantize(Decimal("0.01"))) in conv
+    assert a.get(f"/e/{eid}/reportes").status_code == 302
+
+    # --- Proveedor y orden de compra (modelo de la factura de Gigadevs con los datos de la empresa y del proveedor)
+    a.post(f"/e/{eid}/inventario", data={"accion": "producto", "codigo": "A001", "nombre": "Harina PAN 1kg", "metodo": "Promedio", "precio": "45.5", "alicuota": "G"})
+    a.post(f"/e/{eid}/inventario", data={"accion": "entrada", "codigo": "A001", "cantidad": "10", "costo": "40", "fecha": hoy, "pago": "Contado"})
+    r = a.post(f"/e/{eid}/compras/proveedores", data={"rif": "j-66666666-6", "razon_social": "Distribuidora Seis CA", "whatsapp": "0414-1234567", "email": "ventas@seis.test"}, follow_redirects=True)
+    assert "Proveedor guardado".encode() in r.data, alerta(r)
+    pid = owner.connect().execute(text("SELECT id FROM proveedores WHERE rif='J-66666666-6'")).scalar()
+    r = a.post(f"/e/{eid}/compras/ordenes", data={"destinatario": f"P:{pid}", "fecha": hoy, "moneda": "USD", "condicion_pago": "Crédito 15 días",
+                                                   "l1_cod": "A001", "l1_cant": "100", "l1_precio": "1.10", "l1_alic": "G",
+                                                   "l2_desc": "Flete", "l2_cant": "1", "l2_precio": "20", "l2_alic": "E"})
+    assert r.status_code == 302 and "/compras/ordenes/" in r.headers["Location"], alerta(a.get(f"/e/{eid}/compras/ordenes"))
+    oc_url = r.headers["Location"]
+    doc = a.get(oc_url); t = doc.get_data(as_text=True)
+    assert "ORDEN DE COMPRA" in t and "OC-000001" in t and "Delta Comercial CA" in t and "J-44444444-4" in t and "Distribuidora Seis CA" in t
+    bs = lambda v: f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    assert "147,60" in t and "17,60" in t and bs((Decimal("147.60") * tasa).quantize(Decimal("0.01"))) in t   # 110 + IVA 16 % + 20 exento
+    assert "script-src 'self'" in doc.headers["Content-Security-Policy"]
+    publico = re.search(r"https://erp\.test(/oc/[\w.\-]+)", t).group(1)
+    anon = _cliente(app)
+    assert "Distribuidora Seis CA".encode() in anon.get(publico).data and anon.get(publico[:-3] + "xyz").status_code == 404
+    assert x.get(oc_url).status_code == 404                                         # otra organización no la ve
+
+    # --- Bot de WhatsApp: configuración, webhook firmado, pedido de cliente y confirmación del proveedor
+    enviados = []
+    app.extensions["whatsapp_transporte"] = lambda url, cuerpo, cab: (enviados.append(json.loads(cuerpo)) or (200, b'{"messages":[{"id":"wamid.out%d"}]}' % len(enviados)))
+    r = a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "guardar", "phone_number_id": "1098765", "token": "TOKEN-META", "app_secret": "APPSECRET", "activo": "1"}, follow_redirects=True)
+    assert "Configuración guardada".encode() in r.data, alerta(r)
+    cfg = owner.connect().execute(text("SELECT clave_webhook, verify_token, token_cifrado FROM whatsapp_config WHERE empresa_id=:e"), {"e": eid}).one()
+    assert "TOKEN-META" not in cfg[2]                                               # cifrado en reposo
+    hook = f"/wa/{cfg[0]}"
+    assert anon.get(hook, query_string={"hub.mode": "subscribe", "hub.verify_token": cfg[1], "hub.challenge": "42"}).data == b"42"
+    assert anon.get(hook, query_string={"hub.mode": "subscribe", "hub.verify_token": "malo", "hub.challenge": "42"}).status_code == 403
+    assert anon.get("/wa/clave-inexistente").status_code == 404
+    def aviso(tel, texto, wamid):
+        cuerpo = json.dumps({"entry": [{"changes": [{"value": {"contacts": [{"wa_id": tel, "profile": {"name": "Ana"}}],
+                                                               "messages": [{"from": tel, "id": wamid, "type": "text", "text": {"body": texto}}]}}]}]}).encode()
+        return anon.post(hook, data=cuerpo, content_type="application/json",
+                         headers={"X-Hub-Signature-256": "sha256=" + hmac.new(b"APPSECRET", cuerpo, hashlib.sha256).hexdigest()})
+    assert anon.post(hook, data=b"{}", content_type="application/json", headers={"X-Hub-Signature-256": "sha256=" + "0" * 64}).status_code == 403
+    for i, msg in enumerate(["Hola", "1", "1", "A001 3", "3"]):
+        assert aviso("584241112233", msg, f"wamid.c{i}").status_code == 200
+    aviso("584241112233", "3", "wamid.c4")                                          # aviso repetido por Meta: no duplica
+    assert "Pedido recibido" in enviados[-1]["text"]["body"] and enviados[-1]["to"] == "584241112233"
+    ped = owner.connect().execute(text("SELECT numero, tipo, total, estado FROM pedidos WHERE empresa_id=:e"), {"e": eid}).all()
+    assert [tuple(p) for p in ped] == [(1, "venta", Decimal("136.50"), "Nuevo")]
+    # la empresa envía la OC por WhatsApp y el proveedor (reconocido por su número) la confirma desde el chat
+    r = a.post(oc_url + "/accion", data={"accion": "whatsapp"}, follow_redirects=True)
+    assert "enviada por WhatsApp".encode() in r.data and enviados[-1]["to"] == "584141234567" and "CONFIRMAR 1" in enviados[-1]["text"]["body"]
+    aviso("584141234567", "CONFIRMAR 1", "wamid.p1")
+    assert owner.connect().execute(text("SELECT estado FROM ordenes_compra WHERE empresa_id=:e"), {"e": eid}).scalar() == "Confirmada"
+    # el proveedor envía una oferta; la empresa la convierte en orden de compra
+    for i, msg in enumerate(["2", "A001 200 1,05", "FIN"]): aviso("584141234567", msg, f"wamid.o{i}")
+    oferta = owner.connect().execute(text("SELECT id FROM pedidos WHERE tipo='compra' AND empresa_id=:e"), {"e": eid}).scalar()
+    r = a.post(f"/e/{eid}/whatsapp/pedidos", data={"accion": "oc", "pid": oferta, "moneda": "USD"}, follow_redirects=True)
+    assert "OC-000002".encode() in r.data, alerta(r)
+    # pedido de cliente: confirmar y avisar
+    pv = owner.connect().execute(text("SELECT id FROM pedidos WHERE tipo='venta' AND empresa_id=:e"), {"e": eid}).scalar()
+    a.post(f"/e/{eid}/whatsapp/pedidos", data={"accion": "estado", "pid": pv, "estado": "Confirmado", "avisar": "1"})
+    assert "fue confirmado" in enviados[-1]["text"]["body"]
+    # recibir la OC 1: la harina entra al inventario al costo en Bs (1,10 USD × tasa BCV)
+    r = a.post(oc_url + "/accion", data={"accion": "recibir"}, follow_redirects=True)
+    assert "1 producto(s) entraron al inventario".encode() in r.data, r.data[-600:]
+    assert owner.connect().execute(text("SELECT cantidad_actual, costo_promedio_actual FROM productos WHERE empresa_id=:e AND codigo='A001'"), {"e": eid}).one() == (Decimal("110"), ((Decimal(400) + Decimal("1.10") * tasa * 100) / 110).quantize(Decimal("0.0001")))
+    # aislamiento: la otra organización no ve pedidos, chats ni la configuración del bot
+    assert x.get(f"/e/{eid}/whatsapp/pedidos").status_code == 404 and x.get(f"/e/{eid}/compras/ordenes").status_code == 404
+    with app.app_context():
+        from app import rls
+        from app.extensions import db
+        from flask import g
+        with app.test_request_context():
+            g.usuario = None; rls.fijar_org(db, org + 1000)
+            assert db.session.execute(text("SELECT count(*) FROM pedidos")).scalar() == 0 and db.session.execute(text("SELECT count(*) FROM whatsapp_config")).scalar() == 0
