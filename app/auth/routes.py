@@ -53,7 +53,7 @@ def enviar_invitacion(u, org_nombre, quien):
                   "mediante el siguiente botón. Por su seguridad, nadie más conoce ni podrá conocer esa contraseña.\n\n"
                   "Al ingresar por primera vez se le pedirá configurar la verificación en dos pasos (MFA) con una aplicación "
                   "autenticadora, como Google o Microsoft Authenticator.",
-                  titulo="Bienvenido(a) a ERP", boton=("Activar mi cuenta", correo.url_absoluta(url_for("auth.invitacion", token=tok))),
+                  titulo="Bienvenido(a) a Contax", boton=("Activar mi cuenta", correo.url_absoluta(url_for("auth.invitacion", token=tok))),
                   filas=[("Usuario", u.username), ("Rol", u.rol), ("Organización", org_nombre), ("Validez del enlace", "72 horas, un solo uso")],
                   nota="Si usted no esperaba esta invitación, ignore este mensaje: la cuenta no se activará.")
 

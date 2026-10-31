@@ -532,7 +532,7 @@ def maestro_factura_ejemplo():
          "estado": "Emitida", "cliente_nombre": "Cliente de ejemplo, C.A.", "cliente_rif": "J-12345678-9", "cliente_direccion": "Av. Principal, Caracas",
          "orden_ref": "EJEMPLO", "moneda": "USDT", "tasa_bcv": str(tasa), "forma_pago": "USDT por Binance", "exento": "0", "base": str(base),
          "iva": str(total - base), "iva_pct": str(iva_pct), "total": str(total), "total_divisa": "25.00", "hash": "0" * 64,
-         "lineas": [{"descripcion": "Licencia de uso ERP — plan Cash — Facturación, 1 mes(es)", "cantidad": "1", "precio": str((Decimal(25) / (1 + iva_pct / 100)).quantize(Decimal("0.01"))),
+         "lineas": [{"descripcion": "Licencia de uso Contax — plan Cash — Facturación, 1 mes(es)", "cantidad": "1", "precio": str((Decimal(25) / (1 + iva_pct / 100)).quantize(Decimal("0.01"))),
                      "alicuota": "G", "base_bs": str(base), "iva_bs": str(total - base)}],
          "emisor": {k: str(c.get(k) or f"({k.replace('_', ' ')})") for k in ("razon_social", "rif", "domicilio", "telefono", "imprenta_razon_social", "imprenta_rif",
                                                                           "imprenta_providencia", "fecha_asignacion", "control_prefijo")}

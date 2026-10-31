@@ -34,5 +34,5 @@ def verificar(secreto: str, ingresado: str, ultimo_contador: int = 0, t=None, pa
     return None
 
 
-def uri_otpauth(secreto: str, usuario: str, emisor="ERP Contable") -> str:
+def uri_otpauth(secreto: str, usuario: str, emisor="Contax") -> str:
     return f"otpauth://totp/{quote(emisor)}:{quote(usuario)}?secret={secreto}&issuer={quote(emisor)}&digits=6&period=30"

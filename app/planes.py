@@ -10,9 +10,9 @@ MODULOS = {
 }
 
 PLANES = {
-    "ERP_CONTABLE": {"nombre": "ERP Contable", "modulos": frozenset({"contabilidad", "administrativo", "auditoria"})},
+    "ERP_CONTABLE": {"nombre": "Contax Contable", "modulos": frozenset({"contabilidad", "administrativo", "auditoria"})},
     "CASH": {"nombre": "Cash — Facturación", "modulos": frozenset({"facturacion", "inventario"})},
-    "ERP_ADMIN": {"nombre": "ERP Administrativo", "modulos": frozenset({"administrativo", "inventario"})},
+    "ERP_ADMIN": {"nombre": "Contax Administrativo", "modulos": frozenset({"administrativo", "inventario"})},
     "ALL_IN_ONE": {"nombre": "All in One", "modulos": frozenset(MODULOS)},
     # A medida: el Maestro elige los módulos y viajan FIRMADOS en el token (claim "modulos")
     "PERSONALIZADO": {"nombre": "Personalizado", "modulos": frozenset()},

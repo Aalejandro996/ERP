@@ -404,7 +404,7 @@ def whatsapp_config(eid):
                 cfg.clave_webhook, cfg.verify_token = secrets.token_urlsafe(24), secrets.token_urlsafe(18)
                 registrar(g.usuario.username, "WHATSAPP_WEBHOOK_ROTADO", f"empresa={eid}")
             elif a == "prueba":
-                SC.enviar_wa(eid, F["telefono"], "Mensaje de prueba del bot de WhatsApp de su ERP ✅")
+                SC.enviar_wa(eid, F["telefono"], "Mensaje de prueba del bot de WhatsApp de Contax ✅")
             else: raise ValueError("Acción inválida")
             db.session.commit()
         try:

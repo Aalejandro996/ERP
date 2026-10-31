@@ -274,7 +274,7 @@ def test_licencia_pagada_llega_con_su_factura_en_un_segundo_correo(e):
                             tasa_bcv="887.302", cliente_rif="J-12345678-9")
     e.t[0] += 60; e.bf.pago(o["monto_esperado"], e.t[0], "T1")
     e.app.extensions["revisar_pendientes"](); e.app.extensions["revisar_pendientes"]()
-    assert [c[1] for c in e.correos] == ["Su licencia ERP (Cash — Facturación)", "Factura N° A00000001 · ERP"]       # clave y luego factura, una vez
+    assert [c[1] for c in e.correos] == ["Su licencia Contax (Cash — Facturación)", "Factura N° A00000001 · Contax"]       # clave y luego factura, una vez
     f = e.admin.facturas()[0]
     exacto = Decimal(o["monto_esperado"])
     assert f["orden_ref"] == o["ref"] and f["numero_control"] == "00-00000001" and f["cliente_rif"] == "J-12345678-9"

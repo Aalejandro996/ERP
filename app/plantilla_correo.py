@@ -1,4 +1,4 @@
-"""Plantilla HTML de los correos de ERP (estilo de la aplicación: negro #191919, verde lima #87e64b, fondo claro).
+"""Plantilla HTML de los correos de Contax (estilo de la aplicación: negro #191919, verde lima #87e64b, fondo claro).
 
 Los clientes de correo no aceptan hojas de estilo ni SVG: todo va en estilos en línea, maquetado con tablas y con el
 logo en PNG. Cada correo lleva además una versión de texto plano equivalente. Todo valor dinámico se escapa."""
@@ -8,7 +8,7 @@ FONDO, TINTA, TEXTO, SUAVE, LINEA, LIMA, LIMA_TINTA = "#f4f4f2", "#191919", "#30
 FUENTE = "'Inter','Segoe UI',Helvetica,Arial,sans-serif"
 
 
-def html(titulo, parrafos, base_url, nombre="ERP", lema="", boton=None, destacado=None, filas=(), nota=None, pie=None):
+def html(titulo, parrafos, base_url, nombre="Contax", lema="", boton=None, destacado=None, filas=(), nota=None, pie=None):
     """titulo: encabezado. parrafos: textos (se escapan). boton: (texto, url). destacado: (etiqueta, valor) en un recuadro
     (p. ej. una clave). filas: [(etiqueta, valor)] en tabla de datos. nota: aviso de seguridad al final."""
     e = escape
@@ -56,19 +56,19 @@ def html(titulo, parrafos, base_url, nombre="ERP", lema="", boton=None, destacad
     {cuerpo}
   </td></tr>
   <tr><td style="padding:20px 8px;text-align:center;font-size:12px;line-height:1.6;color:{SUAVE}">
-    {e(pie)}<br><strong style="color:{TINTA}">{e(nombre)}</strong> · un producto de Gigadevs Corp · Venezuela
+    {e(pie)}<br><strong style="color:{TINTA}">{e(nombre)}</strong>® · una marca de Gigadevs Corp · Venezuela
   </td></tr>
 </table></td></tr></table></body></html>"""
 
 
-def texto(titulo, parrafos, boton=None, destacado=None, filas=(), nota=None, nombre="ERP"):
+def texto(titulo, parrafos, boton=None, destacado=None, filas=(), nota=None, nombre="Contax"):
     """Versión de texto plano equivalente (para clientes sin HTML y filtros antispam)."""
     partes = [titulo, "=" * len(titulo), "", *[p + "\n" for p in parrafos]]
     if destacado: partes += [f"{destacado[0]}: {destacado[1]}", ""]
     if filas: partes += [f"  {k}: {v}" for k, v in filas] + [""]
     if boton: partes += [f"{boton[0]}:", boton[1], ""]
     if nota: partes += [nota, ""]
-    partes += ["—", f"{nombre} · un producto de Gigadevs Corp"]
+    partes += ["—", f"{nombre}® · una marca de Gigadevs Corp"]
     return "\n".join(partes)
 
 
@@ -78,7 +78,7 @@ def _bs(v) -> str:
 
 
 def factura_html(f: dict, base_url: str, intro=None) -> str:
-    """Factura de Gigadevs (venta de licencias) lista para correo: tablas y estilos en línea, logos de ERP y Gigadevs."""
+    """Factura de Gigadevs (venta de licencias) lista para correo: tablas y estilos en línea, logos de Contax y Gigadevs."""
     e, em = escape, f["emisor"]
     base = base_url.rstrip("/")
     divisa = f["moneda"] != "VES"
@@ -103,8 +103,8 @@ def factura_html(f: dict, base_url: str, intro=None) -> str:
  <tr><td style="background:{TINTA};border-radius:16px 16px 0 0;padding:20px 26px">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
    <td valign="middle"><table role="presentation" cellpadding="0" cellspacing="0"><tr>
-     <td style="padding-right:10px"><img src="{e(base)}/static/marca/icono-192.png" width="38" height="38" alt="ERP" style="display:block;border:0;border-radius:9px"></td>
-     <td><div style="font-size:20px;font-weight:800;color:#fff">ERP</div><div style="font-size:11px;color:#a3a3a3">Tu empresa en orden. Tu fisco al día.</div></td></tr></table></td>
+     <td style="padding-right:10px"><img src="{e(base)}/static/marca/icono-192.png" width="38" height="38" alt="Contax" style="display:block;border:0;border-radius:9px"></td>
+     <td><div style="font-size:20px;font-weight:800;color:#fff">Conta<span style="color:#87e64b">x</span></div><div style="font-size:11px;color:#a3a3a3">Tu empresa en orden. Tu fisco al día.</div></td></tr></table></td>
    <td align="right" valign="middle"><img src="{e(base)}/static/marca/gigadevs.png" width="58" height="58" alt="Gigadevs Corp" style="display:block;border:0"></td>
   </tr></table></td></tr>
  <tr><td style="height:4px;background:{LIMA};font-size:0;line-height:0">&nbsp;</td></tr>
@@ -136,7 +136,7 @@ def factura_html(f: dict, base_url: str, intro=None) -> str:
    {e(em['control_prefijo'])}-{int(em['control_hasta'] or 0):08d}{(' el ' + e(em['fecha_asignacion'])) if em.get('fecha_asignacion') else ''}.<br>Huella del documento: {e(f['hash'][:16])}</p>
  </td></tr>
  <tr><td style="padding:18px 8px;text-align:center;font-size:12px;line-height:1.6;color:{SUAVE}">Conserve este correo: es su factura. Para cualquier consulta responda al soporte de Gigadevs Corp.<br>
-   <strong style="color:{TINTA}">ERP</strong> · un producto de Gigadevs Corp · Venezuela</td></tr>
+   <strong style="color:{TINTA}">Contax</strong>® · una marca de Gigadevs Corp · Venezuela</td></tr>
 </table></td></tr></table></body></html>"""
 
 
@@ -149,7 +149,7 @@ def factura_texto(f: dict) -> str:
             f"Base imponible: Bs {_bs(f['base'])}\nIVA {f['iva_pct']}%: Bs {_bs(f['iva'])}\nTOTAL: Bs {_bs(f['total'])}"
             + (f"\nEquivalente: {f['moneda']} {_bs(f['total_divisa'])} (tasa BCV {_bs(f['tasa_bcv'])})" if f["moneda"] != "VES" and f.get("total_divisa") else "")
             + f"\n\nImprenta autorizada: {em['imprenta_razon_social']} · RIF {em['imprenta_rif']} · {em['imprenta_providencia']}\n"
-              "Conserve este correo: es su factura.\n—\nERP · un producto de Gigadevs Corp")
+              "Conserve este correo: es su factura.\n—\nContax® · una marca de Gigadevs Corp")
 
 
 def orden_compra_html(oc: dict, base_url: str, intro=None, titulo="ORDEN DE COMPRA", etiqueta="Documento de compra", pie=None, aviso=None) -> str:
@@ -216,5 +216,5 @@ def orden_compra_html(oc: dict, base_url: str, intro=None, titulo="ORDEN DE COMP
    {e(aviso) if aviso else 'Esta orden de compra no es una factura ni sustituye la documentación fiscal: la factura debe emitirse a nombre de ' + e(em['razon_social']) + ', RIF ' + e(em['rif']) + ', con el N° de esta orden como referencia.'}{(' Montos en ' + e(mon) + '; el equivalente en bolívares se calculó a la tasa oficial del BCV del día de emisión.') if mon != 'VES' else ''}</p>
  </td></tr>
  <tr><td style="padding:18px 8px;text-align:center;font-size:12px;line-height:1.6;color:{SUAVE}">{e(pie) if pie else 'Para confirmar esta orden responda por WhatsApp <b>CONFIRMAR ' + e(str(oc['numero'])) + '</b> o escriba a ' + e(em.get('email') or em['razon_social']) + '.'}<br>
-   Generado con <strong style="color:{TINTA}">ERP</strong> · un producto de Gigadevs Corp · <img src="{e(base)}/static/marca/icono-192.png" width="14" height="14" alt="" style="vertical-align:-2px;border:0;border-radius:3px"></td></tr>
+   Generado con <strong style="color:{TINTA}">Contax</strong>® · una marca de Gigadevs Corp · <img src="{e(base)}/static/marca/icono-192.png" width="14" height="14" alt="" style="vertical-align:-2px;border:0;border-radius:3px"></td></tr>
 </table></td></tr></table></body></html>"""

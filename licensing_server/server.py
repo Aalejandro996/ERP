@@ -407,17 +407,17 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         from app import plantilla_correo as pc
         url_erp = cfg.get("url_erp") or ""
         parrafos = [f"Estimado(a) {cliente}:", motivo,
-                    "Para activarla, ingrese al ERP con su usuario Administrador, vaya a Organización → Licencia, pegue la clave "
+                    "Para activarla, ingrese a Contax con su usuario Administrador, vaya a Organización → Licencia, pegue la clave "
                     "en «Activar licencia» y pulse Activar."]
         from app.planes import PLANES as NOMBRES
         plan = NOMBRES[plan]["nombre"] if plan in NOMBRES else plan
         filas = [("Plan", plan), ("Vigente hasta", time.strftime("%d/%m/%Y %H:%M UTC" if plan.startswith("Demo") else "%d/%m/%Y", time.gmtime(vence_en)))]
         nota = ("Esta clave se envía una sola vez y no se guarda legible en nuestros sistemas. No la comparta: quien la tenga puede "
                 "activarla. Si la pierde, solicite una nueva al soporte de Gigadevs; la anterior quedará anulada.")
-        boton = ("Ingresar al ERP", f"{url_erp}/admin/licencia") if url_erp else None
-        titulo = "Su licencia de ERP"
-        correo(correo_destino, f"Su licencia ERP ({plan})", pc.texto(titulo, parrafos, boton, ("Clave de licencia", clave), filas, nota),
-               html=pc.html(titulo, parrafos, url_erp or "https://erp", "ERP", "Tu empresa en orden. Tu fisco al día.", boton,
+        boton = ("Ingresar a Contax", f"{url_erp}/admin/licencia") if url_erp else None
+        titulo = "Su licencia de Contax"
+        correo(correo_destino, f"Su licencia Contax ({plan})", pc.texto(titulo, parrafos, boton, ("Clave de licencia", clave), filas, nota),
+               html=pc.html(titulo, parrafos, url_erp or "https://contax", "Contax", "Tu empresa en orden. Tu fisco al día.", boton,
                             ("Clave de licencia", clave), filas, nota))
         con.execute(update(licencias).where(licencias.c.id == lic_id).values(clave_enviada_en=reloj()))
         st.log(con, lic_id, "clave_enviada", correo_destino)
@@ -774,7 +774,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         if not f.get("cliente_correo"): raise ValueError("La factura no tiene correo del cliente")
         intro = intro or (f"Estimado(a) {f['cliente_nombre']}: adjuntamos la factura de su compra. Su clave de licencia llegó en un correo aparte."
                           if f.get("orden_ref") else f"Estimado(a) {f['cliente_nombre']}: le enviamos su factura.")
-        correo(f["cliente_correo"], f"Factura N° {f['numero_completo']} · ERP", fx_texto(f, intro), html=pc.factura_html(f, cfg.get("url_erp") or "", intro))
+        correo(f["cliente_correo"], f"Factura N° {f['numero_completo']} · Contax", fx_texto(f, intro), html=pc.factura_html(f, cfg.get("url_erp") or "", intro))
         with st.eng.begin() as c:
             c.execute(update(fx.facturas).where(fx.facturas.c.id == fid).values(correo_enviado_en=reloj()))
         return f
@@ -801,11 +801,11 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
 
     def _concepto(plan, modulos, meses=None, dias=None):
         from app.planes import MODULOS
-        nombre = {"ERP_CONTABLE": "ERP Contable", "CASH": "Cash — Facturación", "ERP_ADMIN": "ERP Administrativo", "ALL_IN_ONE": "All in One",
-                  "DEMO": "Demo 72 h"}.get(plan, plan or "ERP")
+        nombre = {"ERP_CONTABLE": "Contax Contable", "CASH": "Cash — Facturación", "ERP_ADMIN": "Contax Administrativo", "ALL_IN_ONE": "All in One",
+                  "DEMO": "Demo 72 h"}.get(plan, plan or "Contax")
         if plan == "PERSONALIZADO": nombre = "Personalizado (" + ", ".join(MODULOS.get(m, m) for m in (modulos or "").split(",") if m) + ")"
         tiempo = f"{meses} mes(es)" if meses else (f"{dias} días" if dias else "")
-        return f"Licencia de uso ERP — plan {nombre}" + (f", {tiempo}" if tiempo else "")
+        return f"Licencia de uso Contax — plan {nombre}" + (f", {tiempo}" if tiempo else "")
 
     def facturar_licencia(lid):
         """Factura de una licencia emitida por el Maestro con venta registrada (idempotente)."""

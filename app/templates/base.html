@@ -1,5 +1,5 @@
 <!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{% block titulo %}{{ titulo or 'ERP Web' }}{% endblock %} · {{ config.APP_NOMBRE }}</title>
+<title>{% block titulo %}{{ titulo or 'Contax' }}{% endblock %} · {{ config.APP_NOMBRE }}</title>
 <link rel="icon" href="{{ url_for('static', filename='marca/favicon.ico') }}" sizes="any"><link rel="icon" href="{{ url_for('static', filename='marca/logo-icono.svg') }}" type="image/svg+xml">
 <link rel="apple-touch-icon" href="{{ url_for('static', filename='marca/apple-touch-icon.png') }}"><meta name="theme-color" content="#191919"><meta name="description" content="{{ config.APP_NOMBRE }} — {{ config.APP_LEMA }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='estilo.css') }}"><script src="{{ url_for('static', filename='app.js') }}" defer></script></head>
@@ -32,7 +32,7 @@
     <a href="{{ url_for('web.admin_fiscal') }}" class="{{ 'activo' if ep == 'web.admin_fiscal' }}">Parámetros legales</a>
     <a href="{{ url_for('web.plataforma_bitacora') }}" class="{{ 'activo' if ep == 'web.plataforma_bitacora' }}">Bitácora</a></nav>
   {% endif %}
-  <div class="pie">{{ config.APP_LEMA }}<br>Normativa VE: VEN-NIF · Prov. SNAT 0071 · LIVA · LISLR · IGTF<br>Gigadevs Corp</div>
+  <div class="pie">{{ config.APP_LEMA }}<br>Normativa VE: VEN-NIF · Prov. SNAT 0071 · LIVA · LISLR · IGTF<br>{{ config.APP_NOMBRE }}® · Gigadevs Corp</div>
 </aside>
 <div class="principal">
   <header class="topbar">

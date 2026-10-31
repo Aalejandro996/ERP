@@ -1,6 +1,8 @@
-# ERP — *Tu empresa en orden. Tu fisco al día.*
+# Contax® — *Tu empresa en orden. Tu fisco al día.*
 
-Un producto de Gigadevs Corp. Flask + PostgreSQL, multi‑cliente, por planes de licencia. Repositorio **privado**.
+> Antes «ERP». Contax es una marca registrada de Gigadevs Corp; se mantienen los colores y el diseño.
+
+Una marca registrada de Gigadevs Corp. Flask + PostgreSQL, multi‑cliente, por planes de licencia. Repositorio **privado**.
 
 Contabilidad VEN‑NIF, administración, inventario, **facturación venezolana** y auditoría financiera en una sola plataforma.
 Cada cliente (organización) trabaja aislado: la aplicación lo verifica en cada petición y PostgreSQL lo impone con
