@@ -56,7 +56,7 @@ def entorno():
     with app_owner.app_context():
         db.session.execute(text("CREATE EXTENSION IF NOT EXISTS citext")); db.session.commit()
         db.create_all()
-        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql"):
+        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql"):
             db.session.execute(text(pathlib.Path("migrations", m).read_text(encoding="utf-8"))); db.session.commit()
     with owner.connect() as c:
         c.execute(text("GRANT USAGE ON SCHEMA public TO erp_app"))
@@ -513,3 +513,161 @@ def test_contabilidad_compras_y_bot_de_whatsapp(entorno):
         with app.test_request_context():
             g.usuario = None; rls.fijar_org(db, org + 1000)
             assert db.session.execute(text("SELECT count(*) FROM pedidos")).scalar() == 0 and db.session.execute(text("SELECT count(*) FROM whatsapp_config")).scalar() == 0
+
+
+def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
+    import hashlib, hmac, io, json
+    import pytest as _pt
+    from sqlalchemy import text
+    app, owner = entorno["app"], entorno["owner"]
+    hoy = hoy_ve().isoformat()
+    uno = lambda sql, **p: owner.connect().execute(text(sql), p).scalar()
+    alerta = lambda r: re.findall(r'role="alert">([^<]+)', r.get_data(as_text=True))
+    org, a = _org_con_admin(entorno, "Epsilon Market", "J-77777777-7", "adminE")
+
+    # --- Tutorial del primer ingreso: empresa con logo → módulos → órdenes de compra → listo
+    assert a.get("/").headers["Location"].endswith("/bienvenida")
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    r = a.post("/bienvenida?paso=1", data={"accion": "empresa", "razon_social": "Epsilon Market CA", "rif": "J-77777777-7", "direccion": "Calle 5, Maracay",
+                                          "telefono": "0243-5550000", "correo": "info@epsilon.test", "spe": "0", "logo": (io.BytesIO(png), "logo.png")},
+               content_type="multipart/form-data")
+    assert "paso=2" in r.headers["Location"], alerta(a.get("/bienvenida"))
+    eid = uno("SELECT id FROM empresas WHERE rif='J-77777777-7'")
+    assert uno("SELECT logo_mime FROM empresas WHERE id=:e", e=eid) == "image/png" and a.get(f"/e/{eid}/logo").data == png
+    r = a.post(f"/bienvenida?paso=1&eid={eid}", data={"accion": "empresa", "razon_social": "x", "logo": (io.BytesIO(b"GIF89a"), "x.gif")},
+               content_type="multipart/form-data", follow_redirects=True)
+    assert any("PNG, JPG o WebP" in m for m in alerta(r))
+    a.post(f"/bienvenida?paso=2&eid={eid}", data={"accion": "modulos", "modulos": ["facturacion", "inventario", "administrativo"]})
+    a.post(f"/bienvenida?paso=3&eid={eid}", data={"accion": "oc", "oc_condicion_pago": "Contado", "oc_lugar_entrega": "Galpón 3", "oc_numero_inicial": "500"})
+    assert "está lista" in a.get(f"/bienvenida?paso=4&eid={eid}").get_data(as_text=True)
+    assert a.get("/").status_code == 200 and uno("SELECT bienvenida_completada FROM organizaciones WHERE id=:o", o=org)
+    # módulos por empresa: contabilidad apagada en esta empresa → fuera del menú y 403, aunque el plan la incluya
+    assert a.get(f"/e/{eid}/asientos").status_code == 403
+    menu = a.get(f"/e/{eid}/inventario").get_data(as_text=True)
+    assert "Catálogo de cuentas" not in menu and 'class="nav-modulo' in menu and "Órdenes de compra" in menu
+    a.post(f"/e/{eid}/empresa", data={"accion": "modulos", "modulos": ["facturacion", "inventario", "administrativo", "contabilidad"]})
+    assert a.get(f"/e/{eid}/asientos").status_code == 200
+
+    # --- Migración desde Profit Plus (Excel con varias hojas): leer → validar → cargar
+    openpyxl = _pt.importorskip("openpyxl")
+    wb = openpyxl.Workbook(); wb.remove(wb.active)
+    for nombre, filas in {"Clientes": [["co_cli", "cli_des", "rif", "direc1", "telefonos"], ["C1", "Comercial Beta CA", "J123456789", "Maracay", "0414"],
+                                       ["C2", "Malo", "123", "", ""]],
+                          "Articulos": [["co_art", "art_des", "stock_act", "cos_pro_un", "prec_vta1", "tipo_imp"], ["A001", "Harina PAN 1kg", "50", "40", "45,50", "1"],
+                                        ["B002", "Aceite 1L", "0", "0", "120", "1"]],
+                          "CxC": [["nro_doc", "co_cli", "cli_des", "fec_emis", "fec_venc", "monto_net", "saldo"], ["F-900", "C1", "Comercial Beta CA", "01/09/2026", "01/10/2026", "1000", "600"]]}.items():
+        ws = wb.create_sheet(nombre)
+        for f in filas: ws.append(f)
+    buf = io.BytesIO(); wb.save(buf)
+    r = a.post(f"/e/{eid}/migracion", data={"archivo": (io.BytesIO(buf.getvalue()), "profit.xlsx")}, content_type="multipart/form-data")
+    assert "/migracion/" in r.headers["Location"], alerta(a.get(f"/e/{eid}/migracion"))
+    ms = owner.connect().execute(text("SELECT id, tipo, sistema FROM migraciones WHERE empresa_id=:e ORDER BY id"), {"e": eid}).all()
+    assert [(t, s) for _, t, s in ms] == [("clientes", "Profit Plus"), ("productos", "Profit Plus"), ("cxc", "Profit Plus")]
+    vista = a.get(f"/e/{eid}/migracion/{ms[0][0]}").get_data(as_text=True)
+    assert "✔ Nuevo" in vista and "✘ Error" in vista and "J-12345678-9" in vista
+    assert uno("SELECT count(*) FROM clientes_facturacion WHERE empresa_id=:e", e=eid) == 0          # nada se carga sin validar
+    for mid, _, _ in ms:
+        r = a.post(f"/e/{eid}/migracion/{mid}", data={"accion": "aplicar", "modo": "omitir"}, follow_redirects=True)
+        assert any("Migración aplicada" in m for m in alerta(r)), alerta(r)
+    assert uno("SELECT count(*) FROM clientes_facturacion WHERE empresa_id=:e", e=eid) == 1
+    assert uno("SELECT cantidad_actual FROM productos WHERE empresa_id=:e AND codigo='A001'", e=eid) == Decimal("50")
+    assert uno("SELECT count(*) FROM asientos WHERE empresa_id=:e", e=eid) == 0                        # los saldos migrados no generan asientos solos
+    r = a.post(f"/e/{eid}/migracion", data={"archivo": (io.BytesIO(buf.getvalue()), "profit.xlsx")}, content_type="multipart/form-data", follow_redirects=True)
+    assert "↺ Ya existe" in r.get_data(as_text=True)                                                    # una segunda carga no duplica
+
+    # --- Cuadre: configurar cuentas (plan modelo), asiento de apertura de lo migrado y cuadre de inventario/CxC
+    a.post(f"/e/{eid}/cuentas", data={"accion": "modelo"})
+    a.post(f"/e/{eid}/config-asientos", data={"cuenta_caja_banco": "1.1.02", "cuenta_cxc": "1.1.04", "cuenta_inventario": "1.1.07", "cuenta_iva_credito_fiscal": "1.1.08",
+                                              "cuenta_iva_debito_fiscal": "2.1.02", "cuenta_cxp": "2.1.01", "cuenta_ventas": "4.1.01", "cuenta_costo_venta": "5.1.01",
+                                              "cuenta_compras_gastos": "6.1.04"})
+    c = a.get(f"/e/{eid}/cuadre").get_data(as_text=True)
+    assert "Saldos iniciales migrados" in c and "2000.00" in c and "600" in c                          # 50 × 40 de inventario
+    r = a.post(f"/e/{eid}/cuadre", data={"accion": "apertura", "fecha": hoy, "contrapartida": "3.1.01"}, follow_redirects=True)
+    assert any("apertura" in m for m in alerta(r)), alerta(r)
+    c = a.get(f"/e/{eid}/cuadre").get_data(as_text=True)
+    filas = re.findall(r"<tr class=\"([^\"]*)\"><td class=\"\">(Inventario a hoy|Cuentas por cobrar a hoy)", c)
+    assert len(filas) == 2 and all(cl == "" for cl, _ in filas), filas                                   # ✔ cuadran
+
+    # --- Orden de compra (numeración desde 500, valores de la empresa) recibida CON la factura del proveedor → libro de compras
+    a.post(f"/e/{eid}/compras/proveedores", data={"rif": "J-66666666-6", "razon_social": "Distribuidora Seis CA"})
+    pid = uno("SELECT id FROM proveedores WHERE empresa_id=:e", e=eid)
+    r = a.post(f"/e/{eid}/compras/ordenes", data={"destinatario": f"P:{pid}", "fecha": hoy, "moneda": "VES", "l1_cod": "A001", "l1_cant": "10", "l1_precio": "40", "l1_alic": "G"})
+    oc_url = r.headers["Location"]
+    t = a.get(oc_url).get_data(as_text=True)
+    assert "OC-000500" in t and "Contado" in t and "Galpón 3" in t and "data:image/png;base64" in t
+    r = a.post(oc_url + "/accion", data={"accion": "recibir", "factura": "000123", "control": "00-000456"}, follow_redirects=True)
+    assert b"libro de compras" in r.data, r.data[-400:]
+    lc = a.get(f"/e/{eid}/cxp/libro-compras?periodo={hoy[:7]}").get_data(as_text=True)
+    assert "000123" in lc and "00-000456" in lc and "64.00" in lc and "F-900" not in lc                 # IVA 16 % de 400; lo migrado no entra
+    assert uno("SELECT count(*) FROM documentos_cxp WHERE empresa_id=:e AND asiento_id IS NOT NULL", e=eid) == 1
+    c = a.get(f"/e/{eid}/cuadre").get_data(as_text=True)
+    assert re.search(r'<tr class=""><td class="">IVA crédito fiscal del mes', c) and re.search(r'<tr class=""><td class="">Inventario a hoy', c)
+
+    # --- WhatsApp: el cliente envía su orden de compra en PDF → el bot factura con lo disponible y responde cómo pagar
+    canvas = _pt.importorskip("reportlab.pdfgen.canvas")
+    def pdf(lineas):
+        b = io.BytesIO(); cv = canvas.Canvas(b); y = 800
+        for l in lineas: cv.drawString(40, y, l); y -= 18
+        cv.save(); return b.getvalue()
+    a.post(f"/e/{eid}/facturacion/series", data={"accion": "serie", "serie": "B", "prefijo": "00", "desde": "1", "hasta": "50", "imprenta": "Imprenta Digital SA",
+                                                 "imprenta_rif": "J-44444444-4", "providencia": "SENIAT/INTI/2025/0001", "fecha": "2026-01-01"})
+    sid = uno("SELECT id FROM series_facturacion WHERE empresa_id=:e", e=eid)
+    enviados, archivos = [], {}
+    app.extensions["whatsapp_transporte"] = lambda url, cuerpo, cab: (enviados.append(json.loads(cuerpo)) or (200, b'{"messages":[{"id":"wE%d"}]}' % len(enviados)))
+    app.extensions["whatsapp_descarga"] = lambda mid: (archivos[mid], "application/pdf")
+    r = a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "guardar", "phone_number_id": "555", "token": "T", "app_secret": "S2", "activo": "1",
+                                               "instrucciones_pago": "Pague en caja: Calle 5, Maracay, de 8 a 5.", "factura_automatica": "0", "serie_id": str(sid)}, follow_redirects=True)
+    assert "Configuración guardada".encode() in r.data, alerta(r)
+    hook = "/wa/" + uno("SELECT clave_webhook FROM whatsapp_config WHERE empresa_id=:e", e=eid)
+    anon = _cliente(app)
+    def documento(wamid, mid):
+        cuerpo = json.dumps({"entry": [{"changes": [{"value": {"contacts": [{"wa_id": "584149990000", "profile": {"name": "Comercial Beta"}}],
+                 "messages": [{"from": "584149990000", "id": wamid, "type": "document", "document": {"id": mid, "mime_type": "application/pdf", "filename": "OC.pdf"}}]}}]}]}).encode()
+        return anon.post(hook, data=cuerpo, content_type="application/json", headers={"X-Hub-Signature-256": "sha256=" + hmac.new(b"S2", cuerpo, hashlib.sha256).hexdigest()})
+    archivos["111"] = pdf(["ORDEN DE COMPRA N° 778", "Comercial Beta CA - RIF J-12345678-9", "A001 Harina PAN 1kg 80 UND", "Aceite 1L 3", "Galletas Maria 2"])
+    assert documento("wamid.pdf1", "111").status_code == 200
+    resp = enviados[-1]["text"]["body"]
+    assert "Orden de venta N°" in resp and "Pague en caja" in resp and "pidió 80" in resp and "/ov/" in resp and "Galletas" in resp
+    ov = re.search(r"https://erp\.test(/ov/[\w.\-]+)", resp).group(1)
+    assert "ORDEN DE VENTA" in anon.get(ov).get_data(as_text=True)
+    assert uno("SELECT count(*) FROM documentos_venta WHERE empresa_id=:e", e=eid) == 0
+    a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "guardar", "phone_number_id": "555", "activo": "1", "factura_automatica": "1", "serie_id": str(sid), "dias_credito": "7",
+                                           "instrucciones_pago": "Pague en caja: Calle 5, Maracay, de 8 a 5."})
+    archivos["222"] = pdf(["Orden de compra N° 779", "RIF: J-12345678-9", "A001 Harina PAN 1kg 5"])
+    documento("wamid.pdf2", "222")
+    resp = enviados[-1]["text"]["body"]
+    assert "Factura N° B00000001" in resp, resp
+    # la factura del bot quedó en el libro de ventas, descargó el inventario y creó su cuenta por cobrar
+    lv = a.get(f"/e/{eid}/facturacion/libro-ventas?periodo={hoy[:7]}").get_data(as_text=True)
+    assert "Comercial Beta CA" in lv
+    assert uno("SELECT cantidad_actual FROM productos WHERE empresa_id=:e AND codigo='A001'", e=eid) == Decimal("55")   # 50 + 10 (OC) − 5
+    assert uno("SELECT count(*) FROM documentos_cxc WHERE empresa_id=:e AND deudor_rif='J-12345678-9' AND origen='manual'", e=eid) == 1
+    assert uno("SELECT estado FROM pedidos WHERE empresa_id=:e AND referencia_cliente='779'", e=eid) == "Facturado"
+
+    # --- Maestro: cliente que no se registró en 72 h → reenviar invitación o eliminarlo
+    from app import totp
+    from app.extensions import db
+    from app.models import Usuario
+    from app.security import hashear
+    with entorno["app_owner"].app_context():
+        sec = totp.nuevo_secreto()
+        db.session.add(Usuario(username="root2", email="root2@prov.test", email_verificado=True, rol="Maestro", password_hash=hashear(CLAVE),
+                               debe_cambiar_clave=False, mfa_activo=True, mfa_secreto_cifrado=entorno["app_owner"].extensions["cifrador"].cifrar(sec)))
+        db.session.commit()
+    root = _cliente(app)
+    root.post("/login", data={"usuario": "root2", "clave": CLAVE}); root.post("/mfa/verificar", data={"codigo": totp.codigo(sec)})
+    root.post("/plataforma", data={"accion": "crear", "nombre": "Zeta Olvidadiza", "rif": "J-88888888-8", "username": "adminZ", "email": "z@zeta.test"})
+    with owner.connect() as cx:
+        cx.execute(text("UPDATE tokens_correo SET expira_en = now() - interval '1 hour' WHERE usuario_id = (SELECT id FROM usuarios WHERE username='adminZ')")); cx.commit()
+    p = root.get("/plataforma").get_data(as_text=True)
+    assert "VENCIDA (72 h sin registrarse)" in p and "Clientes que no se registraron" in p
+    oz = uno("SELECT id FROM organizaciones WHERE rif='J-88888888-8'")
+    r = root.post("/plataforma", data={"accion": "reinvitar", "oid": oz}, follow_redirects=True)
+    assert any("Invitación reenviada a z@zeta.test" in m for m in alerta(r)) and "Pendiente (vence" in r.get_data(as_text=True)
+    r = root.post("/plataforma", data={"accion": "eliminar", "oid": org, "confirmar": "J-77777777-7"}, follow_redirects=True)
+    assert any("ya activó" in m for m in alerta(r))                                                     # quien trabaja no se borra
+    r = root.post("/plataforma", data={"accion": "eliminar", "oid": oz, "confirmar": "J-00000000-0"}, follow_redirects=True)
+    assert any("RIF" in m for m in alerta(r)) and uno("SELECT count(*) FROM organizaciones WHERE id=:o", o=oz) == 1
+    r = root.post("/plataforma", data={"accion": "eliminar", "oid": oz, "confirmar": "J-88888888-8"}, follow_redirects=True)
+    assert any("eliminado" in m for m in alerta(r)) and uno("SELECT count(*) FROM organizaciones WHERE id=:o", o=oz) == 0
+    assert uno("SELECT count(*) FROM usuarios WHERE username='adminZ'") == 0

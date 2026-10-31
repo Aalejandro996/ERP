@@ -59,7 +59,7 @@ def test_cliente_de_api_whatsapp():
     aviso = {"entry": [{"changes": [{"value": {"contacts": [{"wa_id": "58412", "profile": {"name": "Ana"}}],
                                                 "messages": [{"from": "58412", "id": "wamid.1", "type": "text", "text": {"body": "hola"}},
                                                              {"from": "58412", "id": "wamid.2", "type": "image"}]}}]}]}
-    assert list(WA.mensajes_entrantes(aviso)) == [("58412", "Ana", "hola", "wamid.1"), ("58412", "Ana", "[image]", "wamid.2")]
+    assert list(WA.mensajes_entrantes(aviso)) == [("58412", "Ana", "hola", "wamid.1", None), ("58412", "Ana", "[image]", "wamid.2", None)]
     enviados = []
     def transporte(url, cuerpo, cab):
         enviados.append((url, cuerpo, cab)); return 200, b'{"messages":[{"id":"wamid.out"}]}'

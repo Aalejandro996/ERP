@@ -12,8 +12,11 @@
 {% if acciones %}<div class="acciones">{% for a in acciones %}<a class="btn {{ '' if a.primaria else 'sec' }}" href="{{ a.url }}">{{ a.texto }}</a>{% endfor %}</div>{% endif %}</div>
 {% if pestanas %}<nav class="pestanas" aria-label="Secciones del módulo">{% for t in pestanas %}<a href="{{ t.url }}" class="{{ 'activo' if t.activo }}" {% if t.activo %}aria-current="page"{% endif %}>{{ t.texto }}</a>{% endfor %}</nav>{% endif %}
 {% for s in secciones %}
-{% if s.kpis %}<div class="kpis">{% for k, v in s.kpis %}<div class="kpi"><span>{{ k }}</span><b>{{ v }}</b></div>{% endfor %}</div>
-{% else %}<section>{% if s.titulo %}<h2>{{ s.titulo }}</h2>{% endif %}{% if s.nota %}<p class="peq nota">{{ s.nota }}</p>{% endif %}
+{% if s.pasos %}<ol class="pasos">{% for t, est in s.pasos %}<li class="{{ est }}">{{ t }}</li>{% endfor %}</ol>
+{% elif s.logo %}<p><img class="logo-empresa" src="{{ s.logo }}" alt="Logo de la empresa"></p>
+{% elif s.kpis %}<div class="kpis">{% for k, v in s.kpis %}<div class="kpi"><span>{{ k }}</span><b>{{ v }}</b></div>{% endfor %}</div>
+{% else %}{% set plegar = s.form and not s.tabla and not s.pares and s.titulo and secciones|length > 2 and not s.abierto %}
+{% if plegar %}<details class="seccion-plegable"><summary><h2>{{ s.titulo }}</h2></summary><section>{% else %}<section>{% if s.titulo %}<h2>{{ s.titulo }}</h2>{% endif %}{% endif %}{% if s.nota %}<p class="peq nota">{{ s.nota }}</p>{% endif %}
 {% if s.tarjetas is defined %}{% if s.tarjetas %}<div class="tarjetas">{% for t in s.tarjetas %}{% if t.url %}<a href="{{ t.url }}"><b>{{ t.titulo }}</b><span class="peq">{{ t.sub }}</span><br><span class="ir">Abrir →</span></a>{% else %}<div class="tarjeta"><b>{{ t.titulo }}</b><p class="peq">{{ t.sub }} · Su rol no tiene módulos habilitados en esta empresa.</p></div>{% endif %}{% endfor %}</div>{% else %}<p class="peq">{{ s.vacio }}</p>{% endif %}{% endif %}
 {% if s.grafico %}{% set gr = s.grafico %}<figure class="viz">{% if gr.series|length > 1 %}<div class="viz-leyenda">{% for se in gr.series %}<span><i class="serie-{{ loop.index }}"></i>{{ se }}</span>{% endfor %}</div>{% endif %}
 <svg viewBox="0 0 {{ gr.ancho }} {{ gr.alto }}" role="img" aria-label="{{ gr.titulo }}" class="viz-svg">
@@ -34,5 +37,5 @@
 {% if s.tabla.pag %}{% set p = s.tabla.pag %}<div class="paginacion"><span>{{ p.texto }}</span><nav aria-label="Paginación">{% if p.todo %}<a href="{{ p.primera }}">Paginar</a>{% else %}
 {% if p.ant %}<a href="{{ p.ant }}" aria-label="Anterior">‹</a>{% endif %}{% for e in p.enlaces %}{% if e.gap %}<span class="gap">…</span>{% elif e.actual %}<span class="actual" aria-current="page">{{ e.n }}</span>{% else %}<a href="{{ e.url }}">{{ e.n }}</a>{% endif %}{% endfor %}
 {% if p.sig %}<a href="{{ p.sig }}" aria-label="Siguiente">›</a>{% endif %}<a href="{{ p.todas }}">Ver todo</a>{% endif %}</nav></div>{% endif %}{% endif %}
-{% if s.texto %}<pre>{{ s.texto }}</pre>{% endif %}</section>{% endif %}
+{% if s.texto %}<pre>{{ s.texto }}</pre>{% endif %}</section>{% if plegar %}</details>{% endif %}{% endif %}
 {% endfor %}{% endblock %}

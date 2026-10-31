@@ -118,7 +118,7 @@ def libro_compras(empresa_id, periodo):
     from .models2 import RetencionIVA
     anio, mes = int(periodo[:4]), int(periodo[5:7])
     ini, fin = date(anio, mes, 1), date(anio + (mes == 12), mes % 12 + 1, 1)
-    docs = db.session.execute(select(DocumentoCxP).where(DocumentoCxP.empresa_id == empresa_id, DocumentoCxP.fecha_emision >= ini,
+    docs = db.session.execute(select(DocumentoCxP).where(DocumentoCxP.empresa_id == empresa_id, DocumentoCxP.origen != "migracion", DocumentoCxP.fecha_emision >= ini,
                                                          DocumentoCxP.fecha_emision < fin).order_by(DocumentoCxP.fecha_emision, DocumentoCxP.id)).scalars().all()
     ret = {}
     for r in db.session.execute(select(RetencionIVA).where(RetencionIVA.empresa_id == empresa_id, RetencionIVA.tipo_operacion == "C")).scalars():

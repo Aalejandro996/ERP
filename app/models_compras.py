@@ -8,7 +8,7 @@ from .models import _ahora
 M = db.Numeric(18, 2)
 Q = db.Numeric(18, 4)
 ESTADOS_OC = ("Emitida", "Enviada", "Confirmada", "Recibida", "Rechazada", "Anulada")
-ESTADOS_PEDIDO = ("Nuevo", "Confirmado", "Despachado", "Rechazado", "Convertido")
+ESTADOS_PEDIDO = ("Nuevo", "Confirmado", "Despachado", "Rechazado", "Convertido", "Facturado")
 
 
 class Proveedor(db.Model):
@@ -58,6 +58,7 @@ class OrdenCompra(db.Model):
     creado_por = db.Column(db.Text, nullable=False)
     creado_en = db.Column(db.DateTime(timezone=True), default=_ahora, nullable=False)
     enviado_en = db.Column(db.DateTime(timezone=True))
+    cxp_id = db.Column(db.Integer)                 # factura del proveedor registrada al recibir (libro de compras)
     lineas = db.relationship("LineaOrdenCompra", order_by="LineaOrdenCompra.id", cascade="all, delete-orphan")
     __table_args__ = (UniqueConstraint("empresa_id", "numero", name="uq_oc_empresa_numero"),
                       CheckConstraint(f"estado IN {ESTADOS_OC}", name="ck_oc_estado"),
@@ -91,6 +92,11 @@ class WhatsappConfig(db.Model):
     verify_token = db.Column(db.Text, nullable=False)
     clave_webhook = db.Column(db.Text, nullable=False, unique=True)   # parte secreta de la URL del webhook
     bienvenida = db.Column(db.Text)
+    instrucciones_pago = db.Column(db.Text)        # se envían con cada orden de venta / factura del bot
+    factura_automatica = db.Column(db.Boolean, nullable=False, default=False, server_default=db.text("false"))
+    serie_id = db.Column(db.Integer)               # serie con la que el bot factura
+    dias_credito = db.Column(db.Integer, nullable=False, default=0, server_default=db.text("0"))
+    usuario_id = db.Column(db.ForeignKey("usuarios.id"))   # en nombre de quién emite el bot (quien lo configuró)
     activo = db.Column(db.Boolean, nullable=False, default=True)
     actualizado = db.Column(db.DateTime(timezone=True), default=_ahora)
 
@@ -138,7 +144,38 @@ class Pedido(db.Model):
     nota = db.Column(db.Text)
     estado = db.Column(db.Text, nullable=False, default="Nuevo")
     orden_compra_id = db.Column(db.BigInteger)
+    documento_venta_id = db.Column(db.BigInteger)  # factura emitida a partir del pedido
+    referencia_cliente = db.Column(db.Text)        # p. ej. N° de la orden de compra que envió el cliente en PDF
+    rif = db.Column(db.Text)
     creado_en = db.Column(db.DateTime(timezone=True), default=_ahora, nullable=False)
     __table_args__ = (UniqueConstraint("empresa_id", "numero", name="uq_pedido_empresa_numero"),
                       CheckConstraint("tipo IN ('venta','compra')", name="ck_pedido_tipo"),
                       CheckConstraint(f"estado IN {ESTADOS_PEDIDO}", name="ck_pedido_estado"))
+
+
+class Migracion(db.Model):
+    """Carga de datos de otro sistema (Galac, Profit Plus, Excel…). Primero queda en BORRADOR para que el cliente valide
+    fila por fila lo que se va a cargar; solo al confirmar se escribe en las tablas definitivas."""
+    __tablename__ = "migraciones"
+    id = db.Column(db.Integer, primary_key=True)
+    empresa_id = db.Column(db.ForeignKey("empresas.id"), nullable=False, index=True)
+    archivo = db.Column(db.Text, nullable=False)
+    hoja = db.Column(db.Text)
+    sistema = db.Column(db.Text, nullable=False)          # detectado o indicado: Galac, Profit Plus, Excel / otro
+    tipo = db.Column(db.Text, nullable=False)             # clientes | proveedores | productos | plan_cuentas | cxc | cxp
+    filas = db.Column(db.JSON, nullable=False, default=list)   # [{datos, estado: ok|error|existe, obs}]
+    estado = db.Column(db.Text, nullable=False, default="Borrador")
+    resultado = db.Column(db.Text)
+    creado_por = db.Column(db.Text, nullable=False)
+    creado_en = db.Column(db.DateTime(timezone=True), default=_ahora, nullable=False)
+    __table_args__ = (CheckConstraint("estado IN ('Borrador','Aplicada','Descartada')", name="ck_migracion_estado"),)
+
+
+class AsientoOrigen(db.Model):
+    """Vínculo documento → asiento cuando el asiento se generó DESPUÉS (cuadre de libros). Evita contabilizar dos veces
+    documentos que no admiten cambios (las facturas emitidas son de solo-inserción)."""
+    __tablename__ = "asientos_origen"
+    empresa_id = db.Column(db.ForeignKey("empresas.id"), primary_key=True)
+    origen = db.Column(db.Text, primary_key=True)          # venta | compra | cxc | apertura_inv | apertura_cxc | apertura_cxp
+    origen_id = db.Column(db.BigInteger, primary_key=True)
+    asiento_id = db.Column(db.BigInteger, nullable=False)

@@ -35,6 +35,7 @@ def _doc(prefijo, tercero):
         saldo_pendiente = db.Column(M, nullable=False)
         estado = db.Column(db.Text, nullable=False, default="Pendiente")
         asiento_id = db.Column(db.BigInteger)
+        origen = db.Column(db.Text, nullable=False, default="manual", server_default=db.text("'manual'"))   # manual | factura | orden_compra | migracion
     return _Doc
 
 

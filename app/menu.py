@@ -28,7 +28,8 @@ MENU = [
         ("web.fiscal_libros", "📋", "Libros fiscales", "fiscal.ver"),
         ("web.bancos", "🏦", "Conciliación bancaria", "cartera.ver"),
         ("web.divisas", "💱", "Divisas y moneda", "asientos.ver"),
-        ("web.periodos", "⚙️", "Configuración y cierres", "asientos.ver")]),
+        ("web.periodos", "⚙️", "Configuración y cierres", "asientos.ver"),
+        ("web.cuadre", "✅", "Cuadre de libros", "reportes.ver")]),
     ("Fiscal Venezuela", [
         ("web.fiscal_islr", "🇻🇪", "ISLR", "fiscal.ver"),
         ("web.fiscal_retenciones", "✂️", "Retenciones IVA / ISLR", "fiscal.ver")]),
@@ -43,6 +44,9 @@ MENU = [
         ("web.whatsapp_config", "🤖", "Bot de WhatsApp", "whatsapp.configurar")]),
     ("Auditoría", [
         ("web.auditoria", "🕵️", "Auditoría financiera", "auditoria.ver")]),
+    ("Empresa", [
+        ("web.empresa_datos", "🏢", "Datos, logo y módulos", "admin"),
+        ("web.migracion", "📥", "Migrar datos de otro sistema", "admin")]),
 ]
 
 # Pestañas internas (equivalentes a los sub_notebook del escritorio)
@@ -54,6 +58,8 @@ PESTANAS = [
     ["web.ordenes_compra", "web.proveedores"],
     ["web.fiscal_islr", "web.fiscal_retenciones", "web.fiscal_libros"],
     ["web.pedidos", "web.whatsapp_config"],
+    ["web.periodos", "web.cuadre"],
+    ["web.empresa_datos", "web.migracion"],
 ]
 _TEXTO = {ep: (ic, tx, pm) for _, items in MENU for ep, ic, tx, pm in items}
 
@@ -65,14 +71,20 @@ def _incluido(permiso, modulos) -> bool:
 
 
 def menu_empresa(eid):
-    """Grupos con sus ítems: estado «ok» (enlace), «plan» (no incluido en el plan, se muestra bloqueado) u omitido (rol)."""
+    """Grupos desplegables con sus ítems: «ok» (enlace), «plan» (no incluido en el plan: bloqueado) u omitido (rol, o módulo
+    que la empresa no trabaja). Solo el grupo de la página actual viene abierto, para que el menú no sea interminable."""
     modulos, u, out = getattr(g, "modulos", frozenset()), g.usuario, []
+    del_plan = getattr(g, "modulos_licencia", modulos)
     for grupo, items in MENU:
         vis = []
         for ep, ic, tx, pm in items:
-            if not _incluido(pm, modulos): vis.append(dict(texto=tx, icono=ic, estado="plan"))
-            elif tiene_permiso(u, pm): vis.append(dict(texto=tx, icono=ic, estado="ok", url=url_for(ep, eid=eid), activo=request.endpoint == ep))
-        if any(i["estado"] == "ok" for i in vis) or vis: out.append(dict(titulo=grupo, enlaces=vis))
+            if not _incluido(pm, del_plan): vis.append(dict(texto=tx, icono=ic, estado="plan"))
+            elif _incluido(pm, modulos) and tiene_permiso(u, pm):
+                vis.append(dict(texto=tx, icono=ic, estado="ok", url=url_for(ep, eid=eid), activo=request.endpoint == ep))
+        if any(i["estado"] == "ok" for i in vis):
+            out.append(dict(titulo=grupo, icono=items[0][1], enlaces=vis, abierto=any(i.get("activo") for i in vis)))
+        elif vis:
+            out.append(dict(titulo=grupo, icono=items[0][1], enlaces=vis, abierto=False, bloqueado=True))
     return out
 
 

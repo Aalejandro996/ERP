@@ -105,12 +105,18 @@ def mis_empresas():
 
 def ruta(patron, permiso, metodos=("GET",)):
     def deco(f):
+        protegida = requiere(permiso)(f)
+
         @bp.route(patron, methods=list(metodos), endpoint=f.__name__)
-        @requiere(permiso)
         @wraps(f)
         def interior(*a, **kw):
-            if "eid" in kw: empresa_autorizada(kw["eid"])
-            return f(*a, **kw)
+            if "eid" in kw and getattr(g, "usuario", None) is not None and g.usuario.organizacion_id is not None:
+                empresa_autorizada(kw["eid"])
+                # Módulos que trabaja ESTA empresa (elegidos en el tutorial o en «Datos de la empresa»), dentro del plan:
+                # el permiso se evalúa después, así un módulo apagado en la empresa responde 403 aunque el plan lo traiga.
+                g.modulos_licencia = g.get("modulos_licencia", g.modulos)
+                g.modulos = db.session.get(Empresa, kw["eid"]).modulos_empresa(g.modulos_licencia)
+            return protegida(*a, **kw)
         return interior
     return deco
 
@@ -138,36 +144,73 @@ def limite_licencia(clave):
     return int((g.licencia or {}).get(clave) or 0)
 
 
+LOGO_MAX = 300 * 1024
+
+
+def leer_logo(archivo):
+    """Logo de la empresa: PNG, JPEG o WebP de hasta 300 KB (se reconoce por su contenido, no por la extensión)."""
+    if archivo is None or not archivo.filename: return None
+    datos = archivo.read(LOGO_MAX + 1)
+    if len(datos) > LOGO_MAX: raise ValueError("El logo no puede superar 300 KB")
+    if datos[:8] == b"\x89PNG\r\n\x1a\n": return datos, "image/png"
+    if datos[:3] == b"\xff\xd8\xff": return datos, "image/jpeg"
+    if datos[:4] == b"RIFF" and datos[8:12] == b"WEBP": return datos, "image/webp"
+    raise ValueError("El logo debe ser una imagen PNG, JPG o WebP")
+
+
+def aplicar_datos_empresa(e, form, archivos):
+    """Datos básicos, dirección fiscal, teléfono, correo, contribuyente especial y logo (alta, tutorial y edición)."""
+    e.razon_social = (form.get("razon_social") or e.razon_social or "").strip()[:200]
+    if not e.razon_social: raise ValueError("Indique la razón social")
+    for k in ("direccion", "telefono", "correo"):
+        if k in form: setattr(e, k, (form.get(k) or "").strip()[:300] or None)
+    if e.correo and "@" not in e.correo: raise ValueError("Correo de la empresa inválido")
+    if "spe" in form: e.es_sujeto_pasivo_especial = form.get("spe") == "1"
+    logo = leer_logo(archivos.get("logo") if archivos else None)
+    if logo: e.logo, e.logo_mime = logo
+    if form.get("quitar_logo") == "1": e.logo = e.logo_mime = None
+
+
+def crear_empresa(form, archivos=None) -> Empresa:
+    org = g.usuario.organizacion_id
+    n = db.session.execute(select(db.func.count()).select_from(Empresa).where(Empresa.organizacion_id == org)).scalar()
+    if n >= limite_licencia("max_empresas"): raise ValueError(f"Su licencia permite {limite_licencia('max_empresas')} empresa(s)")
+    rif = validar_rif(form["rif"])
+    if db.session.execute(select(Empresa.id).where(Empresa.organizacion_id == org, Empresa.rif == rif)).first():
+        raise ValueError("Ya existe una empresa con ese RIF en su organización")
+    e = Empresa(organizacion_id=org, rif=rif)
+    aplicar_datos_empresa(e, form, archivos)
+    db.session.add(e); db.session.flush()
+    for cod, nom, tipo in (("1", "ACTIVO", "Activo"), ("2", "PASIVO", "Pasivo"), ("3", "PATRIMONIO", "Patrimonio"), ("4", "INGRESOS", "Ingreso"), ("5", "GASTOS", "Gasto")):
+        db.session.add(Cuenta(empresa_id=e.id, codigo=cod, nombre=nom, tipo=tipo))
+    from .auditoria import registrar
+    registrar(g.usuario.username, "EMPRESA_CREADA", f"{e.rif} {e.razon_social}"); db.session.commit()
+    return e
+
+
 @bp.route("/", methods=["GET", "POST"])
 def inicio():
     if g.usuario is None: return redirect(url_for("auth.login"))
     if g.usuario.rol == "Maestro": return redirect(url_for("web.plataforma"))
+    if request.method == "GET" and g.usuario.rol == "Administrador" and g.licencia:
+        from .models import Organizacion
+        org = db.session.get(Organizacion, g.usuario.organizacion_id)
+        if not org.bienvenida_completada and not mis_empresas():
+            return redirect(url_for("web.bienvenida"))   # primera vez con licencia activa: tutorial guiado
     if request.method == "POST":
         if g.usuario.rol != "Administrador": return ("", 403)
-        def alta():
-            org = g.usuario.organizacion_id
-            n = db.session.execute(select(db.func.count()).select_from(Empresa).where(Empresa.organizacion_id == org)).scalar()
-            if n >= limite_licencia("max_empresas"): raise ValueError(f"Su licencia permite {limite_licencia('max_empresas')} empresa(s)")
-            rif = validar_rif(F["rif"])
-            if db.session.execute(select(Empresa.id).where(Empresa.organizacion_id == org, Empresa.rif == rif)).first():
-                raise ValueError("Ya existe una empresa con ese RIF en su organización")
-            e = Empresa(organizacion_id=org, razon_social=F["razon_social"].strip(), rif=rif, direccion=F.get("direccion"), telefono=F.get("telefono"),
-                        es_sujeto_pasivo_especial=F.get("spe") == "1")
-            db.session.add(e); db.session.flush()
-            for cod, nom, tipo in (("1", "ACTIVO", "Activo"), ("2", "PASIVO", "Pasivo"), ("3", "PATRIMONIO", "Patrimonio"), ("4", "INGRESOS", "Ingreso"), ("5", "GASTOS", "Gasto")):
-                db.session.add(Cuenta(empresa_id=e.id, codigo=cod, nombre=nom, tipo=tipo))
-            from .auditoria import registrar
-            registrar(g.usuario.username, "EMPRESA_CREADA", f"{e.rif} {e.razon_social}"); db.session.commit()
-        if intentar(alta, "Empresa creada (con cuentas raíz). Asigne usuarios en Administración → Usuarios."):
+        if intentar(lambda: crear_empresa(F, request.files), "Empresa creada (con cuentas raíz). Asigne usuarios en Administración → Usuarios."):
             return redirect(url_for("web.inicio"))
     emps = mis_empresas()
     secs = [dict(titulo="Empresas a su cargo", tarjetas=[dict(titulo=e.razon_social, sub=f"RIF {e.rif}" + (" · Contribuyente especial" if e.es_sujeto_pasivo_especial else ""),
                                                              url=url_empresa(e.id)) for e in emps], vacio="Aún no tiene empresas asignadas.")]
     if g.usuario.rol == "Administrador":
-        secs.append(dict(titulo="Nueva empresa", nota=f"Su plan permite hasta {limite_licencia('max_empresas')} empresas.", form=dict(action=url_for("web.inicio"), boton="Crear empresa", campos=[
+        secs.append(dict(titulo="Nueva empresa", nota=f"Su plan permite hasta {limite_licencia('max_empresas')} empresas. Para una guía paso a paso use el tutorial.",
+                         form=dict(action=url_for("web.inicio"), boton="Crear empresa", archivo=True, campos=[
             campo("razon_social", "Razón social"), campo("rif", "RIF (J-12345678-9)"), campo("direccion", "Domicilio fiscal", req=False), campo("telefono", "Teléfono", req=False),
+            campo("correo", "Correo", "email", req=False), campo("logo", "Logo (PNG/JPG, máx. 300 KB)", "file", req=False, accept="image/png,image/jpeg,image/webp"),
             campo("spe", "¿Sujeto pasivo especial?", "select", opciones=[("0", "No"), ("1", "Sí")])])))
-    return pagina("Panel", None, secs)
+    return pagina("Panel", None, secs, acciones=[dict(url=url_for("web.bienvenida"), texto="Tutorial de configuración")] if g.usuario.rol == "Administrador" else None)
 
 
 # ---------------------------------------------------------------- catálogo de cuentas (con importación)
@@ -730,4 +773,4 @@ def _seccion_bitacora():
                 tabla=dict(cols=["Fecha (UTC)", "Usuario", "IP", "Acción", "Detalle"], filas=[dict(cells=[l.ts.strftime("%Y-%m-%d %H:%M:%S"), l.usuario, l.ip or "", l.accion, (l.detalles or "")[:120]]) for l in logs]))
 
 
-from . import web_admin, web_compras, web_facturacion, web_fiscal, web_plataforma  # noqa: E402,F401  (registran sus rutas en el mismo blueprint)
+from . import web_admin, web_compras, web_cuadre, web_empresa, web_facturacion, web_fiscal, web_migracion, web_plataforma  # noqa: E402,F401  (registran sus rutas en el mismo blueprint)

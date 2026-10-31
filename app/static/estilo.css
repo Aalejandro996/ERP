@@ -220,3 +220,29 @@ label.check input{width:auto}
 .viz-leyenda{display:flex;gap:16px;font-size:.85rem;color:var(--text);margin-bottom:8px}
 .viz-leyenda i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
 .viz-leyenda i.serie-1{background:var(--serie-1)}.viz-leyenda i.serie-2{background:var(--serie-2)}
+/* ---------- módulos desplegables (barra lateral) y secciones plegables ---------- */
+details.nav-modulo>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:6px;padding:8px 10px;border-radius:8px;
+  font-size:.74rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dark-muted);font-weight:600}
+details.nav-modulo>summary::-webkit-details-marker{display:none}
+details.nav-modulo>summary::after{content:"▸";margin-left:auto;transition:transform .15s}
+details.nav-modulo[open]>summary::after{transform:rotate(90deg)}
+details.nav-modulo>summary:hover{background:var(--dark-2);color:#fff}
+details.nav-modulo[open]>summary{color:#fff}
+details.nav-modulo.bloqueado>summary{opacity:.55}
+details.nav-modulo .nav-grupo{padding-left:6px;margin-bottom:6px}
+.sidebar{gap:6px}
+details.seccion-plegable{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);margin-bottom:18px;box-shadow:var(--shadow)}
+details.seccion-plegable>summary{list-style:none;cursor:pointer;padding:16px 22px;display:flex;align-items:center;gap:10px}
+details.seccion-plegable>summary::-webkit-details-marker{display:none}
+details.seccion-plegable>summary h2{margin:0;font-size:1.05rem}
+details.seccion-plegable>summary::before{content:"+";display:inline-flex;width:22px;height:22px;border-radius:50%;background:var(--accent);color:var(--accent-ink);align-items:center;justify-content:center;font-weight:700}
+details.seccion-plegable[open]>summary::before{content:"−"}
+details.seccion-plegable>section{border:0;box-shadow:none;margin:0;padding-top:0}
+/* ---------- tutorial de bienvenida ---------- */
+.pasos{display:flex;gap:8px;flex-wrap:wrap;margin:-6px 0 18px;padding:0;list-style:none;counter-reset:paso}
+.pasos li{flex:1;min-width:140px;padding:10px 12px;border-radius:var(--radius-sm);background:var(--surface-2);color:var(--muted);font-size:.88rem;counter-increment:paso}
+.pasos li::before{content:counter(paso);display:inline-flex;width:22px;height:22px;border-radius:50%;background:var(--line);margin-right:8px;align-items:center;justify-content:center;font-weight:700}
+.pasos li.hecho{color:var(--text)}.pasos li.hecho::before{content:"✓";background:var(--accent);color:var(--accent-ink)}
+.pasos li.actual{background:var(--dark);color:#fff}.pasos li.actual::before{background:var(--accent);color:var(--accent-ink)}
+.logo-empresa{max-height:64px;max-width:220px;border-radius:8px;background:#fff;padding:4px;border:1px solid var(--line)}
+.estado-ok{color:#188038;font-weight:700}.estado-mal{color:var(--danger);font-weight:700}

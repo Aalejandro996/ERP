@@ -11,9 +11,9 @@
   <div class="org"><b>{{ g.organizacion.nombre if g.organizacion else '' }}</b>
     {% if g.licencia %}<span class="chip">{{ plan_nombre }}</span>{% else %}<span class="chip rojo">Sin licencia</span>{% endif %}</div>
   <nav class="nav-grupo"><span>General</span><a href="/" class="{{ 'activo' if ep == 'web.inicio' }}">Panel de empresas</a></nav>
-  {% if empresa %}{% for grp in menu_empresa(empresa.id) %}<nav class="nav-grupo"><span>{{ grp.titulo }}</span>
+  {% if empresa %}{% for grp in menu_empresa(empresa.id) %}<details class="nav-modulo{{ ' bloqueado' if grp.bloqueado }}" {{ 'open' if grp.abierto }}><summary><span class="ico" aria-hidden="true">{{ grp.icono }}</span>{{ grp.titulo }}</summary><nav class="nav-grupo">
     {% for it in grp.enlaces %}{% if it.estado == 'ok' %}<a href="{{ it.url }}" class="{{ 'activo' if it.activo }}"><span class="ico" aria-hidden="true">{{ it.icono }}</span>{{ it.texto }}</a>
-    {% else %}<span class="bloq" title="No incluido en su plan"><span class="ico" aria-hidden="true">{{ it.icono }}</span>{{ it.texto }}</span>{% endif %}{% endfor %}</nav>{% endfor %}
+    {% else %}<span class="bloq" title="No incluido en su plan"><span class="ico" aria-hidden="true">{{ it.icono }}</span>{{ it.texto }}</span>{% endif %}{% endfor %}</nav></details>{% endfor %}
   {% elif u and u.rol != 'Maestro' %}<p class="peq nav-aviso">📁 Abra una empresa del panel para ver sus carpetas y módulos.</p>
   {% endif %}
   {% if u.rol == 'Administrador' %}<nav class="nav-grupo"><span>Organización</span>

@@ -44,18 +44,75 @@ def plataforma():
             if org is None: raise ValueError("Organización inexistente")
             org.estado = "suspendida" if org.estado == "activa" else "activa"
             registrar(g.usuario.username, "ORGANIZACION_" + org.estado.upper(), org.rif, org=None); db.session.commit()
-        if a not in ("crear", "estado"): flash("Acción inválida"); return redirect(request.url)
-        intentar({"crear": crear, "estado": estado}[a], "Hecho"); return redirect(request.url)
+        def pendientes_de(org):
+            us = db.session.execute(select(Usuario).where(Usuario.organizacion_id == org.id)).scalars().all()
+            return us, [u for u in us if not u.email_verificado]
+        def reinvitar():
+            org = db.session.get(Organizacion, int(F["oid"]))
+            if org is None: raise ValueError("Organización inexistente")
+            _, pend = pendientes_de(org)
+            admins = [u for u in pend if u.rol == "Administrador"]
+            if not admins: raise ValueError("El administrador de ese cliente ya aceptó su invitación")
+            for u in admins: enviar_invitacion(u, org.nombre, "El proveedor de la plataforma")
+            registrar(g.usuario.username, "INVITACION_REENVIADA", f"{org.rif} {', '.join(u.email for u in admins)}", org=None); db.session.commit()
+            return f"Invitación reenviada a {', '.join(u.email for u in admins)} (válida 72 h)"
+        def eliminar():
+            """Solo clientes que NUNCA activaron su cuenta y no tienen empresas: no se borra ningún dato contable."""
+            org = db.session.get(Organizacion, int(F["oid"]))
+            if org is None: raise ValueError("Organización inexistente")
+            if (F.get("confirmar") or "").strip().upper() != org.rif.upper(): raise ValueError("Escriba el RIF del cliente para confirmar")
+            us, pend = pendientes_de(org)
+            if len(pend) != len(us): raise ValueError("Ese cliente ya activó al menos una cuenta: suspéndalo en lugar de eliminarlo")
+            resumen = {r[0]: r for r in db.session.execute(db.text("SELECT * FROM maestro_resumen_organizaciones()")).all()}
+            if resumen.get(org.id, (0, 0))[1]: raise ValueError("Ese cliente tiene empresas registradas: no se puede eliminar")
+            try:   # sus licencias quedan revocadas (si el servidor de licencias está configurado)
+                adm = _admin()
+                for l in adm.licencias(str(org.id)):
+                    if l["estado"] != "revocada": adm.modificar(l["id"], estado="revocada", autor=g.usuario.username)
+            except Exception:  # noqa: BLE001 — sin servidor de licencias se elimina igual
+                pass
+            for u in us: db.session.delete(u)
+            db.session.flush()
+            db.session.execute(db.text("DELETE FROM licencias_organizacion WHERE organizacion_id = :o"), {"o": org.id})
+            db.session.delete(org)
+            registrar(g.usuario.username, "ORGANIZACION_ELIMINADA", f"{org.rif} {org.nombre} (invitación no aceptada)", org=None); db.session.commit()
+            return f"Cliente {org.nombre} eliminado"
+        acciones = {"crear": crear, "estado": estado, "reinvitar": reinvitar, "eliminar": eliminar}
+        if a not in acciones: flash("Acción inválida"); return redirect(request.url)
+        intentar(acciones[a], lambda r: r or "Hecho"); return redirect(request.url)
     gestor = current_app.extensions["gestor_licencia"]
     orgs = db.session.execute(select(Organizacion).order_by(Organizacion.nombre)).scalars().all()
     n_us = dict(db.session.execute(select(Usuario.organizacion_id, func.count()).where(Usuario.activo.is_(True)).group_by(Usuario.organizacion_id)).all())
-    filas = []
+    from .models import TokenCorreo, _ahora
+    admins = {}
+    for u in db.session.execute(select(Usuario).where(Usuario.rol == "Administrador")).scalars(): admins.setdefault(u.organizacion_id, []).append(u)
+    vigentes = {t.usuario_id: t.expira_en for t in db.session.execute(select(TokenCorreo).where(TokenCorreo.proposito == "invitacion", TokenCorreo.usado_en.is_(None),
+                                                                                               TokenCorreo.expira_en > _ahora())).scalars()}
+    def invitacion(o):
+        us = admins.get(o.id, [])
+        if not us: return "Sin administrador", None
+        if any(u.email_verificado for u in us): return "Aceptada", None
+        v = [vigentes[u.id] for u in us if u.id in vigentes]
+        return (f"Pendiente (vence {max(v).strftime('%d/%m %H:%M')} UTC)", "pendiente") if v else ("VENCIDA (72 h sin registrarse)", "vencida")
+    filas, sin_registro = [], []
     for o in orgs:
         est = gestor(o.id).estado()
-        filas.append(dict(cells=[o.nombre, o.rif, o.estado.capitalize(), nombre_plan(est.claims) if est.valida else f"Sin licencia ({est.motivo})", n_us.get(o.id, 0), o.correo_contacto or ""]))
+        inv, clase = invitacion(o)
+        if clase: sin_registro.append((o, clase))
+        filas.append(dict(cells=[o.nombre, o.rif, o.estado.capitalize(), nombre_plan(est.claims) if est.valida else f"Sin licencia ({est.motivo})", n_us.get(o.id, 0),
+                                 o.correo_contacto or "", inv], clase="anulado" if clase == "vencida" else "",
+                          form=dict(action=request.path, boton="Reenviar invitación", campos=[h("reinvitar"), campo("oid", "", "hidden", valor=o.id)]) if clase else None))
     return pagina("Clientes de la plataforma", None, [
         dict(kpis=[("Clientes", len(orgs)), ("Activos", sum(o.estado == "activa" for o in orgs)), ("Usuarios activos", sum(v for k, v in n_us.items() if k))]),
-        dict(tabla=dict(cols=["Organización", "RIF", "Estado", "Plan / licencia", "Usuarios", "Contacto"], filas=filas)),
+        dict(tabla=dict(cols=["Organización", "RIF", "Estado", "Plan / licencia", "Usuarios", "Contacto", "Invitación"], accion=True, filas=filas)),
+        *([dict(titulo="Clientes que no se registraron", nota="La invitación vale 72 horas. Reenvíela (se genera un enlace nuevo de 72 h y el anterior queda anulado) "
+                     "o elimine al cliente: solo se permite si nadie activó su cuenta y no tiene empresas; sus licencias quedan revocadas.",
+                tabla=dict(cols=["Cliente", "RIF", "Correo", "Invitación"], accion=True, filas=[
+                    dict(cells=[o.nombre, o.rif, o.correo_contacto or "", "Vencida" if c == "vencida" else "Pendiente"],
+                         form=dict(action=request.path, boton="Reenviar", campos=[h("reinvitar"), campo("oid", "", "hidden", valor=o.id)])) for o, c in sin_registro])),
+              dict(titulo="Eliminar un cliente que no se registró", form=dict(action=request.path, boton="Eliminar cliente", confirmar="¿Eliminar definitivamente este cliente?",
+                   campos=[h("eliminar"), campo("oid", "Cliente", "select", opciones=[(o.id, f"{o.nombre} ({o.rif}) · invitación {c}") for o, c in sin_registro]),
+                           campo("confirmar", "Escriba el RIF del cliente para confirmar")]))] if sin_registro else []),
         dict(titulo="Nuevo cliente", nota="Se crea la organización y se envía una invitación a su administrador. El plan lo define la clave de licencia que usted emite (licensing_server.cli crear --plan).",
              form=dict(action=request.path, boton="Crear e invitar", campos=[h("crear"), campo("nombre", "Nombre del cliente"), campo("rif", "RIF"),
                                                                               campo("username", "Usuario administrador"), campo("email", "Correo del administrador", "email")])),

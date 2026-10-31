@@ -152,7 +152,7 @@ def factura_texto(f: dict) -> str:
               "Conserve este correo: es su factura.\n—\nERP · un producto de Gigadevs Corp")
 
 
-def orden_compra_html(oc: dict, base_url: str, intro=None) -> str:
+def orden_compra_html(oc: dict, base_url: str, intro=None, titulo="ORDEN DE COMPRA", etiqueta="Documento de compra", pie=None, aviso=None) -> str:
     """Orden de compra con el MISMO modelo de la factura de Gigadevs, pero emitida por la empresa del cliente:
     emisor = la empresa (razón social, RIF, domicilio), destinatario = el proveedor o cliente, y sus condiciones."""
     e, em, d = escape, oc["emisor"], oc["destinatario"]
@@ -175,14 +175,15 @@ def orden_compra_html(oc: dict, base_url: str, intro=None) -> str:
     cond = [("Fecha de entrega", fecha(oc.get("fecha_entrega"))), ("Condición de pago", oc.get("condicion_pago") or "—"),
             ("Lugar de entrega", oc.get("lugar_entrega") or em.get("direccion") or "—"), ("Moneda", mon)]
     return f"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light">
-<title>Orden de compra {e(oc['numero_txt'])} · {e(em['razon_social'])}</title></head><body style="margin:0;padding:0;background:{FONDO};font-family:{FUENTE}">
+<title>{e(titulo.capitalize())} {e(oc['numero_txt'])} · {e(em['razon_social'])}</title></head><body style="margin:0;padding:0;background:{FONDO};font-family:{FUENTE}">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{FONDO}"><tr><td align="center" style="padding:28px 10px">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:680px">
  <tr><td style="background:{TINTA};border-radius:16px 16px 0 0;padding:20px 26px">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
-   <td valign="middle"><div style="font-size:20px;font-weight:800;color:#fff">{e(em['razon_social'])}</div><div style="font-size:12px;color:#a3a3a3">RIF {e(em['rif'])}</div></td>
-   <td align="right" valign="middle"><div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#a3a3a3">Documento de compra</div>
-     <div style="font-size:18px;font-weight:800;color:{LIMA}">ORDEN DE COMPRA</div></td></tr></table></td></tr>
+   <td valign="middle"><table role="presentation" cellpadding="0" cellspacing="0"><tr>{f'<td style="padding-right:12px"><img src="{em["logo"]}" alt="" style="display:block;max-height:46px;max-width:120px;border-radius:8px;background:#fff;padding:3px"></td>' if em.get('logo') else ''}
+     <td><div style="font-size:20px;font-weight:800;color:#fff">{e(em['razon_social'])}</div><div style="font-size:12px;color:#a3a3a3">RIF {e(em['rif'])}</div></td></tr></table></td>
+   <td align="right" valign="middle"><div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#a3a3a3">{e(etiqueta)}</div>
+     <div style="font-size:18px;font-weight:800;color:{LIMA}">{e(titulo)}</div></td></tr></table></td></tr>
  <tr><td style="height:4px;background:{LIMA};font-size:0;line-height:0">&nbsp;</td></tr>
  <tr><td style="background:#ffffff;padding:26px;border:1px solid {LINEA};border-top:0;border-radius:0 0 16px 16px">
   {f'<p style="margin:0 0 18px;font-size:14px;line-height:1.6;color:{TEXTO}">{e(intro)}</p>' if intro else ''}
@@ -191,7 +192,7 @@ def orden_compra_html(oc: dict, base_url: str, intro=None) -> str:
    <td valign="top" style="font-size:13px;line-height:1.55;color:{TEXTO}"><div style="font-size:16px;font-weight:800;color:{TINTA}">{e(em['razon_social'])}</div>
      RIF: <b>{e(em['rif'])}</b>{('<br>Domicilio fiscal: ' + e(em['direccion'])) if em.get('direccion') else ''}{('<br>Teléfono: ' + e(em['telefono'])) if em.get('telefono') else ''}
      {('<br><b>Contribuyente Especial</b>') if em.get('contribuyente_especial') else ''}</td>
-   <td valign="top" align="right" style="font-size:13px;line-height:1.6;color:{TEXTO}"><div style="font-size:20px;font-weight:800;letter-spacing:.04em;color:{TINTA}">ORDEN DE COMPRA</div>
+   <td valign="top" align="right" style="font-size:13px;line-height:1.6;color:{TEXTO}"><div style="font-size:20px;font-weight:800;letter-spacing:.04em;color:{TINTA}">{e(titulo)}</div>
      N° <b>{e(oc['numero_txt'])}</b><br><span style="display:inline-block;border:2px solid {TINTA};border-radius:8px;padding:2px 8px;font-weight:700">Estado: {e(oc['estado'])}</span>
      <br>Fecha: {e(fecha(oc['fecha']))}</td></tr></table>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px"><tr>
@@ -212,9 +213,8 @@ def orden_compra_html(oc: dict, base_url: str, intro=None) -> str:
    <td width="45%" style="border-top:1px solid {TINTA};padding-top:6px;font-size:12px;color:{SUAVE};text-align:center">Elaborado por: {e(oc.get('creado_por') or '')}</td><td></td>
    <td width="45%" style="border-top:1px solid {TINTA};padding-top:6px;font-size:12px;color:{SUAVE};text-align:center">Aceptado por el {'proveedor' if oc['tipo_destinatario'] == 'proveedor' else 'cliente'}</td></tr></table>
   <p style="margin:22px 0 0;font-size:11px;line-height:1.55;color:{SUAVE};border-top:1px dashed #bbb;padding-top:10px">
-   Esta orden de compra no es una factura ni sustituye la documentación fiscal: la factura debe emitirse a nombre de {e(em['razon_social'])}, RIF {e(em['rif'])},
-   con el N° de esta orden como referencia.{(' Montos en ' + e(mon) + '; el equivalente en bolívares se calculó a la tasa oficial del BCV del día de emisión.') if mon != 'VES' else ''}</p>
+   {e(aviso) if aviso else 'Esta orden de compra no es una factura ni sustituye la documentación fiscal: la factura debe emitirse a nombre de ' + e(em['razon_social']) + ', RIF ' + e(em['rif']) + ', con el N° de esta orden como referencia.'}{(' Montos en ' + e(mon) + '; el equivalente en bolívares se calculó a la tasa oficial del BCV del día de emisión.') if mon != 'VES' else ''}</p>
  </td></tr>
- <tr><td style="padding:18px 8px;text-align:center;font-size:12px;line-height:1.6;color:{SUAVE}">Para confirmar esta orden responda por WhatsApp <b>CONFIRMAR {e(str(oc['numero']))}</b> o escriba a {e(em.get('email') or em['razon_social'])}.<br>
+ <tr><td style="padding:18px 8px;text-align:center;font-size:12px;line-height:1.6;color:{SUAVE}">{e(pie) if pie else 'Para confirmar esta orden responda por WhatsApp <b>CONFIRMAR ' + e(str(oc['numero'])) + '</b> o escriba a ' + e(em.get('email') or em['razon_social']) + '.'}<br>
    Generado con <strong style="color:{TINTA}">ERP</strong> · un producto de Gigadevs Corp · <img src="{e(base)}/static/marca/icono-192.png" width="14" height="14" alt="" style="vertical-align:-2px;border:0;border-radius:3px"></td></tr>
 </table></td></tr></table></body></html>"""
