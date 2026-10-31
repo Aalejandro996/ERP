@@ -28,12 +28,13 @@
     <a href="{{ url_for('web.maestro_licencias') }}" class="{{ 'activo' if ep == 'web.maestro_licencias' }}">Licencias y equipos</a>
     <a href="{{ url_for('web.maestro_pagos') }}" class="{{ 'activo' if ep == 'web.maestro_pagos' }}">Pagos y precios</a>
     <a href="{{ url_for('web.maestro_presupuestos') }}" class="{{ 'activo' if ep in ('web.maestro_presupuestos', 'web.maestro_presupuesto_ver') }}">Presupuestos</a>
+    <a href="{{ url_for('web.maestro_contratos') }}" class="{{ 'activo' if ep in ('web.maestro_contratos', 'web.maestro_contrato_ver') }}">Contratos</a>
     <a href="{{ url_for('web.maestro_facturas') }}" class="{{ 'activo' if ep in ('web.maestro_facturas', 'web.maestro_factura_ver') }}">Facturación Gigadevs</a>
     <a href="{{ url_for('web.maestro_bd') }}" class="{{ 'activo' if ep == 'web.maestro_bd' }}">Base de datos</a>
     <a href="{{ url_for('web.admin_fiscal') }}" class="{{ 'activo' if ep == 'web.admin_fiscal' }}">Parámetros legales</a>
     <a href="{{ url_for('web.plataforma_bitacora') }}" class="{{ 'activo' if ep == 'web.plataforma_bitacora' }}">Bitácora</a></nav>
   {% endif %}
-  <div class="pie">{{ config.APP_LEMA }}<br>Normativa VE: VEN-NIF · Prov. SNAT 0071 · LIVA · LISLR · IGTF<br>{{ config.APP_NOMBRE }}® · Gigadevs Corp</div>
+  <div class="pie">{{ config.APP_LEMA }}<br>Normativa VE: VEN-NIF · Prov. SNAT 0071 · LIVA · LISLR · IGTF<br>{{ config.APP_NOMBRE }}® · Gigadevs Corp<span class="pie-legal"><a href="{{ url_for('web.legal', pagina='terminos') }}">Términos</a><a href="{{ url_for('web.legal', pagina='privacidad') }}">Privacidad</a><a href="{{ url_for('web.legal', pagina='cookies') }}">Cookies</a></span></div>
 </aside>
 <div class="principal">
   <header class="topbar">

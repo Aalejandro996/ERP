@@ -890,6 +890,73 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
                       estado="Enviado" if p["estado"] == "Emitido" else p["estado"]))
         return jsonify(ok=True)
 
+    def _contrato(con, cid):
+        r = con.execute(select(px.contratos).where(px.contratos.c.id == cid)).first()
+        if r is None: raise LookupError("Contrato inexistente")
+        n = con.execute(select(px.presupuestos.c.numero).where(px.presupuestos.c.id == r.presupuesto_id)).scalar()
+        return px.contrato_dict(r, n)
+
+    @app.get("/admin/v1/contratos")
+    def a_ct_listar():
+        with st.eng.connect() as c:
+            ids = [r[0] for r in c.execute(select(px.contratos.c.id).order_by(px.contratos.c.id.desc()).limit(500))]
+            return jsonify(contratos=[_contrato(c, i) for i in ids])
+
+    @app.post("/admin/v1/contratos")
+    def a_ct_crear():
+        with st.eng.begin() as c:
+            cid = px.crear_contrato(c, cuerpo(), reloj=reloj)
+        return jsonify(id=cid), 201
+
+    @app.get("/admin/v1/contratos/<int:cid>")
+    def a_ct_ver(cid):
+        with st.eng.connect() as c:
+            return jsonify(contrato=_contrato(c, cid), emisor=emisor_px())
+
+    @app.post("/admin/v1/contratos/<int:cid>/estado")
+    def a_ct_estado(cid):
+        e = cuerpo().get("estado")
+        if e not in ("Enviado", "Anulado"): raise ValueError("Estado inválido")
+        with st.eng.begin() as c:
+            ct = _contrato(c, cid)
+            if ct["estado"] == "Firmado" and e != "Anulado": raise ValueError("El contrato ya está firmado")
+            c.execute(update(px.contratos).where(px.contratos.c.id == cid).values(estado=e, **({"enviado_en": reloj()} if e == "Enviado" else {})))
+        return jsonify(ok=True)
+
+    @app.post("/admin/v1/contratos/<int:cid>/firmar")
+    def a_ct_firmar(cid):
+        """Aceptación electrónica del cliente (Decreto-Ley sobre Mensajes de Datos y Firmas Electrónicas): queda la huella del texto."""
+        d = cuerpo()
+        if not re.fullmatch(r"[0-9a-f]{64}", str(d.get("hash") or "")): raise ValueError("Huella inválida")
+        nombre, ci = str(d.get("nombre") or "").strip()[:120], str(d.get("ci") or "").strip().upper()[:20]
+        if len(nombre) < 5 or not re.fullmatch(r"[VE]?-?\d{5,9}", ci): raise ValueError("Indique su nombre completo y su cédula")
+        with st.eng.begin() as c:
+            n = c.execute(update(px.contratos).where(px.contratos.c.id == cid, px.contratos.c.estado.in_(("Borrador", "Enviado"))).values(
+                estado="Firmado", firmado_en=reloj(), firma_nombre=nombre, firma_ci=ci, firma_ip=str(d.get("ip") or "")[:60],
+                firma_agente=str(d.get("agente") or "")[:200], firma_hash=d["hash"])).rowcount
+        if not n: raise ValueError("Este contrato ya no admite firma")
+        return jsonify(ok=True)
+
+    @app.post("/admin/v1/contratos/<int:cid>/enviar")
+    def a_ct_enviar(cid):
+        if correo is None: raise RuntimeError("Correo no configurado")
+        d = cuerpo()
+        with st.eng.connect() as c: ct = _contrato(c, cid)
+        destino = str(d.get("correo") or ct.get("cliente_correo") or "").strip().lower()
+        if not RE_CORREO.match(destino): raise ValueError("Indique el correo del cliente")
+        url = str(d.get("url") or "")
+        if not url.startswith("https://"): raise ValueError("Enlace inválido")
+        titulo = f"Contrato {ct['numero_txt']} para su firma"
+        parrafos = [f"Estimado(a) {ct.get('representante') or ct['cliente_nombre']}:",
+                    f"Gigadevs Corp le envía el contrato {ct['numero_txt']} de los servicios de Contax® aceptados en el presupuesto {ct['presupuesto_txt']}.",
+                    "Puede leerlo completo y aceptarlo electrónicamente con su nombre y cédula en el siguiente enlace (válido 30 días). La aceptación "
+                    "tiene plena validez conforme al Decreto con Fuerza de Ley sobre Mensajes de Datos y Firmas Electrónicas."]
+        correo(destino, titulo + " · Contax", pc.texto(titulo, parrafos, ("Leer y firmar el contrato", url)),
+               html=pc.html(titulo, parrafos, cfg.get("url_erp") or "", "Contax", "Tu empresa en orden. Tu fisco al día.", ("Leer y firmar el contrato", url)))
+        with st.eng.begin() as c:
+            c.execute(update(px.contratos).where(px.contratos.c.id == cid, px.contratos.c.estado == "Borrador").values(estado="Enviado", enviado_en=reloj()))
+        return jsonify(ok=True)
+
     @app.get("/admin/v1/facturas/pendientes")
     def a_fx_pendientes():
         return jsonify(pendientes=pendientes_de_factura(request.args.get("org")))

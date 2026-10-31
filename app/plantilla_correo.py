@@ -297,3 +297,56 @@ def presupuesto_texto(p: dict, em: dict) -> str:
             f"Emisor: {em.get('razon_social') or 'Gigadevs Corp'}{(' · RIF ' + em['rif']) if em.get('rif') else ''}\n"
             f"Cliente: {p['cliente_nombre']}{(' · RIF ' + p['cliente_rif']) if p.get('cliente_rif') else ''}\n\n{lineas}\n\n"
             f"Subtotal: {_usd(p['subtotal'])}\nIVA {p['iva_pct']}%: {_usd(p['iva'])}\nTOTAL: {_usd(p['total'])}\n—\nContax® · una marca de Gigadevs Corp")
+
+
+def contrato_html(c: dict, clausulas, em: dict, base_url: str, extra="") -> str:
+    """Contrato de licencia y servicios con el formato de Contax. `extra`: HTML adicional (formulario de aceptación, barra)."""
+    import time as _t
+    e = escape
+    base = base_url.rstrip("/")
+    fecha = lambda f: "/".join(reversed(str(f).split("-"))) if f else "—"
+    cuerpo = "".join(f'<h3 style="margin:22px 0 6px;font-size:14px;letter-spacing:.02em;color:{TINTA}">{e(t)}</h3>'
+                     + "".join(f'<p style="margin:0 0 8px;font-size:13px;line-height:1.65;color:{TEXTO};text-align:justify">{e(p)}</p>' for p in ps)
+                     for t, ps in clausulas)
+    firmado = c.get("estado") == "Firmado"
+    constancia = (f'<div style="margin-top:18px;padding:14px;border:2px solid #188038;border-radius:12px;background:#eef9e6;font-size:12px;line-height:1.6;color:{TEXTO}">'
+                  f'<b style="color:#188038">ACEPTADO ELECTRÓNICAMENTE</b> por {e(c.get("firma_nombre") or "")}, C.I. {e(c.get("firma_ci") or "")}, '
+                  f'el {e(_t.strftime("%d/%m/%Y %H:%M UTC", _t.gmtime(float(c["firmado_en"]))))} desde la IP {e(c.get("firma_ip") or "—")}.<br>'
+                  f'Huella SHA-256 del texto aceptado: <code style="word-break:break-all">{e(c.get("firma_hash") or "")}</code><br>'
+                  'Mensaje de datos con validez conforme al Decreto con Fuerza de Ley sobre Mensajes de Datos y Firmas Electrónicas.</div>') if firmado else ""
+    sello = {"Anulado": "#c8372d"}.get(c.get("estado"))
+    return f"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light">
+<title>Contrato {e(c['numero_txt'])} · {e(c['cliente_nombre'])}</title></head><body style="margin:0;padding:0;background:{FONDO};font-family:{FUENTE}">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{FONDO}"><tr><td align="center" style="padding:28px 10px">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:760px">
+ <tr><td style="background:{TINTA};border-radius:16px 16px 0 0;padding:20px 26px">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+   <td valign="middle"><table role="presentation" cellpadding="0" cellspacing="0"><tr>
+     <td style="padding-right:10px"><img src="{e(base)}/static/marca/icono-192.png" width="40" height="40" alt="Contax" style="display:block;border:0;border-radius:9px"></td>
+     <td><div style="font-size:21px;font-weight:800;color:#fff">Conta<span style="color:{LIMA}">x</span><sup style="font-size:10px">®</sup></div><div style="font-size:11px;color:#a3a3a3">Tu empresa en orden. Tu fisco al día.</div></td></tr></table></td>
+   <td align="right" valign="middle"><img src="{e(base)}/static/marca/gigadevs.png" width="58" height="58" alt="Gigadevs Corp" style="display:block;border:0"></td>
+  </tr></table></td></tr>
+ <tr><td style="height:4px;background:{LIMA};font-size:0;line-height:0">&nbsp;</td></tr>
+ <tr><td style="background:#ffffff;padding:30px;border:1px solid {LINEA};border-top:0;border-radius:0 0 16px 16px">
+  {f'<div style="margin:0 0 16px;padding:10px 14px;border:2px solid {sello};border-radius:10px;color:{sello};font-weight:800;text-align:center">CONTRATO ANULADO</div>' if sello else ''}
+  <div style="text-align:center;border-bottom:2px solid {TINTA};padding-bottom:14px;margin-bottom:16px">
+   <div style="font-size:21px;font-weight:800;letter-spacing:.03em;color:{TINTA}">CONTRATO DE LICENCIA DE USO Y PRESTACIÓN DE SERVICIOS</div>
+   <div style="font-size:13px;color:{SUAVE};margin-top:4px">N° <b style="color:{TINTA}">{e(c['numero_txt'])}</b> · Presupuesto {e(c.get('presupuesto_txt') or '—')} · Vigencia {e(fecha(c['inicio']))} al {e(fecha(c['fin']))}</div></div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:6px"><tr>
+   <td valign="top" width="50%" style="background:{FONDO};border-radius:10px;padding:12px;font-size:13px;line-height:1.55;color:{TEXTO}"><b>GIGADEVS</b><br>{e(em.get('razon_social') or 'Gigadevs Corp')}
+     {('<br>RIF ' + e(em['rif'])) if em.get('rif') else ''}<br>{e(em.get('domicilio') or 'Venezuela')}{('<br>' + e(em['correo'])) if em.get('correo') else ''}</td>
+   <td width="12"></td>
+   <td valign="top" width="50%" style="background:{FONDO};border-radius:10px;padding:12px;font-size:13px;line-height:1.55;color:{TEXTO}"><b>EL CLIENTE</b><br>{e(c['cliente_nombre'])}
+     <br>RIF {e(c.get('cliente_rif') or '—')}<br>{e(c.get('cliente_domicilio') or '—')}<br>Rep.: {e(c.get('representante') or '—')}, C.I. {e(c.get('representante_ci') or '—')}</td></tr></table>
+  {cuerpo}
+  <p style="margin:18px 0 0;font-size:13px;line-height:1.65;color:{TEXTO}">Se hacen dos ejemplares de un mismo tenor y a un solo efecto, o se acepta electrónicamente, en la fecha indicada.</p>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:40px"><tr>
+   <td width="45%" style="border-top:1px solid {TINTA};padding-top:6px;font-size:12px;color:{SUAVE};text-align:center">Por GIGADEVS<br>{e(em.get('razon_social') or 'Gigadevs Corp')}</td><td></td>
+   <td width="45%" style="border-top:1px solid {TINTA};padding-top:6px;font-size:12px;color:{SUAVE};text-align:center">Por EL CLIENTE<br>{e(c.get('representante') or '')} · C.I. {e(c.get('representante_ci') or '')}</td></tr></table>
+  {constancia}
+  {extra}
+  <p style="margin:22px 0 0;font-size:11px;line-height:1.55;color:{SUAVE};border-top:1px dashed #bbb;padding-top:10px">Textos legales versión {e(c.get('version_legal') or '')}.
+   Forman parte de este contrato el presupuesto {e(c.get('presupuesto_txt') or '')}, los Términos y condiciones y la Política de privacidad de Contax® publicados en {e(base)}/legal.</p>
+ </td></tr>
+ <tr><td style="padding:18px 8px;text-align:center;font-size:12px;line-height:1.6;color:{SUAVE}"><strong style="color:{TINTA}">Contax</strong>® · una marca registrada de Gigadevs Corp · Venezuela</td></tr>
+</table></td></tr></table></body></html>"""

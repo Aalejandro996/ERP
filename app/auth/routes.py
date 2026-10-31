@@ -22,7 +22,8 @@ MSG_RECUPERAR = "Si el correo corresponde a una cuenta activa, recibirá un enla
 VIGENCIA = {"verificar": timedelta(hours=24), "invitacion": timedelta(hours=72), "recuperar": timedelta(minutes=30)}
 N_CODIGOS = 10
 
-RUTAS_PUBLICAS = {"auth.login", "auth.logout", "auth.recuperar", "auth.recuperar_token", "auth.invitacion", "auth.correo_confirmar", "static"}
+RUTAS_PUBLICAS = {"auth.login", "auth.logout", "auth.recuperar", "auth.recuperar_token", "auth.invitacion", "auth.correo_confirmar", "static",
+                  "web.legal", "web.contrato_publico"}
 RUTAS_GATE = RUTAS_PUBLICAS | {"auth.verificar_correo", "auth.mfa_configurar", "auth.mfa_codigos", "auth.mfa_verificar", "auth.cambiar_clave"}
 
 

@@ -9,7 +9,7 @@
   <div><h1>{{ config.APP_LEMA }}</h1>
   <p>Contabilidad VEN-NIF, facturación según la Providencia SNAT/2011/00071, inventario y auditoría en una plataforma segura.</p>
   <ul class="auth-lista"><li>Verificación en dos pasos obligatoria</li><li>Datos aislados por cliente a nivel de base de datos</li><li>Bitácora inalterable de cada operación</li></ul></div>
-  <span class="peq">© {{ config.APP_NOMBRE }}® · una marca registrada de Gigadevs Corp</span></div>
+  <span class="peq">© {{ config.APP_NOMBRE }}® · una marca registrada de Gigadevs Corp<span class="pie-legal"><a href="{{ url_for('web.legal', pagina='terminos') }}">Términos y condiciones</a><a href="{{ url_for('web.legal', pagina='privacidad') }}">Privacidad</a><a href="{{ url_for('web.legal', pagina='cookies') }}">Cookies</a></span></span></div>
 <div class="auth-caja"><div class="auth-form">
 {% for m in get_flashed_messages() %}<div class="msg" role="alert">{{ m }}</div>{% endfor %}
 {% set csrf %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endset %}
@@ -34,6 +34,8 @@
   <form method="post">{{ csrf }}
     <label>Contraseña<input name="nueva" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label>
     <label>Repita la contraseña<input name="repetir" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label>
+    {% if vista == 'invitacion' %}<p class="peq">Al activar su cuenta acepta los <a href="{{ url_for('web.legal', pagina='terminos') }}" target="_blank">Términos y condiciones</a>,
+    la <a href="{{ url_for('web.legal', pagina='privacidad') }}" target="_blank">Política de privacidad</a> y la de <a href="{{ url_for('web.legal', pagina='cookies') }}" target="_blank">cookies</a>.</p>{% endif %}
     <button>Guardar</button></form>
 
 {% elif vista == 'recuperar' %}

@@ -67,6 +67,15 @@ proveedor o cliente, y se envían por correo o WhatsApp.
   «presupuesto»). Modo automático (el bot lo envía al instante) o manual (queda en borrador para revisión). El cliente acepta con
   «ACEPTO N» y el presupuesto se factura con un clic.
 
+## Contratos y textos legales
+- **Maestro → Contratos:** desde un presupuesto aceptado se arma el contrato de licencia y servicios (formato Contax) con cláusulas fijas
+  —precio y moneda (Convenio Cambiario N° 1), SENIAT y Gacetas Oficiales, LC/FT/FPADM (LOCDOFT y ONCDOFT), protección de datos (CRBV arts. 28
+  y 60), Ley Especial contra los Delitos Informáticos, firma electrónica (Decreto-Ley sobre Mensajes de Datos y Firmas Electrónicas), propiedad
+  intelectual, responsabilidad, terminación y jurisdicción— y cláusulas opcionales (bot de WhatsApp, Profit Plus, soporte mensual, cambios,
+  migración, arbitraje CEDCA). El cliente lo acepta en línea con nombre y cédula; queda la fecha, la IP y la huella SHA-256 del texto.
+- **/legal/terminos, /legal/privacidad, /legal/cookies:** páginas públicas, enlazadas desde el inicio de sesión y la invitación.
+- Los textos están en `app/legal.py`. **Deben revisarse con un abogado venezolano** antes de usarse con clientes.
+
 ## Plan de cuentas existente
 Contabilidad → Catálogo de cuentas → «¿Ya tiene su plan de cuentas? Impórtelo»: Excel (.xlsx), CSV/TXT o texto pegado. También hay una
 plantilla CSV y un plan modelo VEN-NIF.

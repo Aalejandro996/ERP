@@ -732,3 +732,40 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     assert len(entorno["correos_lic"]) == n + 1 and entorno["correos_lic"][-1][0] == "compras@orituco.test"
     root.post("/plataforma/presupuestos", data={"accion": "precio", "plan": "CASH", "meses": "12", "monto": "260"})
     assert "260.00" in root.get("/plataforma/presupuestos").get_data(as_text=True)
+
+    # --- Nuevo presupuesto (formulario por secciones), contrato desde el presupuesto aceptado y firma electrónica del cliente
+    nuevo = root.get("/plataforma/presupuestos/nuevo").get_data(as_text=True)
+    assert "Del catálogo" in nuevo and 'id="datos-presupuesto"' in nuevo and "plan:ALL_IN_ONE" in nuevo
+    px_url = r.headers["Location"]
+    root.post(px_url, data={"accion": "Aceptado"})
+    assert "Armar contrato" in root.get(px_url).get_data(as_text=True)
+    form = root.get("/plataforma/contratos").get_data(as_text=True)
+    assert "Armar contrato" in form and "General de Suministros Orituco" in form
+    r = root.post("/plataforma/contratos", data={"presupuesto_id": re.search(r"/presupuestos/(\d+)", px_url).group(1), "cliente_nombre": "General de Suministros Orituco, C.A.",
+                                                 "cliente_rif": "J-31234567-8", "cliente_domicilio": "Altagracia de Orituco, Guárico", "cliente_correo": "compras@orituco.test",
+                                                 "representante": "Ana Pérez", "representante_ci": "V-12345678", "representante_cargo": "Presidenta",
+                                                 "objeto": "Licencia Contax All in One por 12 meses", "forma_pago": "100% al firmar", "inicio": "2026-11-01", "meses": "12",
+                                                 "opcionales": ["soporte", "arbitraje"], "soporte_mensual": "36"})
+    assert "/plataforma/contratos/" in r.headers["Location"], alerta(root.get("/plataforma/contratos"))
+    ct_url = r.headers["Location"]
+    t = root.get(ct_url).get_data(as_text=True)
+    for ref in ("CONTRATO DE LICENCIA DE USO", "C-000001", "LOCDOFT", "ONCDOFT", "Delitos Informáticos", "Mensajes de Datos", "SENIAT", "CEDCA", "Ana Pérez", "31/10/2027"):
+        assert ref in t, ref
+    n = len(entorno["correos_lic"])
+    root.post(ct_url, data={"accion": "enviar"})
+    assert len(entorno["correos_lic"]) == n + 1 and entorno["correos_lic"][-1][0] == "compras@orituco.test"
+    firma = re.search(r"https://erp\.test(/contrato/[\w.\-]+)", entorno["correos_lic"][-1][1]).group(1)
+    cli = _cliente(app)
+    pagina_firma = cli.get(firma).get_data(as_text=True)
+    assert "Aceptación electrónica" in pagina_firma and "Ana Pérez" in pagina_firma
+    assert "Marque la casilla" in cli.post(firma, data={"nombre": "Ana Pérez", "ci": "V-12345678"}, follow_redirects=True).get_data(as_text=True)
+    r = cli.post(firma, data={"nombre": "Ana Pérez", "ci": "V-12345678", "acepto": "1"}, follow_redirects=True)
+    assert "ACEPTADO ELECTRÓNICAMENTE" in r.get_data(as_text=True) and "Aceptación electrónica" not in r.get_data(as_text=True)
+    assert "coincide con la huella firmada" in root.get(ct_url).get_data(as_text=True)
+    assert cli.get(firma[:-4] + "abcd").status_code == 404
+    # páginas legales públicas
+    for pag, titulo in (("terminos", "Términos y condiciones"), ("privacidad", "Política de privacidad"), ("cookies", "Política de cookies")):
+        t = _cliente(app).get(f"/legal/{pag}").get_data(as_text=True)
+        assert titulo in t and "Gigadevs Corp" in t
+    assert "__Host-erp" in _cliente(app).get("/legal/cookies").get_data(as_text=True)
+    assert "Términos y condiciones" in _cliente(app).get("/login").get_data(as_text=True)
