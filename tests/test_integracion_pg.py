@@ -183,7 +183,7 @@ def test_flujo_completo(entorno):
     b2.post("/login", data={"usuario": "adminB", "clave": CLAVE + "b"})
     import time as _t
     r = b2.post("/mfa/verificar", data={"codigo": totp.codigo(sec_b, _t.time() + 30)})
-    assert r.status_code == 403 and "equipo".encode() in r.data and b2.get("/").status_code == 302
+    assert r.status_code == 403 and "equipo".encode() in r.data and b2.get("/").status_code == 200 and b"Probar gratis" in b2.get("/").data   # fuera: portada pública
 
     # --- Cliente A (ALL_IN_ONE): empresa, cuentas, inventario, serie ---
     r = a.post("/", data={"razon_social": "Comercial Uno CA", "rif": "j-22222222-2", "spe": "1"}, follow_redirects=True)
@@ -768,6 +768,10 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     assert "ACEPTADO ELECTRÓNICAMENTE" in r.get_data(as_text=True) and "Aceptación electrónica" not in r.get_data(as_text=True)
     assert "coincide con la huella firmada" in root.get(ct_url).get_data(as_text=True)
     assert cli.get(firma[:-4] + "abcd").status_code == 404
+    # portada pública de Contax: funciones, planes con los precios vigentes del catálogo y enlaces legales
+    portada = _cliente(app).get("/").get_data(as_text=True)
+    for txt in ("Factura, lleva tu contabilidad y vende por WhatsApp", "Bot de WhatsApp", "Planes", "All in One", "$69", "Iniciar sesión", "/legal/terminos"):
+        assert txt in portada, txt
     # páginas legales públicas
     for pag, titulo in (("terminos", "Términos y condiciones"), ("privacidad", "Política de privacidad"), ("cookies", "Política de cookies")):
         t = _cliente(app).get(f"/legal/{pag}").get_data(as_text=True)
