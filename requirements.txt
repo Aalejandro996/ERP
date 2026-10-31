@@ -9,3 +9,5 @@ gunicorn>=22
 python-dotenv>=1.0
 segno>=1.6           # código QR del MFA (SVG, sin dependencias)
 pytest>=8
+openpyxl>=3.1         # importar plan de cuentas desde Excel
+pypdf>=4.0            # el bot lee las órdenes de compra en PDF que envían por WhatsApp

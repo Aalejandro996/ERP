@@ -22,6 +22,7 @@ from .models2 import (CUENTAS_CFG, ConfigAsientos, DocumentoCxC, DocumentoCxP, E
                       PapelTrabajo)
 from .security import empresa_autorizada, requiere, tiene_permiso
 from .auditoria import verificar_cadena
+from .menu import menu_empresa, pestanas
 
 bp = Blueprint("web", __name__)
 
@@ -67,7 +68,8 @@ def pagina(titulo, eid, secciones, acciones=None):
     emp = db.session.get(Empresa, eid) if eid else None
     secciones = [({**s, "tabla": paginar(s["tabla"], f"pag{i}" if i else "pag")} if isinstance(s, dict) and s.get("tabla") else s)
                  for i, s in enumerate(secciones)]
-    return render_template("pagina.html", titulo=titulo, empresa=emp, secciones=secciones, acciones=acciones or [])
+    return render_template("pagina.html", titulo=titulo, empresa=emp, secciones=secciones, acciones=acciones or [],
+                           pestanas=pestanas(eid) if emp is not None else [])
 
 
 RIF_RE = re.compile(r"^[VEJPGC]-?\d{8}-?\d$")
@@ -103,12 +105,18 @@ def mis_empresas():
 
 def ruta(patron, permiso, metodos=("GET",)):
     def deco(f):
+        protegida = requiere(permiso)(f)
+
         @bp.route(patron, methods=list(metodos), endpoint=f.__name__)
-        @requiere(permiso)
         @wraps(f)
         def interior(*a, **kw):
-            if "eid" in kw: empresa_autorizada(kw["eid"])
-            return f(*a, **kw)
+            if "eid" in kw and getattr(g, "usuario", None) is not None and g.usuario.organizacion_id is not None:
+                empresa_autorizada(kw["eid"])
+                # Módulos que trabaja ESTA empresa (elegidos en el tutorial o en «Datos de la empresa»), dentro del plan:
+                # el permiso se evalúa después, así un módulo apagado en la empresa responde 403 aunque el plan lo traiga.
+                g.modulos_licencia = g.get("modulos_licencia", g.modulos)
+                g.modulos = db.session.get(Empresa, kw["eid"]).modulos_empresa(g.modulos_licencia)
+            return protegida(*a, **kw)
         return interior
     return deco
 
@@ -120,7 +128,7 @@ F = LocalProxy(lambda: request.form)  # valores del formulario (se resuelve en c
 def ayudantes_plantilla():
     return {"puede": lambda p: g.usuario is not None and tiene_permiso(g.usuario, p),
             "mis_empresas": lambda: mis_empresas() if g.usuario is not None and g.usuario.organizacion_id else [],
-            "url_empresa": url_empresa}
+            "url_empresa": url_empresa, "menu_empresa": menu_empresa}
 
 
 # ---------------------------------------------------------------- panel y empresas
@@ -136,87 +144,243 @@ def limite_licencia(clave):
     return int((g.licencia or {}).get(clave) or 0)
 
 
+LOGO_MAX = 300 * 1024
+
+
+def leer_logo(archivo):
+    """Logo de la empresa: PNG, JPEG o WebP de hasta 300 KB (se reconoce por su contenido, no por la extensión)."""
+    if archivo is None or not archivo.filename: return None
+    datos = archivo.read(LOGO_MAX + 1)
+    if len(datos) > LOGO_MAX: raise ValueError("El logo no puede superar 300 KB")
+    if datos[:8] == b"\x89PNG\r\n\x1a\n": return datos, "image/png"
+    if datos[:3] == b"\xff\xd8\xff": return datos, "image/jpeg"
+    if datos[:4] == b"RIFF" and datos[8:12] == b"WEBP": return datos, "image/webp"
+    raise ValueError("El logo debe ser una imagen PNG, JPG o WebP")
+
+
+def aplicar_datos_empresa(e, form, archivos):
+    """Datos básicos, dirección fiscal, teléfono, correo, contribuyente especial y logo (alta, tutorial y edición)."""
+    e.razon_social = (form.get("razon_social") or e.razon_social or "").strip()[:200]
+    if not e.razon_social: raise ValueError("Indique la razón social")
+    for k in ("direccion", "telefono", "correo"):
+        if k in form: setattr(e, k, (form.get(k) or "").strip()[:300] or None)
+    if e.correo and "@" not in e.correo: raise ValueError("Correo de la empresa inválido")
+    if "spe" in form: e.es_sujeto_pasivo_especial = form.get("spe") == "1"
+    logo = leer_logo(archivos.get("logo") if archivos else None)
+    if logo: e.logo, e.logo_mime = logo
+    if form.get("quitar_logo") == "1": e.logo = e.logo_mime = None
+
+
+def crear_empresa(form, archivos=None) -> Empresa:
+    org = g.usuario.organizacion_id
+    n = db.session.execute(select(db.func.count()).select_from(Empresa).where(Empresa.organizacion_id == org)).scalar()
+    if n >= limite_licencia("max_empresas"): raise ValueError(f"Su licencia permite {limite_licencia('max_empresas')} empresa(s)")
+    rif = validar_rif(form["rif"])
+    if db.session.execute(select(Empresa.id).where(Empresa.organizacion_id == org, Empresa.rif == rif)).first():
+        raise ValueError("Ya existe una empresa con ese RIF en su organización")
+    e = Empresa(organizacion_id=org, rif=rif)
+    aplicar_datos_empresa(e, form, archivos)
+    db.session.add(e); db.session.flush()
+    for cod, nom, tipo in (("1", "ACTIVO", "Activo"), ("2", "PASIVO", "Pasivo"), ("3", "PATRIMONIO", "Patrimonio"), ("4", "INGRESOS", "Ingreso"), ("5", "GASTOS", "Gasto")):
+        db.session.add(Cuenta(empresa_id=e.id, codigo=cod, nombre=nom, tipo=tipo))
+    from .auditoria import registrar
+    registrar(g.usuario.username, "EMPRESA_CREADA", f"{e.rif} {e.razon_social}"); db.session.commit()
+    return e
+
+
 @bp.route("/", methods=["GET", "POST"])
 def inicio():
     if g.usuario is None: return redirect(url_for("auth.login"))
     if g.usuario.rol == "Maestro": return redirect(url_for("web.plataforma"))
+    if request.method == "GET" and g.usuario.rol == "Administrador" and g.licencia:
+        from .models import Organizacion
+        org = db.session.get(Organizacion, g.usuario.organizacion_id)
+        if not org.bienvenida_completada and not mis_empresas():
+            return redirect(url_for("web.bienvenida"))   # primera vez con licencia activa: tutorial guiado
     if request.method == "POST":
         if g.usuario.rol != "Administrador": return ("", 403)
-        def alta():
-            org = g.usuario.organizacion_id
-            n = db.session.execute(select(db.func.count()).select_from(Empresa).where(Empresa.organizacion_id == org)).scalar()
-            if n >= limite_licencia("max_empresas"): raise ValueError(f"Su licencia permite {limite_licencia('max_empresas')} empresa(s)")
-            rif = validar_rif(F["rif"])
-            if db.session.execute(select(Empresa.id).where(Empresa.organizacion_id == org, Empresa.rif == rif)).first():
-                raise ValueError("Ya existe una empresa con ese RIF en su organización")
-            e = Empresa(organizacion_id=org, razon_social=F["razon_social"].strip(), rif=rif, direccion=F.get("direccion"), telefono=F.get("telefono"),
-                        es_sujeto_pasivo_especial=F.get("spe") == "1")
-            db.session.add(e); db.session.flush()
-            for cod, nom, tipo in (("1", "ACTIVO", "Activo"), ("2", "PASIVO", "Pasivo"), ("3", "PATRIMONIO", "Patrimonio"), ("4", "INGRESOS", "Ingreso"), ("5", "GASTOS", "Gasto")):
-                db.session.add(Cuenta(empresa_id=e.id, codigo=cod, nombre=nom, tipo=tipo))
-            from .auditoria import registrar
-            registrar(g.usuario.username, "EMPRESA_CREADA", f"{e.rif} {e.razon_social}"); db.session.commit()
-        if intentar(alta, "Empresa creada (con cuentas raíz). Asigne usuarios en Administración → Usuarios."):
+        if intentar(lambda: crear_empresa(F, request.files), "Empresa creada (con cuentas raíz). Asigne usuarios en Administración → Usuarios."):
             return redirect(url_for("web.inicio"))
     emps = mis_empresas()
     secs = [dict(titulo="Empresas a su cargo", tarjetas=[dict(titulo=e.razon_social, sub=f"RIF {e.rif}" + (" · Contribuyente especial" if e.es_sujeto_pasivo_especial else ""),
                                                              url=url_empresa(e.id)) for e in emps], vacio="Aún no tiene empresas asignadas.")]
     if g.usuario.rol == "Administrador":
-        secs.append(dict(titulo="Nueva empresa", nota=f"Su plan permite hasta {limite_licencia('max_empresas')} empresas.", form=dict(action=url_for("web.inicio"), boton="Crear empresa", campos=[
+        secs.append(dict(titulo="Nueva empresa", nota=f"Su plan permite hasta {limite_licencia('max_empresas')} empresas. Para una guía paso a paso use el tutorial.",
+                         form=dict(action=url_for("web.inicio"), boton="Crear empresa", archivo=True, campos=[
             campo("razon_social", "Razón social"), campo("rif", "RIF (J-12345678-9)"), campo("direccion", "Domicilio fiscal", req=False), campo("telefono", "Teléfono", req=False),
+            campo("correo", "Correo", "email", req=False), campo("logo", "Logo (PNG/JPG, máx. 300 KB)", "file", req=False, accept="image/png,image/jpeg,image/webp"),
             campo("spe", "¿Sujeto pasivo especial?", "select", opciones=[("0", "No"), ("1", "Sí")])])))
-    return pagina("Panel", None, secs)
+    return pagina("Panel", None, secs, acciones=[dict(url=url_for("web.bienvenida"), texto="Tutorial de configuración")] if g.usuario.rol == "Administrador" else None)
 
 
-# ---------------------------------------------------------------- cuentas
+# ---------------------------------------------------------------- catálogo de cuentas (con importación)
+def _guardar_cuentas(eid, cuentas, actualizar):
+    """Crea las cuentas nuevas; con `actualizar`, en las existentes cambia nombre/categoría/monetaria (nunca el tipo si tienen movimientos)."""
+    existentes = {c.codigo: c for c in db.session.execute(select(Cuenta).where(Cuenta.empresa_id == eid)).scalars()}
+    con_mov = set(db.session.execute(select(Movimiento.cuenta_codigo).where(Movimiento.empresa_id == eid).distinct()).scalars())
+    nuevas = act = 0
+    for c in cuentas:
+        x = existentes.get(c["codigo"])
+        if x is None:
+            db.session.add(Cuenta(empresa_id=eid, **c)); nuevas += 1
+        elif actualizar:
+            x.nombre, x.categoria_niif18, x.es_partida_monetaria = c["nombre"], c["categoria_niif18"], c["es_partida_monetaria"]
+            if c["codigo"] not in con_mov: x.tipo = c["tipo"]
+            act += 1
+    from .auditoria import registrar
+    registrar(g.usuario.username, "PLAN_CUENTAS_IMPORTADO", f"empresa={eid} nuevas={nuevas} actualizadas={act}"); db.session.commit()
+    return nuevas, act
+
+
 @ruta("/e/<int:eid>/cuentas", "asientos.ver", ("GET", "POST"))
 def cuentas(eid):
+    from .calculos import plan_cuentas as PC
     if request.method == "POST":
         if not tiene_permiso(g.usuario, "cuentas.editar"): return ("", 403)
-        def alta():
-            db.session.add(Cuenta(empresa_id=eid, codigo=F["codigo"].strip(), nombre=F["nombre"].strip(), tipo=F["tipo"],
-                                  categoria_niif18=F["categoria"], es_partida_monetaria=F.get("monetaria") == "1"))
-            db.session.commit()
-        if intentar(alta, "Cuenta creada"): return redirect(request.url)
-    cs = db.session.execute(select(Cuenta).where(Cuenta.empresa_id == eid).order_by(Cuenta.codigo)).scalars()
-    return pagina("Plan de cuentas", eid, [
-        dict(tabla=dict(cols=["Código", "Nombre", "Tipo", "NIIF 18", "Monetaria"], filas=[dict(cells=[c.codigo, c.nombre, c.tipo, c.categoria_niif18, "Sí" if c.es_partida_monetaria else "No"]) for c in cs])),
-        dict(titulo="Nueva cuenta", form=dict(action=request.path, boton="Crear", campos=[
-            campo("codigo", "Código"), campo("nombre", "Nombre"),
-            campo("tipo", "Tipo", "select", opciones=[(t, t) for t in ("Activo", "Pasivo", "Patrimonio", "Ingreso", "Gasto")]),
-            campo("categoria", "Categoría NIIF 18", "select", opciones=[(c, c) for c in estados.CATEGORIAS]),
-            campo("monetaria", "¿Partida monetaria?", "select", opciones=[("0", "No"), ("1", "Sí")])]))])
+        a = F.get("accion", "alta")
+        if a == "alta":
+            def alta():
+                cod = F["codigo"].strip()
+                if not PC.RE_CODIGO.match(cod): raise ValueError("Código inválido")
+                if db.session.get(Cuenta, (eid, cod)): raise ValueError(f"La cuenta {cod} ya existe")
+                db.session.add(Cuenta(empresa_id=eid, codigo=cod, nombre=F["nombre"].strip(), tipo=F["tipo"],
+                                      categoria_niif18=F["categoria"], es_partida_monetaria=F.get("monetaria") == "1"))
+                db.session.commit()
+            intentar(alta, "Cuenta creada")
+        elif a == "editar":
+            def editar():
+                c = db.session.get(Cuenta, (eid, F["codigo"]))
+                if c is None: raise ValueError("Cuenta inexistente")
+                if F.get("nombre", "").strip(): c.nombre = F["nombre"].strip()[:200]
+                if F.get("categoria") in estados.CATEGORIAS: c.categoria_niif18 = F["categoria"]
+                if F.get("monetaria") in ("0", "1"): c.es_partida_monetaria = F["monetaria"] == "1"
+                db.session.commit()
+            intentar(editar, "Cuenta actualizada")
+        elif a == "eliminar":
+            def eliminar():
+                c = db.session.get(Cuenta, (eid, F["codigo"]))
+                if c is None: raise ValueError("Cuenta inexistente")
+                if db.session.execute(select(Movimiento.id).where(Movimiento.empresa_id == eid, Movimiento.cuenta_codigo == c.codigo).limit(1)).first():
+                    raise ValueError("La cuenta tiene movimientos: no se puede eliminar")
+                cfg = db.session.get(ConfigAsientos, eid)
+                if cfg and c.codigo in {getattr(cfg, f"cuenta_{k}") for k in CUENTAS_CFG}: raise ValueError("La cuenta está configurada para asientos automáticos")
+                db.session.delete(c); db.session.commit()
+            intentar(eliminar, "Cuenta eliminada")
+        elif a in ("importar", "modelo"):
+            def importar():
+                if a == "modelo":
+                    filas = PC.leer_filas(PC.MODELO_VEN_NIF)
+                else:
+                    arch = request.files.get("archivo")
+                    datos = arch.read(PC.MAX_FILAS * 300) if arch and arch.filename else b""
+                    filas = PC.leer_filas(datos, arch.filename if arch else "") if datos else PC.leer_filas(F.get("texto") or "")
+                cs, errores = PC.interpretar(filas)
+                if not cs: raise ValueError("No se encontró ninguna cuenta válida. " + " · ".join(errores[:5]))
+                n, act = _guardar_cuentas(eid, cs, F.get("modo") == "actualizar")
+                for e in errores[:10]: flash(e)
+                return n, act, len(errores)
+            intentar(importar, lambda r: f"Plan de cuentas importado: {r[0]} cuenta(s) nueva(s), {r[1]} actualizada(s)" + (f", {r[2]} línea(s) con error (ver abajo)" if r[2] else ""))
+        return redirect(request.url)
+    if request.args.get("plantilla"):
+        from flask import Response
+        return Response("﻿" + PC.PLANTILLA_CSV, mimetype="text/csv", headers={"Content-Disposition": 'attachment; filename="plantilla_plan_de_cuentas.csv"'})
+    cs = db.session.execute(select(Cuenta).where(Cuenta.empresa_id == eid).order_by(Cuenta.codigo)).scalars().all()
+    con_mov = set(db.session.execute(select(Movimiento.cuenta_codigo).where(Movimiento.empresa_id == eid).distinct()).scalars())
+    nivel = lambda c: c.codigo.count(".") or c.codigo.count("-")  # sangría por nivel (1 · 1.1 · 1.1.01)
+    secs = [dict(kpis=[("Cuentas", len(cs)), ("Con movimientos", len(con_mov))] + [(t, sum(c.tipo == t for c in cs)) for t in ("Activo", "Pasivo", "Ingreso", "Gasto")]),
+            dict(titulo="Catálogo de cuentas", tabla=dict(cols=["Código", "Nombre", "Tipo", "Categ. NIIF 18", "¿Monetaria?"], filas=[
+                dict(cells=[c.codigo, (" " * min(nivel(c), 4)) + c.nombre, c.tipo, c.categoria_niif18, "Sí" if c.es_partida_monetaria else "No"]) for c in cs]))]
+    if tiene_permiso(g.usuario, "cuentas.editar"):
+        tipos = [(t, t) for t in ("Activo", "Pasivo", "Patrimonio", "Ingreso", "Gasto")]
+        cats = [(c, c) for c in estados.CATEGORIAS]
+        cods = [(c.codigo, f"{c.codigo} {c.nombre}") for c in cs]
+        secs += [
+            dict(titulo="¿Ya tiene su plan de cuentas? Impórtelo", nota="Suba el archivo exportado de su sistema anterior (Excel .xlsx, CSV o TXT) o pegue las líneas. "
+                      "Se reconocen las columnas código, nombre, tipo, categoría NIIF 18 y monetaria; si falta el tipo se deduce del primer dígito "
+                      "(1 Activo, 2 Pasivo, 3 Patrimonio, 4 Ingreso, 5-9 Costos/Gastos). Las cuentas se crean automáticamente; las que ya existen no se duplican.",
+                 form=dict(action=request.path, boton="Importar plan de cuentas", archivo=True, campos=[campo("accion", "", "hidden", valor="importar"),
+                           campo("archivo", "Archivo (.xlsx, .csv, .txt)", "file", req=False, accept=".xlsx,.csv,.txt"),
+                           campo("texto", "…o pegue aquí las cuentas (una por línea: código;nombre;tipo)", "textarea", req=False, filas=6, max=400000,
+                                 ph="1.1.01;Caja;Activo\n1.1.02;Bancos;Activo"),
+                           campo("modo", "Si la cuenta ya existe", "select", opciones=[("omitir", "Dejarla como está"), ("actualizar", "Actualizar nombre y categoría")])])),
+            dict(titulo="¿No tiene uno? Use el plan modelo VEN-NIF", nota="Carga un catálogo PYME de 3 niveles (caja, bancos, IVA crédito/débito, retenciones, IGTF, "
+                      "parafiscales, costos y gastos) que luego puede editar. Solo agrega las cuentas que falten.",
+                 form=dict(action=request.path, boton="Cargar plan modelo", confirmar="¿Cargar el plan de cuentas modelo VEN-NIF en esta empresa?",
+                           campos=[campo("accion", "", "hidden", valor="modelo")])),
+            dict(titulo="Nueva cuenta", form=dict(action=request.path, boton="Guardar", campos=[campo("accion", "", "hidden", valor="alta"),
+                campo("codigo", "Código"), campo("nombre", "Nombre"), campo("tipo", "Tipo", "select", opciones=tipos),
+                campo("categoria", "Categoría NIIF 18 (solo Ingreso/Gasto)", "select", opciones=cats),
+                campo("monetaria", "Partida monetaria (Caja/Bancos/CxC/CxP: no se ajusta por inflación)", "select", opciones=[("0", "No"), ("1", "Sí")])])),
+            dict(titulo="Modificar cuenta", nota="El código y el tipo no cambian (los asientos dependen de ellos).", form=dict(action=request.path, boton="Actualizar", campos=[
+                campo("accion", "", "hidden", valor="editar"), campo("codigo", "Cuenta", "select", opciones=cods), campo("nombre", "Nuevo nombre", req=False),
+                campo("categoria", "Categoría NIIF 18", "select", req=False, opciones=[("", "— sin cambio —")] + cats),
+                campo("monetaria", "¿Monetaria?", "select", req=False, opciones=[("", "— sin cambio —"), ("0", "No"), ("1", "Sí")])])),
+            dict(titulo="Eliminar cuenta", nota="Solo cuentas sin movimientos ni uso en asientos automáticos.", form=dict(action=request.path, boton="Eliminar",
+                confirmar="¿Eliminar la cuenta seleccionada?", campos=[campo("accion", "", "hidden", valor="eliminar"),
+                                                                      campo("codigo", "Cuenta", "select", opciones=[x for x in cods if x[0] not in con_mov])]))]
+    if len(cs) <= 5 and len(secs) > 3:  # empresa recién creada (solo cuentas raíz): lo primero es traer su plan de cuentas
+        secs = [secs[0], secs[2], secs[3], secs[1]] + secs[4:]
+    return pagina("Catálogo de cuentas", eid, secs, acciones=[dict(url=url_for("web.cuentas", eid=eid, plantilla=1), texto="Descargar plantilla CSV")])
 
 
-# ---------------------------------------------------------------- diario
+# ---------------------------------------------------------------- asientos contables
 @ruta("/e/<int:eid>/asientos", "asientos.ver", ("GET", "POST"))
 def asientos(eid):
     if request.method == "POST":
         if not tiene_permiso(g.usuario, "asientos.crear"): return ("", 403)
-        lineas = [(F.get(f"c{i}", ""), F.get(f"d{i}") or 0, F.get(f"h{i}") or 0) for i in range(1, 7) if F.get(f"c{i}", "").strip()]
+        lineas = [(F.get(f"c{i}", ""), F.get(f"d{i}") or 0, F.get(f"h{i}") or 0) for i in range(1, 9) if F.get(f"c{i}", "").strip()]
         if intentar(lambda: contab.crear_asiento(eid, g.usuario, F["fecha"], F["concepto"], lineas), lambda a: f"Asiento N°{a} registrado"):
             return redirect(request.url)
     cods = [(c, f"{c} {n}") for c, n in db.session.execute(select(Cuenta.codigo, Cuenta.nombre).where(Cuenta.empresa_id == eid).order_by(Cuenta.codigo))]
-    rows = db.session.execute(select(Asiento, Movimiento).join(Movimiento, Movimiento.asiento_id == Asiento.id)
-                              .where(Asiento.empresa_id == eid).order_by(Asiento.id.desc(), Movimiento.id).limit(300)).all()
-    filas = []
-    for a, m in rows:
-        f = dict(cells=[a.id, a.fecha, a.concepto, m.cuenta_codigo, m.debe, m.haber])
-        filas.append(f)
-    anul = dict(titulo="Anular asiento (contra-asiento)", nota="Los asientos no se borran ni se editan: se anulan con un contra-asiento.",
-                form=dict(action=url_for("web.anular", eid=eid), boton="Anular", campos=[campo("asiento_id", "N° de asiento", "number"), campo("fecha", "Fecha del contra-asiento", "date", valor=hoy()), campo("motivo", "Motivo")]))
-    nuevo = dict(titulo="Nuevo asiento", nota="Hasta 6 líneas. Debe y haber deben cuadrar.", form=dict(action=request.path, boton="Registrar", campos=[
-        campo("fecha", "Fecha", "date", valor=hoy()), campo("concepto", "Concepto")] + sum(
-        [[campo(f"c{i}", f"Cuenta {i}", "select", req=i <= 2, opciones=[("", "—")] + cods), campo(f"d{i}", "Debe", "number", req=False), campo(f"h{i}", "Haber", "number", req=False)] for i in range(1, 7)], [])))
-    out = [nuevo, dict(titulo="Libro diario (últimos movimientos)", tabla=dict(cols=["N°", "Fecha", "Concepto", "Cuenta", "Debe", "Haber"], num=[4, 5], filas=filas))]
-    if tiene_permiso(g.usuario, "asientos.anular"): out.insert(1, anul)
-    return pagina("Libro diario", eid, out)
+    ult = db.session.execute(select(Asiento).where(Asiento.empresa_id == eid).order_by(Asiento.id.desc()).limit(15)).scalars().all()
+    tot = dict(db.session.execute(select(Movimiento.asiento_id, db.func.sum(Movimiento.debe)).where(Movimiento.asiento_id.in_([a.id for a in ult] or [0]))
+                                  .group_by(Movimiento.asiento_id)).all())
+    out = []
+    if tiene_permiso(g.usuario, "asientos.crear"):
+        out.append(dict(titulo="Nuevo asiento", nota="Hasta 8 líneas. El total del debe debe ser igual al del haber; los períodos cerrados no admiten asientos.",
+                        form=dict(action=request.path, boton="Procesar asiento", campos=[campo("fecha", "Fecha", "date", valor=hoy()), campo("concepto", "Concepto")] + sum(
+                            [[campo(f"c{i}", f"Cuenta {i}", "select", req=i <= 2, opciones=[("", "—")] + cods), campo(f"d{i}", "Debe", "number", req=False),
+                              campo(f"h{i}", "Haber", "number", req=False)] for i in range(1, 9)], []))))
+    if tiene_permiso(g.usuario, "asientos.anular"):
+        out.append(dict(titulo="Anular asiento (contra-asiento)", nota="Los asientos no se borran ni se editan: se anulan con un contra-asiento.",
+                        form=dict(action=url_for("web.anular", eid=eid), boton="Anular", campos=[campo("asiento_id", "N° de asiento", "number"),
+                                  campo("fecha", "Fecha del contra-asiento", "date", valor=hoy()), campo("motivo", "Motivo")])))
+    out.append(dict(titulo="Últimos asientos", tabla=dict(cols=["N°", "Fecha", "Concepto", "Total"], num=[3], filas=[
+        dict(cells=[a.id, a.fecha, a.concepto, tot.get(a.id, 0)], url=url_for("web.diario", eid=eid, desde=a.fecha, hasta=a.fecha)) for a in ult])))
+    return pagina("Asientos contables", eid, out)
 
 
 @ruta("/e/<int:eid>/asientos/anular", "asientos.anular", ("POST",))
 def anular(eid):
     intentar(lambda: contab.anular_asiento(eid, g.usuario, int(F["asiento_id"]), F["fecha"], F["motivo"]), lambda a: f"Contra-asiento N°{a} registrado")
     return redirect(url_for("web.asientos", eid=eid))
+
+
+def _rango(defecto_desde_anio=True):
+    hasta = request.args.get("hasta") or hoy()
+    desde = request.args.get("desde") or (f"{hasta[:4]}-01-01" if defecto_desde_anio else f"{hasta[:7]}-01")
+    try: return date.fromisoformat(desde), date.fromisoformat(hasta)
+    except ValueError:
+        flash("Fechas inválidas"); return date(hoy_ve().year, 1, 1), hoy_ve()
+
+
+@ruta("/e/<int:eid>/diario", "asientos.ver")
+def diario(eid):
+    """Libro diario (Código de Comercio, Art. 32-34): asientos en orden cronológico con sus partidas."""
+    d, h = _rango(False)
+    rows = db.session.execute(select(Asiento, Movimiento, Cuenta.nombre).join(Movimiento, Movimiento.asiento_id == Asiento.id)
+                              .join(Cuenta, (Cuenta.empresa_id == Movimiento.empresa_id) & (Cuenta.codigo == Movimiento.cuenta_codigo))
+                              .where(Asiento.empresa_id == eid, Asiento.fecha >= d, Asiento.fecha <= h).order_by(Asiento.fecha, Asiento.id, Movimiento.id)).all()
+    filas, previo, td, th = [], None, Decimal(0), Decimal(0)
+    for a, m, nom in rows:
+        nuevo = a.id != previo
+        filas.append(dict(cells=[a.id if nuevo else "", a.fecha if nuevo else "", a.concepto if nuevo else "", m.cuenta_codigo, nom, m.debe or "", m.haber or ""]))
+        previo = a.id; td += m.debe; th += m.haber
+    filas.append(dict(cells=["", "", "TOTALES", "", "", td, th], clase="total"))
+    return pagina("Libro diario", eid, [
+        dict(titulo="Período", form=dict(action=request.path, metodo="get", boton="Consultar", campos=[campo("desde", "Desde", "date", valor=d.isoformat()), campo("hasta", "Hasta", "date", valor=h.isoformat())])),
+        dict(titulo=f"Libro diario del {d:%d/%m/%Y} al {h:%d/%m/%Y} — {'CUADRA' if td == th else 'NO CUADRA'}",
+             tabla=dict(cols=["N°", "Fecha", "Concepto", "Cuenta", "Nombre", "Debe", "Haber"], num=[5, 6], filas=filas))])
 
 
 # ---------------------------------------------------------------- períodos, cierre y configuración
@@ -228,7 +392,7 @@ def periodos(eid):
         else: intentar(lambda: S.ejecutar_cierre(eid, g.usuario, F["fecha"], F["cuenta_patrimonio"]), lambda a: f"Asiento de cierre N°{a} registrado")
         return redirect(request.url)
     cer = db.session.execute(select(PeriodoCerrado.mes_anio).where(PeriodoCerrado.empresa_id == eid).order_by(PeriodoCerrado.mes_anio)).scalars()
-    return pagina("Cierres contables", eid, [
+    return pagina("Configuración y cierres", eid, [
         dict(titulo="Períodos cerrados", tabla=dict(cols=["Mes"], filas=[dict(cells=[m]) for m in cer])),
         dict(titulo="Cerrar período", form=dict(action=request.path, boton="Cerrar", campos=[campo("accion", "", "hidden", valor="periodo"), campo("mes", "Mes (AAAA-MM)")])),
         dict(titulo="Cierre de ejercicio (refundición)", form=dict(action=request.path, boton="Ejecutar cierre", campos=[campo("accion", "", "hidden", valor="cierre"), campo("fecha", "Fecha de cierre", "date", valor=hoy()), campo("cuenta_patrimonio", "Cuenta de patrimonio (código)")])),
@@ -397,53 +561,179 @@ def inventario(eid):
         dict(titulo="Kardex (últimos 200)", tabla=dict(cols=["Fecha", "Producto", "Tipo", "Cantidad", "Costo unit.", "Referencia"], num=[3, 4], filas=[dict(cells=[m.fecha, m.producto_codigo, m.tipo, m.cantidad, m.costo_unitario, m.referencia]) for m in db.session.execute(select(MovInventario).where(MovInventario.empresa_id == eid).order_by(MovInventario.id.desc()).limit(200)).scalars()]))])
 
 
-# ---------------------------------------------------------------- reportes
+# ---------------------------------------------------------------- libro mayor, balances, resultados, dashboard, divisas
 @ruta("/e/<int:eid>/reportes", "reportes.ver")
-def reportes(eid):
+def reportes(eid):  # enlace anterior: los estados financieros ahora tienen una página cada uno
+    return redirect(url_for("web.balance_general", eid=eid, **request.args))
+
+
+def _corte():
     fecha = request.args.get("fecha") or hoy()
-    try: rows = contab.saldos(eid, hasta=date.fromisoformat(fecha))
-    except ValueError: flash("Fecha inválida"); rows, fecha = contab.saldos(eid), hoy()
-    b, r = estados.balance(rows), estados.estado_resultados(rows, fecha)
-    cp, ta, td = estados.cambios_patrimonio(rows)
-    sec = [dict(titulo="Fecha de corte", form=dict(action=request.path, metodo="get", boton="Ver", campos=[campo("fecha", "Hasta", "date", valor=fecha)])),
-           dict(titulo=f"Balance general — {'CUADRA' if b['cuadra'] else 'NO CUADRA'}", pares=[("Total activos", b["total_activos"]), ("Pasivo + patrimonio + utilidad", b["total_pasivo_patrimonio"]), ("Utilidad del período", b["utilidad"])]),
-           dict(titulo="Activos", tabla=dict(cols=["Cuenta", "Nombre", "Saldo"], num=[2], filas=[dict(cells=list(x)) for x in b["activos"]])),
-           dict(titulo="Pasivos", tabla=dict(cols=["Cuenta", "Nombre", "Saldo"], num=[2], filas=[dict(cells=list(x)) for x in b["pasivos"]])),
-           dict(titulo="Patrimonio", tabla=dict(cols=["Cuenta", "Nombre", "Saldo"], num=[2], filas=[dict(cells=list(x)) for x in b["patrimonio"]]))]
-    if r["normativa"] == "NIC 1":
-        sec.append(dict(titulo="Estado de resultados (NIC 1)", pares=[("Ingresos", r["total_ingresos"]), ("Gastos", r["total_gastos"]), ("Utilidad del ejercicio", r["utilidad_del_ejercicio"])]))
-    else:
-        sec.append(dict(titulo="Estado de resultados (NIIF 18)", pares=[("Resultado operativo", r["resultado_operativo"]), ("Antes de financiamiento e impuestos", r["resultado_antes_financiamiento_impuestos"]), ("Resultado del período", r["resultado_del_periodo"])]))
-    sec.append(dict(titulo="Cambios en el patrimonio", tabla=dict(cols=["Cuenta", "Nombre", "Aumentos", "Disminuciones", "Saldo"], num=[2, 3, 4], filas=[dict(cells=list(x)) for x in cp])))
-    ini = request.args.get("desde") or f"{fecha[:4]}-01-01"
-    try: fl = S.flujo_efectivo(eid, date.fromisoformat(ini), date.fromisoformat(fecha)); sec.append(dict(titulo="Flujo de efectivo (extracto bancario)", pares=[(k.replace("_", " ").capitalize(), v) for k, v in fl.items()]))
-    except ValueError: pass
-    return pagina("Reportes financieros", eid, sec)
+    try: return date.fromisoformat(fecha)
+    except ValueError: flash("Fecha inválida"); return hoy_ve()
+
+
+def _form_corte(f):
+    return dict(titulo="Fecha de corte", form=dict(action=request.path, metodo="get", boton="Ver", campos=[campo("fecha", "Al", "date", valor=f.isoformat())]))
 
 
 @ruta("/e/<int:eid>/mayor", "reportes.ver")
 def mayor(eid):
-    """Libro mayor y balance de comprobación (Código de Comercio, Arts. 32-35; presentación según VEN-NIF)."""
-    hasta = request.args.get("hasta") or hoy()
-    desde = request.args.get("desde") or f"{hasta[:4]}-01-01"
-    cuenta = (request.args.get("cuenta") or "").strip()
-    try: d, h = date.fromisoformat(desde), date.fromisoformat(hasta)
-    except ValueError: flash("Fechas inválidas"); d, h = date(hoy_ve().year, 1, 1), hoy_ve()
+    """Libro mayor analítico por cuenta (Código de Comercio, Arts. 32-35)."""
+    d, h = _rango()
     rows = contab.saldos(eid, hasta=h, desde=d)
-    td, th = sum((r["debe"] for r in rows), Decimal(0)), sum((r["haber"] for r in rows), Decimal(0))
-    cods = [("", "— Seleccione —")] + [(r["codigo"], f"{r['codigo']} {r['nombre']}") for r in rows]
-    sec = [dict(titulo="Filtro", form=dict(action=request.path, metodo="get", boton="Consultar", campos=[campo("desde", "Desde", "date", valor=desde), campo("hasta", "Hasta", "date", valor=hasta),
-                                                                                                         campo("cuenta", "Cuenta (mayor analítico)", "select", req=False, opciones=cods, valor=cuenta)])),
-           dict(titulo=f"Balance de comprobación — {'CUADRA' if td == th else 'NO CUADRA'}", tabla=dict(cols=["Cuenta", "Nombre", "Tipo", "Debe", "Haber", "Saldo"], num=[3, 4, 5], filas=[
-               dict(cells=[r["codigo"], r["nombre"], r["tipo"], r["debe"], r["haber"], r["debe"] - r["haber"]]) for r in rows if r["debe"] or r["haber"]] + [dict(cells=["", "TOTALES", "", td, th, td - th], clase="total")]))]
+    cuenta = (request.args.get("cuenta") or "").strip() or next((r["codigo"] for r in rows if r["debe"] or r["haber"]), "")
+    cods = [(r["codigo"], f"{r['codigo']} {r['nombre']}") for r in rows]
+    sec = [dict(titulo="Filtro", form=dict(action=request.path, metodo="get", boton="Consultar", campos=[campo("cuenta", "Cuenta", "select", opciones=cods, valor=cuenta),
+                                                                                                      campo("desde", "Desde", "date", valor=d.isoformat()), campo("hasta", "Hasta", "date", valor=h.isoformat())]))]
     if cuenta:
+        ant = next((r for r in contab.saldos(eid, hasta=d - __import__("datetime").timedelta(days=1)) if r["codigo"] == cuenta), None)
+        saldo = (ant["debe"] - ant["haber"]) if ant else Decimal(0)
         movs = db.session.execute(select(Asiento.id, Asiento.fecha, Asiento.concepto, Movimiento.debe, Movimiento.haber).join(Movimiento, Movimiento.asiento_id == Asiento.id)
                                   .where(Asiento.empresa_id == eid, Movimiento.cuenta_codigo == cuenta, Asiento.fecha >= d, Asiento.fecha <= h).order_by(Asiento.fecha, Asiento.id)).all()
-        saldo, filas = Decimal(0), []
+        filas, td, th = [dict(cells=["", "", "Saldo anterior", "", "", saldo])], Decimal(0), Decimal(0)
         for aid, f, c, de, ha in movs:
-            saldo += de - ha; filas.append(dict(cells=[f, aid, c, de, ha, saldo]))
-        sec.append(dict(titulo=f"Mayor analítico de la cuenta {cuenta}", tabla=dict(cols=["Fecha", "Asiento", "Concepto", "Debe", "Haber", "Saldo"], num=[3, 4, 5], filas=filas)))
+            saldo += de - ha; td += de; th += ha; filas.append(dict(cells=[f, aid, c, de, ha, saldo]))
+        filas.append(dict(cells=["", "", "TOTALES / SALDO FINAL", td, th, saldo], clase="total"))
+        nom = dict(cods).get(cuenta, cuenta)
+        sec.append(dict(titulo=f"Mayor de la cuenta {nom}", tabla=dict(cols=["Fecha", "Asiento", "Concepto", "Debe", "Haber", "Saldo"], num=[3, 4, 5], filas=filas)))
     return pagina("Libro mayor", eid, sec)
+
+
+@ruta("/e/<int:eid>/comprobacion", "reportes.ver")
+def comprobacion(eid):
+    d, h = _rango()
+    rows = contab.saldos(eid, hasta=h, desde=d)
+    td, th = sum((r["debe"] for r in rows), Decimal(0)), sum((r["haber"] for r in rows), Decimal(0))
+    sd = sum((r["debe"] - r["haber"] for r in rows if r["debe"] > r["haber"]), Decimal(0))
+    sa = sum((r["haber"] - r["debe"] for r in rows if r["haber"] > r["debe"]), Decimal(0))
+    return pagina("Balance de comprobación", eid, [
+        dict(titulo="Período", form=dict(action=request.path, metodo="get", boton="Consultar", campos=[campo("desde", "Desde", "date", valor=d.isoformat()), campo("hasta", "Hasta", "date", valor=h.isoformat())])),
+        dict(titulo=f"Sumas y saldos — {'CUADRA' if td == th else 'NO CUADRA'}", tabla=dict(cols=["Cuenta", "Nombre", "Tipo", "Debe", "Haber", "Saldo deudor", "Saldo acreedor"], num=[3, 4, 5, 6], filas=[
+            dict(cells=[r["codigo"], r["nombre"], r["tipo"], r["debe"], r["haber"], r["debe"] - r["haber"] if r["debe"] > r["haber"] else "",
+                        r["haber"] - r["debe"] if r["haber"] > r["debe"] else ""], url=url_for("web.mayor", eid=eid, cuenta=r["codigo"], desde=d, hasta=h))
+            for r in rows if r["debe"] or r["haber"]] + [dict(cells=["", "TOTALES", "", td, th, sd, sa], clase="total")]))])
+
+
+@ruta("/e/<int:eid>/balance-general", "reportes.ver")
+def balance_general(eid):
+    f = _corte()
+    rows = contab.saldos(eid, hasta=f)
+    b = estados.balance(rows)
+    cp, ta, td = estados.cambios_patrimonio(rows)
+    t = lambda xs: dict(cols=["Cuenta", "Nombre", "Saldo"], num=[2], filas=[dict(cells=list(x)) for x in xs] + [dict(cells=["", "TOTAL", sum((x[2] for x in xs), Decimal(0))], clase="total")])
+    sec = [_form_corte(f),
+           dict(kpis=[("Total activos", b["total_activos"]), ("Pasivo + patrimonio + resultado", b["total_pasivo_patrimonio"]), ("Resultado del período", b["utilidad"]),
+                      ("Ecuación contable", "CUADRA" if b["cuadra"] else "NO CUADRA")]),
+           dict(titulo="Activos", tabla=t(b["activos"])), dict(titulo="Pasivos", tabla=t(b["pasivos"])),
+           dict(titulo="Patrimonio", tabla=t(b["patrimonio"] + [("", "Resultado del período (no cerrado)", b["utilidad"])])),
+           dict(titulo="Estado de cambios en el patrimonio", tabla=dict(cols=["Cuenta", "Nombre", "Aumentos", "Disminuciones", "Saldo"], num=[2, 3, 4],
+                                                                         filas=[dict(cells=list(x)) for x in cp] + [dict(cells=["", "TOTALES", ta, td, ta - td], clase="total")]))]
+    try:
+        fl = S.flujo_efectivo(eid, date(f.year, 1, 1), f)
+        sec.append(dict(titulo=f"Flujo de efectivo {f.year} (desde el extracto bancario)", pares=[(k.replace("_", " ").capitalize(), v) for k, v in fl.items()]))
+    except ValueError: pass
+    return pagina("Balance general", eid, sec)
+
+
+@ruta("/e/<int:eid>/resultados", "reportes.ver")
+def resultados(eid):
+    d, h = _rango()
+    r = estados.estado_resultados(contab.saldos(eid, hasta=h, desde=d), h.isoformat())
+    sec = [dict(titulo="Período", form=dict(action=request.path, metodo="get", boton="Ver", campos=[campo("desde", "Desde", "date", valor=d.isoformat()), campo("hasta", "Hasta", "date", valor=h.isoformat())]))]
+    if r["normativa"] == "NIC 1":
+        sec += [dict(kpis=[("Ingresos", r["total_ingresos"]), ("Gastos y costos", r["total_gastos"]), ("Utilidad del ejercicio", r["utilidad_del_ejercicio"])]),
+                dict(titulo="Ingresos", tabla=dict(cols=["Cuenta", "Nombre", "Monto"], num=[2], filas=[dict(cells=list(x)) for x in r["ingresos"]] + [dict(cells=["", "TOTAL INGRESOS", r["total_ingresos"]], clase="total")])),
+                dict(titulo="Costos y gastos", tabla=dict(cols=["Cuenta", "Nombre", "Monto"], num=[2], filas=[dict(cells=list(x)) for x in r["gastos"]] + [dict(cells=["", "TOTAL GASTOS", r["total_gastos"]], clase="total")])),
+                dict(nota="Presentación NIC 1 (VEN-NIF). Desde el 01/01/2027 se presenta con las categorías de la NIIF 18.")]
+    else:
+        sec.append(dict(kpis=[("Resultado operativo", r["resultado_operativo"]), ("Antes de financiamiento e impuestos", r["resultado_antes_financiamiento_impuestos"]),
+                              ("Resultado del período", r["resultado_del_periodo"])]))
+        for cat, xs in r["categorias"].items():
+            if xs: sec.append(dict(titulo=f"Categoría {cat} (NIIF 18)", tabla=dict(cols=["Cuenta", "Nombre", "Tipo", "Monto"], num=[3], filas=[dict(cells=list(x)) for x in xs])))
+    return pagina("Estado de resultados", eid, sec)
+
+
+def _grafico_barras(meses, series, nombres):
+    """Barras agrupadas en SVG (sin scripts; tooltip nativo con <title>). Barras finas, extremo superior redondeado 4px,
+    2px de separación entre barras, una sola escala. Colores por clase CSS (validados para daltonismo)."""
+    ancho, alto, izq, techo, base = 760, 260, 64, 14, 228
+    tope = max([v for s in series for v in s] + [Decimal(1)])
+    paso = Decimal(10) ** (len(str(int(tope))) - 1)
+    tope = ((tope / paso).to_integral_value(rounding="ROUND_CEILING")) * paso
+    esc = lambda v: float(base - (base - techo) * float(v) / float(tope))
+    n, k = len(meses), len(series)
+    grupo = (ancho - 8 - izq) / max(n, 1)
+    w = min(18.0, (grupo * 0.7 - 2 * (k - 1)) / k)
+    barras, etiquetas = [], []
+    for i, mes in enumerate(meses):
+        x0 = izq + grupo * i + (grupo - (w * k + 2 * (k - 1))) / 2
+        etiquetas.append((round(izq + grupo * i + grupo / 2, 1), mes[5:] + "/" + mes[2:4]))
+        for j, s in enumerate(series):
+            v = s[i]; x = x0 + j * (w + 2); y = esc(v); r = min(4.0, w / 2, base - y)
+            d = (f"M{x:.1f},{base}V{y + r:.1f}Q{x:.1f},{y:.1f} {x + r:.1f},{y:.1f}H{x + w - r:.1f}Q{x + w:.1f},{y:.1f} {x + w:.1f},{y + r:.1f}V{base}Z" if v > 0 else "")
+            barras.append(dict(x=round(x, 1), w=round(w, 1), d=d, serie=j + 1, tip=f"{nombres[j]} {mes}: Bs {v:,.2f}"))
+    guias = [(round(esc(tope * q / 4), 1), f"{float(tope * q / 4):,.0f}") for q in range(5)]
+    return dict(ancho=ancho, alto=alto, izq=izq, techo=techo, base=base, barras=barras, etiquetas=etiquetas, guias=guias, series=nombres,
+                titulo=" vs ".join(nombres) + " por mes", nota="Montos en bolívares por mes. Pase el cursor sobre una barra para ver su valor; el detalle está en la tabla de abajo.")
+
+
+@ruta("/e/<int:eid>/dashboard", "reportes.ver")
+def dashboard(eid):
+    """Tablero gráfico: indicadores clave y evolución mensual de ingresos y gastos (últimos 12 meses)."""
+    hoy_d = hoy_ve()
+    b = estados.balance(contab.saldos(eid, hasta=hoy_d))
+    ini = date(hoy_d.year - 1 + (hoy_d.month // 12), hoy_d.month % 12 + 1, 1)
+    mes = db.func.to_char(Asiento.fecha, "YYYY-MM")
+    q = (select(mes, Cuenta.tipo, db.func.sum(Movimiento.debe), db.func.sum(Movimiento.haber))
+         .join(Movimiento, Movimiento.asiento_id == Asiento.id)
+         .join(Cuenta, (Cuenta.empresa_id == Movimiento.empresa_id) & (Cuenta.codigo == Movimiento.cuenta_codigo))
+         .where(Asiento.empresa_id == eid, Asiento.fecha >= ini, Asiento.fecha <= hoy_d, Cuenta.tipo.in_(("Ingreso", "Gasto")), Asiento.concepto.notlike("Cierre de Ejercicio%"))
+         .group_by(mes, Cuenta.tipo))
+    meses = [f"{(ini.year + (ini.month - 1 + i) // 12):04d}-{(ini.month - 1 + i) % 12 + 1:02d}" for i in range(12)]
+    ing, gas = {m: Decimal(0) for m in meses}, {m: Decimal(0) for m in meses}
+    for m, tipo, de, ha in db.session.execute(q):
+        if m in ing:
+            if tipo == "Ingreso": ing[m] += ha - de
+            else: gas[m] += de - ha
+    s_ing, s_gas = [max(ing[m], Decimal(0)) for m in meses], [max(gas[m], Decimal(0)) for m in meses]
+    pasivo = sum((x[2] for x in b["pasivos"]), Decimal(0)); patrimonio = sum((x[2] for x in b["patrimonio"]), Decimal(0)) + b["utilidad"]
+    from .models2 import DocumentoCxC, DocumentoCxP
+    cxc = db.session.execute(select(db.func.coalesce(db.func.sum(DocumentoCxC.saldo_pendiente), 0)).where(DocumentoCxC.empresa_id == eid)).scalar()
+    cxp = db.session.execute(select(db.func.coalesce(db.func.sum(DocumentoCxP.saldo_pendiente), 0)).where(DocumentoCxP.empresa_id == eid)).scalar()
+    return pagina("Dashboard gráfico", eid, [
+        dict(kpis=[("Activos", b["total_activos"]), ("Pasivos", pasivo), ("Patrimonio", patrimonio), ("Resultado acumulado", b["utilidad"])]),
+        dict(kpis=[("Ingresos 12 meses", sum(s_ing)), ("Gastos 12 meses", sum(s_gas)), ("Por cobrar", cxc), ("Por pagar", cxp)]),
+        dict(titulo="Ingresos vs gastos — últimos 12 meses", grafico=_grafico_barras(meses, [s_ing, s_gas], ["Ingresos", "Gastos"])),
+        dict(titulo="Detalle mensual", tabla=dict(cols=["Mes", "Ingresos", "Gastos", "Resultado"], num=[1, 2, 3], filas=[
+            dict(cells=[m, ing[m], gas[m], ing[m] - gas[m]]) for m in meses] + [dict(cells=["TOTAL", sum(ing.values()), sum(gas.values()), sum(ing.values()) - sum(gas.values())], clase="total")]))])
+
+
+@ruta("/e/<int:eid>/divisas", "asientos.ver")
+def divisas(eid):
+    """Tasas oficiales del BCV (USD/EUR) y conversor de divisas, como el módulo «Divisas & Moneda» del escritorio."""
+    from .models2 import TasaCambio
+    from .tasas import tasa_vigente
+    hoy_d = hoy_ve()
+    usd, eur = tasa_vigente(hoy_d, "USD"), tasa_vigente(hoy_d, "EUR")
+    sec = [dict(kpis=[("Tasa BCV USD (Bs)", usd or "—"), ("Tasa BCV EUR (Bs)", eur or "—"), ("Fecha", hoy_d.strftime("%d/%m/%Y"))])]
+    monto, de = request.args.get("monto"), request.args.get("de", "USD")
+    if monto:
+        try:
+            m = Decimal(monto.replace(",", ".")); tasas_ = {"USD": usd, "EUR": eur, "USDT": usd, "VES": Decimal(1)}
+            if not m.is_finite() or de not in tasas_ or not tasas_[de]: raise ValueError
+            bs = (m * Decimal(str(tasas_[de]))).quantize(Decimal("0.01"))
+            res = [("Equivalente en bolívares", bs)] + [(f"Equivalente en {x}", (bs / Decimal(str(tasas_[x]))).quantize(Decimal("0.01"))) for x in ("USD", "EUR") if tasas_[x] and x != de]
+            sec.append(dict(titulo=f"Conversión de {m} {de}", pares=res))
+        except (ArithmeticError, ValueError):
+            flash("Monto o moneda inválidos")
+    sec += [dict(titulo="Conversor", nota="Usa la tasa oficial del BCV vigente hoy (USDT se valora a la tasa del dólar).",
+                 form=dict(action=request.path, metodo="get", boton="Convertir", campos=[campo("monto", "Monto", "number", valor=monto),
+                           campo("de", "Moneda", "select", opciones=[("USD", "Dólares (USD)"), ("EUR", "Euros (EUR)"), ("USDT", "USDT"), ("VES", "Bolívares (Bs)")], valor=de)])),
+            dict(titulo="Historial de tasas BCV", tabla=dict(cols=["Vigencia", "USD", "EUR", "Fuente"], num=[1, 2], filas=[
+                dict(cells=[x.fecha, x.tasa_usd_ves, x.tasa_eur_ves or "—", x.fuente or "Manual"])
+                for x in db.session.execute(select(TasaCambio).order_by(TasaCambio.fecha.desc()).limit(60)).scalars()]))]
+    return pagina("Divisas y moneda", eid, sec)
 
 
 # ---------------------------------------------------------------- auditoría
@@ -483,4 +773,4 @@ def _seccion_bitacora():
                 tabla=dict(cols=["Fecha (UTC)", "Usuario", "IP", "Acción", "Detalle"], filas=[dict(cells=[l.ts.strftime("%Y-%m-%d %H:%M:%S"), l.usuario, l.ip or "", l.accion, (l.detalles or "")[:120]]) for l in logs]))
 
 
-from . import web_admin, web_facturacion, web_fiscal, web_plataforma  # noqa: E402,F401  (registran sus rutas en el mismo blueprint)
+from . import web_admin, web_compras, web_cuadre, web_empresa, web_facturacion, web_fiscal, web_migracion, web_plataforma  # noqa: E402,F401  (registran sus rutas en el mismo blueprint)

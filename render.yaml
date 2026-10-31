@@ -48,7 +48,7 @@ projects:
               - key: LICENSE_PUBLIC_KEY          # python -m licensing_server.cli keygen
                 sync: false
               - key: APP_NOMBRE
-                value: ERP
+                value: Contax
               - key: APP_BASE_URL                # p. ej. https://erp-web.onrender.com o su dominio
                 sync: false
               - key: MAIL_BACKEND

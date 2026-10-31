@@ -35,7 +35,7 @@ class Config:
     RATELIMIT_STORAGE_URI = os.environ.get("RATELIMIT_STORAGE_URI", "memory://")
 
     # Correo (verificación, invitaciones, recuperación, alertas). APP_BASE_URL fija el dominio de los enlaces.
-    APP_NOMBRE = os.environ.get("APP_NOMBRE", "ERP")
+    APP_NOMBRE = os.environ.get("APP_NOMBRE", "Contax")
     APP_LEMA = os.environ.get("APP_LEMA", "Tu empresa en orden. Tu fisco al día.")
     APP_BASE_URL = _req("APP_BASE_URL")
     MAIL_BACKEND = os.environ.get("MAIL_BACKEND", "brevo")            # brevo | smtp | console (solo desarrollo)

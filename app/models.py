@@ -24,6 +24,7 @@ class Organizacion(db.Model):
     correo_contacto = db.Column(CITEXT)
     estado = db.Column(db.Text, nullable=False, default="activa")
     creado_en = db.Column(db.DateTime(timezone=True), default=_ahora)
+    bienvenida_completada = db.Column(db.Boolean, nullable=False, default=False, server_default=db.text("false"))   # tutorial inicial del administrador
     __table_args__ = (CheckConstraint("estado IN ('activa','suspendida')", name="ck_org_estado"),)
 
 
@@ -63,6 +64,17 @@ class Empresa(db.Model):  # = clientes_contables del sistema original
     telefono = db.Column(db.Text)
     es_sujeto_pasivo_especial = db.Column(db.Boolean, nullable=False, default=False)
     monedas = db.Column(db.Text, nullable=False, default="USD")   # divisas con las que factura la empresa (además del bolívar): USD,EUR,USDT
+    correo = db.Column(db.Text)
+    logo = db.Column(db.LargeBinary)                 # PNG/JPEG/WebP ≤ 300 KB (aparece en órdenes de compra y de venta)
+    logo_mime = db.Column(db.Text)
+    modulos = db.Column(db.Text)                     # módulos que trabaja ESTA empresa (subconjunto del plan); NULL = todos los del plan
+    oc_condicion_pago = db.Column(db.Text)           # valores por defecto de las órdenes de compra
+    oc_lugar_entrega = db.Column(db.Text)
+    oc_observaciones = db.Column(db.Text)
+    oc_numero_inicial = db.Column(db.Integer, nullable=False, default=1, server_default=db.text("1"))
+
+    def modulos_empresa(self, del_plan) -> frozenset:
+        return frozenset(del_plan) if not self.modulos else frozenset(m for m in self.modulos.split(",") if m in del_plan)
 
     def divisas(self) -> list[str]:
         return [m for m in ("USD", "EUR", "USDT") if m in (self.monedas or "").split(",")]

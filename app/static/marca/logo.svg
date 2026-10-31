@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 64" role="img" aria-label="ERP by Gigadevs">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 64" role="img" aria-label="Contax by Gigadevs">
   <rect width="64" height="64" rx="16" fill="#191919"/>
-  <rect x="15" y="15" width="34" height="8" rx="4" fill="#87e64b"/>
-  <rect x="15" y="28" width="22" height="8" rx="4" fill="#87e64b"/>
-  <rect x="15" y="41" width="34" height="8" rx="4" fill="#87e64b"/>
+  <path d="M45.5 20.5 A16 16 0 1 0 45.5 43.5" fill="none" stroke="#87e64b" stroke-width="8" stroke-linecap="round"/>
+  <rect x="27" y="27.5" width="13" height="4" rx="2" fill="#87e64b"/>
+  <rect x="27" y="34" width="8" height="4" rx="2" fill="#87e64b"/>
   <circle cx="46" cy="32" r="4.5" fill="#ffffff"/>
-  <text x="80" y="40" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="34" font-weight="800" fill="currentColor" letter-spacing="-1">ERP</text>
-  <text x="81" y="56" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#707070" letter-spacing="1.5">BY GIGADEVS</text>
+  <text x="80" y="40" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="34" font-weight="800" fill="currentColor" letter-spacing="-1">Conta<tspan fill="#87e64b">x</tspan></text>
+  <text x="81" y="56" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#707070" letter-spacing="1.5">BY GIGADEVS CORP</text>
 </svg>

@@ -27,7 +27,8 @@ def test_planes_segun_licencia():
     assert modulos_de({"cliente": "x"}) == MODULOS_LEGADO          # token anterior a los planes: no pierde funciones
     assert modulos_de({"plan": "INVENTADO"}) == frozenset()        # plan desconocido: falla cerrado
     assert modulos_de(None) == frozenset()
-    assert set(PLANES) == {"ERP_CONTABLE", "CASH", "ERP_ADMIN", "ALL_IN_ONE", "PERSONALIZADO"}
+    assert set(PLANES) == {"ERP_CONTABLE", "CASH", "ERP_ADMIN", "ALL_IN_ONE", "PERSONALIZADO", "DEMO"}
+    assert modulos_de({"plan": "DEMO"}) == {"facturacion", "inventario"}
     assert "auditoria" in PLANES["ERP_CONTABLE"]["modulos"] and "auditoria" not in PLANES["ERP_ADMIN"]["modulos"]
 
 

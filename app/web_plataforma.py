@@ -44,18 +44,75 @@ def plataforma():
             if org is None: raise ValueError("Organización inexistente")
             org.estado = "suspendida" if org.estado == "activa" else "activa"
             registrar(g.usuario.username, "ORGANIZACION_" + org.estado.upper(), org.rif, org=None); db.session.commit()
-        if a not in ("crear", "estado"): flash("Acción inválida"); return redirect(request.url)
-        intentar({"crear": crear, "estado": estado}[a], "Hecho"); return redirect(request.url)
+        def pendientes_de(org):
+            us = db.session.execute(select(Usuario).where(Usuario.organizacion_id == org.id)).scalars().all()
+            return us, [u for u in us if not u.email_verificado]
+        def reinvitar():
+            org = db.session.get(Organizacion, int(F["oid"]))
+            if org is None: raise ValueError("Organización inexistente")
+            _, pend = pendientes_de(org)
+            admins = [u for u in pend if u.rol == "Administrador"]
+            if not admins: raise ValueError("El administrador de ese cliente ya aceptó su invitación")
+            for u in admins: enviar_invitacion(u, org.nombre, "El proveedor de la plataforma")
+            registrar(g.usuario.username, "INVITACION_REENVIADA", f"{org.rif} {', '.join(u.email for u in admins)}", org=None); db.session.commit()
+            return f"Invitación reenviada a {', '.join(u.email for u in admins)} (válida 72 h)"
+        def eliminar():
+            """Solo clientes que NUNCA activaron su cuenta y no tienen empresas: no se borra ningún dato contable."""
+            org = db.session.get(Organizacion, int(F["oid"]))
+            if org is None: raise ValueError("Organización inexistente")
+            if (F.get("confirmar") or "").strip().upper() != org.rif.upper(): raise ValueError("Escriba el RIF del cliente para confirmar")
+            us, pend = pendientes_de(org)
+            if len(pend) != len(us): raise ValueError("Ese cliente ya activó al menos una cuenta: suspéndalo en lugar de eliminarlo")
+            resumen = {r[0]: r for r in db.session.execute(db.text("SELECT * FROM maestro_resumen_organizaciones()")).all()}
+            if resumen.get(org.id, (0, 0))[1]: raise ValueError("Ese cliente tiene empresas registradas: no se puede eliminar")
+            try:   # sus licencias quedan revocadas (si el servidor de licencias está configurado)
+                adm = _admin()
+                for l in adm.licencias(str(org.id)):
+                    if l["estado"] != "revocada": adm.modificar(l["id"], estado="revocada", autor=g.usuario.username)
+            except Exception:  # noqa: BLE001 — sin servidor de licencias se elimina igual
+                pass
+            for u in us: db.session.delete(u)
+            db.session.flush()
+            db.session.execute(db.text("DELETE FROM licencias_organizacion WHERE organizacion_id = :o"), {"o": org.id})
+            db.session.delete(org)
+            registrar(g.usuario.username, "ORGANIZACION_ELIMINADA", f"{org.rif} {org.nombre} (invitación no aceptada)", org=None); db.session.commit()
+            return f"Cliente {org.nombre} eliminado"
+        acciones = {"crear": crear, "estado": estado, "reinvitar": reinvitar, "eliminar": eliminar}
+        if a not in acciones: flash("Acción inválida"); return redirect(request.url)
+        intentar(acciones[a], lambda r: r or "Hecho"); return redirect(request.url)
     gestor = current_app.extensions["gestor_licencia"]
     orgs = db.session.execute(select(Organizacion).order_by(Organizacion.nombre)).scalars().all()
     n_us = dict(db.session.execute(select(Usuario.organizacion_id, func.count()).where(Usuario.activo.is_(True)).group_by(Usuario.organizacion_id)).all())
-    filas = []
+    from .models import TokenCorreo, _ahora
+    admins = {}
+    for u in db.session.execute(select(Usuario).where(Usuario.rol == "Administrador")).scalars(): admins.setdefault(u.organizacion_id, []).append(u)
+    vigentes = {t.usuario_id: t.expira_en for t in db.session.execute(select(TokenCorreo).where(TokenCorreo.proposito == "invitacion", TokenCorreo.usado_en.is_(None),
+                                                                                               TokenCorreo.expira_en > _ahora())).scalars()}
+    def invitacion(o):
+        us = admins.get(o.id, [])
+        if not us: return "Sin administrador", None
+        if any(u.email_verificado for u in us): return "Aceptada", None
+        v = [vigentes[u.id] for u in us if u.id in vigentes]
+        return (f"Pendiente (vence {max(v).strftime('%d/%m %H:%M')} UTC)", "pendiente") if v else ("VENCIDA (72 h sin registrarse)", "vencida")
+    filas, sin_registro = [], []
     for o in orgs:
         est = gestor(o.id).estado()
-        filas.append(dict(cells=[o.nombre, o.rif, o.estado.capitalize(), nombre_plan(est.claims) if est.valida else f"Sin licencia ({est.motivo})", n_us.get(o.id, 0), o.correo_contacto or ""]))
+        inv, clase = invitacion(o)
+        if clase: sin_registro.append((o, clase))
+        filas.append(dict(cells=[o.nombre, o.rif, o.estado.capitalize(), nombre_plan(est.claims) if est.valida else f"Sin licencia ({est.motivo})", n_us.get(o.id, 0),
+                                 o.correo_contacto or "", inv], clase="anulado" if clase == "vencida" else "",
+                          form=dict(action=request.path, boton="Reenviar invitación", campos=[h("reinvitar"), campo("oid", "", "hidden", valor=o.id)]) if clase else None))
     return pagina("Clientes de la plataforma", None, [
         dict(kpis=[("Clientes", len(orgs)), ("Activos", sum(o.estado == "activa" for o in orgs)), ("Usuarios activos", sum(v for k, v in n_us.items() if k))]),
-        dict(tabla=dict(cols=["Organización", "RIF", "Estado", "Plan / licencia", "Usuarios", "Contacto"], filas=filas)),
+        dict(tabla=dict(cols=["Organización", "RIF", "Estado", "Plan / licencia", "Usuarios", "Contacto", "Invitación"], accion=True, filas=filas)),
+        *([dict(titulo="Clientes que no se registraron", nota="La invitación vale 72 horas. Reenvíela (se genera un enlace nuevo de 72 h y el anterior queda anulado) "
+                     "o elimine al cliente: solo se permite si nadie activó su cuenta y no tiene empresas; sus licencias quedan revocadas.",
+                tabla=dict(cols=["Cliente", "RIF", "Correo", "Invitación"], accion=True, filas=[
+                    dict(cells=[o.nombre, o.rif, o.correo_contacto or "", "Vencida" if c == "vencida" else "Pendiente"],
+                         form=dict(action=request.path, boton="Reenviar", campos=[h("reinvitar"), campo("oid", "", "hidden", valor=o.id)])) for o, c in sin_registro])),
+              dict(titulo="Eliminar un cliente que no se registró", form=dict(action=request.path, boton="Eliminar cliente", confirmar="¿Eliminar definitivamente este cliente?",
+                   campos=[h("eliminar"), campo("oid", "Cliente", "select", opciones=[(o.id, f"{o.nombre} ({o.rif}) · invitación {c}") for o, c in sin_registro]),
+                           campo("confirmar", "Escriba el RIF del cliente para confirmar")]))] if sin_registro else []),
         dict(titulo="Nuevo cliente", nota="Se crea la organización y se envía una invitación a su administrador. El plan lo define la clave de licencia que usted emite (licensing_server.cli crear --plan).",
              form=dict(action=request.path, boton="Crear e invitar", campos=[h("crear"), campo("nombre", "Nombre del cliente"), campo("rif", "RIF"),
                                                                               campo("username", "Usuario administrador"), campo("email", "Correo del administrador", "email")])),
@@ -180,6 +237,12 @@ def maestro_licencias():
                 cambios = {k: F.get(k) for k in ("plan", "estado", "max_usuarios", "max_empresas", "max_equipos", "max_instancias", "dias_extra") if F.get(k)}
                 if F.getlist("modulos"): cambios["modulos"] = F.getlist("modulos")
                 adm.modificar(int(F["lid"]), autor=autor, **cambios); detalle = f"licencia={F['lid']} {sorted(cambios)}"
+            elif a == "demo":
+                org = por_id.get(F["org"])
+                if org is None: raise ValueError("Organización inexistente")
+                r = adm.crear_licencia(cliente=org.nombre, correo=(F.get("correo") or org.correo_contacto or "").strip().lower(), organizacion_ref=str(org.id),
+                                       plan="DEMO", dias=3, max_usuarios=2, max_empresas=1, max_equipos=2, max_instancias=1, autor=autor)
+                detalle = f"licencia={r['id']} org={org.rif} plan=DEMO 72h"
             elif a == "liberar":
                 adm.liberar(int(F["lid"]), autor); detalle = f"licencia={F['lid']}"
             elif a == "reenviar":
@@ -187,7 +250,7 @@ def maestro_licencias():
             else: raise ValueError("Acción inválida")
             registrar(autor, "LICENCIA_" + a.upper(), detalle, org=None); db.session.commit()
         try:
-            hacer(); flash({"crear": "Licencia emitida: la clave se envió por correo (una sola vez).", "reenviar": "Se generó y envió una clave nueva; la anterior quedó anulada."}.get(a, "Hecho"))
+            hacer(); flash({"crear": "Licencia emitida: la clave se envió por correo (una sola vez).", "demo": "Demo de 72 h emitida: la clave se envió por correo.", "reenviar": "Se generó y envió una clave nueva; la anterior quedó anulada."}.get(a, "Hecho"))
         except (ErrorAdmin, ValueError, OSError) as e:
             db.session.rollback(); flash(str(e))
         return redirect(request.url)
@@ -222,6 +285,10 @@ def maestro_licencias():
                        campo("precio", "Precio cobrado, IVA incluido (vacío = sin factura)", "number", req=False),
                        campo("moneda_venta", "Moneda del cobro", "select", opciones=[("USD", "USD"), ("USDT", "USDT"), ("EUR", "EUR"), ("VES", "Bolívares")]),
                        campo("forma_pago", "Forma de pago", req=False)])),
+        dict(titulo="Emitir demo de 72 horas", nota="Facturación + Inventario, 2 usuarios, 1 empresa, 2 equipos. Vence a las 72 h exactas. "
+                  "El administrador del cliente también puede pedirla él mismo (una vez) desde Organización → Licencia.",
+             form=dict(action=request.path, boton="Emitir demo", campos=[h("demo"), campo("org", "Organización", "select", opciones=[(o.id, f"{o.nombre} ({o.rif})") for o in orgs]),
+                       campo("correo", "Enviar a (vacío = contacto del cliente)", "email", req=False)])),
         dict(titulo="Modificar licencia", nota="Plan, topes y estado llegan al cliente en su próxima renovación (≤ 7 días) o cuando su administrador pulse «Renovar».",
              form=dict(action=request.path, boton="Guardar cambios", campos=[h("modificar"), campo("lid", "Licencia", "select", opciones=ids),
                        campo("plan", "Plan (sin cambio)", "select", req=False, opciones=[("", "—")] + planes),
@@ -248,6 +315,13 @@ def maestro_pagos():
             adm = _admin()
             if a == "precio":
                 adm.fijar_precio(plan=F["plan"], meses=int(F["meses"]), monto_usd=F["monto"], max_usuarios=int(F["usuarios"]), max_empresas=int(F["empresas"]), max_equipos=int(F["equipos"]))
+            elif a == "combo":
+                if not F.getlist("modulos"): raise ValueError("Elija los módulos que incluye el combo")
+                adm.crear_combo(nombre=F["nombre"], modulos=F.getlist("modulos"), meses=int(F["meses"]), monto_usd=F.get("monto") or None,
+                                max_usuarios=int(F["usuarios"]), max_empresas=int(F["empresas"]), max_equipos=int(F["equipos"]))
+            elif a == "combo_estado": adm.activar_combo(int(F["cid"]), F.get("activo") == "1")
+            elif a == "precio_modulo": adm.fijar_precio_modulo(F["modulo"], F["monto"])
+            elif a == "referencia": flash(f"Precios de referencia agregados: {adm.sembrar_precios()['agregados']} (los existentes no se modificaron)")
             elif a == "confirmar": adm.confirmar(F["ref"], g.usuario.username)
             elif a == "rechazar": adm.rechazar(F["ref"], F.get("motivo") or "Pago no verificado")
             elif a == "verificar": flash(f"Binance: {adm.verificar(F['ref'])}")
@@ -258,9 +332,9 @@ def maestro_pagos():
             db.session.rollback(); flash(str(e))
         return redirect(request.url)
     try:
-        adm = _admin(); ords, precs = adm.ordenes(), adm.precios()
+        adm = _admin(); ords, precs, cmb = adm.ordenes(), adm.precios(), adm.combos()
     except (ErrorAdmin, ValueError, OSError) as e:
-        flash(str(e)); ords, precs = [], []
+        flash(str(e)); ords, precs, cmb = [], [], {"combos": [], "precios_modulo": {}, "descuento_anual_pct": "16.67"}
     orgs = {str(o.id): o.nombre for o in db.session.execute(select(Organizacion)).scalars()}
     import json as _json
     def acciones(o):
@@ -270,15 +344,20 @@ def maestro_pagos():
             return dict(action=request.path, boton="Buscar pago en Binance", campos=[h("verificar"), campo("ref", "", "hidden", valor=o["ref"])])
         return None
     ref_pago = lambda o: ", ".join(f"{k}: {v}" for k, v in _json.loads(o["referencia_pago"]).items() if v) if o.get("referencia_pago") else ""
-    from .planes import PLANES_TIENDA
+    from .planes import MODULOS, PLANES_TIENDA
     planes = [(k, PLANES[k]["nombre"]) for k in PLANES_TIENDA]
+    periodo = lambda m: {1: "Mensual", 12: "Anual"}.get(int(m), f"{m} meses")
+    nombre_combo = {c["id"]: c["nombre"] for c in cmb["combos"]}
+    plan_orden = lambda o: (f"Combo «{nombre_combo.get(o.get('combo_id'), o.get('combo_id'))}»" if o.get("combo_id") else PLANES.get(o["plan"], {}).get("nombre", o["plan"]))
+    mods_txt = lambda v: ", ".join(MODULOS.get(m, m) for m in (v or "").split(",") if m)
+    pm = cmb["precios_modulo"]
     return pagina("Pagos y precios", None, [
         dict(kpis=[("Órdenes", len(ords)), ("Por verificar (Bs)", sum(o["estado"] == "por_verificar" for o in ords)),
                    ("Entregadas", sum(o["estado"] == "entregada" for o in ords)), ("Cobrado USD", f"{sum(float(o['monto_usd']) for o in ords if o['estado'] == 'entregada'):,.2f}")]),
         dict(titulo="Órdenes", nota="USDT: cada orden tiene un monto único; el sistema revisa su historial de Binance cada 2 min y entrega la licencia sola. "
                   "Si un cliente pagó un monto distinto, verifíquelo en Binance y use «Confirmar». Bs (pago móvil): verifique en su banco y confirme aquí.",
              tabla=dict(cols=["Orden", "Cliente", "Plan", "Meses", "Moneda", "Monto", "Estado", "Pago informado", "Fecha (UTC)"], num=[5], accion=True,
-                        filas=[dict(cells=[o["ref"], orgs.get(o["organizacion_ref"], o["cliente"]), o["plan"], o["meses"], o["moneda"], o.get("monto_esperado") or o["monto"], o["estado"], ref_pago(o),
+                        filas=[dict(cells=[o["ref"], orgs.get(o["organizacion_ref"], o["cliente"]), plan_orden(o), o["meses"], o["moneda"], o.get("monto_esperado") or o["monto"], o["estado"], ref_pago(o),
                                            _fecha(o["creada_en"])], form=acciones(o)) for o in ords])),
         dict(titulo="Confirmar un pago manualmente", nota="Para pagos que no se emparejaron solos (p. ej. el cliente envió otro monto). Verifique primero en su Binance o banco: al confirmar se emite la licencia y se envía la clave.",
              form=dict(action=request.path, boton="Confirmar y entregar", campos=[h("confirmar"), campo("ref", "Orden", "select", opciones=[(o["ref"], f"{o['ref']} · {orgs.get(o['organizacion_ref'], o['cliente'])} · {o['moneda']} {o.get('monto_esperado') or o['monto']}") for o in ords if o["estado"] in ("pendiente", "por_verificar", "pagada")])])),
@@ -286,9 +365,32 @@ def maestro_pagos():
                                                                                            campo("motivo", "Motivo")])),
         dict(titulo="Catálogo de precios (USD / USDT)", nota="El monto de cada orden lo fija SIEMPRE este catálogo en el servidor; el cliente no puede alterarlo. En Bs se convierte a la tasa BCV del día.",
              tabla=dict(cols=["Plan", "Meses", "Precio USD", "Usuarios", "Empresas", "Equipos"], num=[2, 3, 4, 5], filas=[dict(cells=[PLANES[p["plan"]]["nombre"], p["meses"], p["monto_usd"], p["max_usuarios"], p["max_empresas"], p["max_equipos"]]) for p in precs])),
-        dict(titulo="Fijar precio", form=dict(action=request.path, boton="Guardar precio", campos=[h("precio"), campo("plan", "Plan", "select", opciones=planes), campo("meses", "Meses", "number", valor=12),
+        dict(titulo="Fijar precio", form=dict(action=request.path, boton="Guardar precio", campos=[h("precio"), campo("plan", "Plan", "select", opciones=planes),
+                                                                                                 campo("meses", "Período", "select", opciones=[(1, "Mensual (1 mes)"), (12, "Anual (12 meses)"), (3, "Trimestral"), (6, "Semestral")], valor=12),
                                                                                                  campo("monto", "Precio USD", "number"), campo("usuarios", "Usuarios", "number", valor=5),
-                                                                                                 campo("empresas", "Empresas", "number", valor=2), campo("equipos", "Equipos", "number", valor=5)]))])
+                                                                                                 campo("empresas", "Empresas", "number", valor=2), campo("equipos", "Equipos", "number", valor=5)])),
+        dict(titulo="Precios de referencia (mercado venezolano)", nota="Carga los precios mensuales y anuales de referencia de cada plan y de cada módulo SOLO donde falten: "
+                  "nunca cambia un precio que usted ya fijó. Anual = 10 meses (2 de regalo). Ajústelos luego con «Fijar precio».",
+             form=dict(action=request.path, boton="Cargar precios faltantes", campos=[h("referencia")])),
+        dict(titulo="Combos personalizados", nota="Paquetes a medida: el cliente los ve en su tienda junto a los planes y recibe una licencia con exactamente esos módulos. "
+                  "Desactivar un combo lo retira de la venta sin afectar las licencias ya vendidas.",
+             tabla=dict(cols=["#", "Combo", "Módulos incluidos", "Período", "Precio USD", "Usuarios", "Empresas", "Equipos", "Estado"], num=[4, 5, 6, 7], accion=True, filas=[
+                 dict(cells=[c["id"], c["nombre"], mods_txt(c["modulos"]), periodo(c["meses"]), c["monto_usd"], c["max_usuarios"], c["max_empresas"], c["max_equipos"],
+                             "A la venta" if c["activo"] else "Retirado"],
+                      form=dict(action=request.path, boton="Retirar" if c["activo"] else "Volver a vender", campos=[h("combo_estado"), campo("cid", "", "hidden", valor=c["id"]),
+                                                                                                                  campo("activo", "", "hidden", valor="0" if c["activo"] else "1")]))
+                 for c in cmb["combos"]])),
+        dict(titulo="Nuevo combo", nota=f"Deje el precio vacío y se calcula solo según lo que incluya: suma del precio mensual de cada módulo × meses "
+                                        f"(anual con {cmb['descuento_anual_pct']}% de descuento), redondeado al dólar.",
+             form=dict(action=request.path, boton="Crear combo", campos=[h("combo"), campo("nombre", "Nombre (p. ej. «Tienda + Contable»)"),
+                       campo("modulos", "Módulos que incluye", "checks", req=False, opciones=list(MODULOS.items())),
+                       campo("meses", "Período", "select", opciones=[(1, "Mensual"), (12, "Anual")], valor=1),
+                       campo("monto", "Precio USD (vacío = automático)", "number", req=False), campo("usuarios", "Usuarios", "number", valor=5),
+                       campo("empresas", "Empresas", "number", valor=2), campo("equipos", "Equipos", "number", valor=5)])),
+        dict(titulo="Precio mensual por módulo (base del cálculo de combos)", tabla=dict(cols=["Módulo", "USD / mes", "USD / año (sugerido)"], num=[1, 2], filas=[
+                 dict(cells=[MODULOS[m], pm.get(m, "—"), f"{float(pm[m]) * 12 * (100 - float(cmb['descuento_anual_pct'])) / 100:,.0f}" if m in pm else "—"]) for m in MODULOS])),
+        dict(titulo="Cambiar precio de un módulo", form=dict(action=request.path, boton="Guardar", campos=[h("precio_modulo"), campo("modulo", "Módulo", "select", opciones=list(MODULOS.items())),
+                                                                                                           campo("monto", "USD por mes", "number")]))])
 
 
 @ruta("/plataforma/base-datos", "plataforma", ("GET", "POST"))
@@ -430,7 +532,7 @@ def maestro_factura_ejemplo():
          "estado": "Emitida", "cliente_nombre": "Cliente de ejemplo, C.A.", "cliente_rif": "J-12345678-9", "cliente_direccion": "Av. Principal, Caracas",
          "orden_ref": "EJEMPLO", "moneda": "USDT", "tasa_bcv": str(tasa), "forma_pago": "USDT por Binance", "exento": "0", "base": str(base),
          "iva": str(total - base), "iva_pct": str(iva_pct), "total": str(total), "total_divisa": "25.00", "hash": "0" * 64,
-         "lineas": [{"descripcion": "Licencia de uso ERP — plan Cash — Facturación, 1 mes(es)", "cantidad": "1", "precio": str((Decimal(25) / (1 + iva_pct / 100)).quantize(Decimal("0.01"))),
+         "lineas": [{"descripcion": "Licencia de uso Contax — plan Cash — Facturación, 1 mes(es)", "cantidad": "1", "precio": str((Decimal(25) / (1 + iva_pct / 100)).quantize(Decimal("0.01"))),
                      "alicuota": "G", "base_bs": str(base), "iva_bs": str(total - base)}],
          "emisor": {k: str(c.get(k) or f"({k.replace('_', ' ')})") for k in ("razon_social", "rif", "domicilio", "telefono", "imprenta_razon_social", "imprenta_rif",
                                                                           "imprenta_providencia", "fecha_asignacion", "control_prefijo")}

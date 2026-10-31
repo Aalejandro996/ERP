@@ -20,7 +20,7 @@ from datetime import date
 sys.path.insert(0, ".")
 REFERENCIA = [("G", "16"), ("R", "8"), ("A", "15"), ("IGTF", "3")]
 MIGRACIONES = ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql",
-               "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql")
+               "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql")
 SOLO_INSERCION = ("asientos", "movimientos", "audit_log", "movimientos_inventario", "lineas_documento_venta", "pagos_documento_venta")
 
 
@@ -93,7 +93,7 @@ def preparar_rol(db, rol):
     for (tabla,) in db.session.execute(t("SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE 'lic\\_%'")):
         db.session.execute(t(f'REVOKE ALL ON "{tabla}" FROM {rol}'))
     db.session.execute(t(f"GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO {rol}"))
-    db.session.execute(t(f"GRANT EXECUTE ON FUNCTION maestro_resumen_organizaciones(), maestro_cadenas_bitacora() TO {rol}"))
+    db.session.execute(t(f"GRANT EXECUTE ON FUNCTION maestro_resumen_organizaciones(), maestro_cadenas_bitacora(), whatsapp_destino(text) TO {rol}"))
     db.session.commit()
     print(f"Rol limitado «{rol}» listo (la app hará SET ROLE {rol}; RLS aplica).")
 

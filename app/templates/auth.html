@@ -9,7 +9,7 @@
   <div><h1>{{ config.APP_LEMA }}</h1>
   <p>Contabilidad VEN-NIF, facturación según la Providencia SNAT/2011/00071, inventario y auditoría en una plataforma segura.</p>
   <ul class="auth-lista"><li>Verificación en dos pasos obligatoria</li><li>Datos aislados por cliente a nivel de base de datos</li><li>Bitácora inalterable de cada operación</li></ul></div>
-  <span class="peq">© {{ config.APP_NOMBRE }} · un producto de Gigadevs Corp</span></div>
+  <span class="peq">© {{ config.APP_NOMBRE }}® · una marca registrada de Gigadevs Corp</span></div>
 <div class="auth-caja"><div class="auth-form">
 {% for m in get_flashed_messages() %}<div class="msg" role="alert">{{ m }}</div>{% endfor %}
 {% set csrf %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endset %}

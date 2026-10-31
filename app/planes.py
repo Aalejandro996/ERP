@@ -10,14 +10,17 @@ MODULOS = {
 }
 
 PLANES = {
-    "ERP_CONTABLE": {"nombre": "ERP Contable", "modulos": frozenset({"contabilidad", "administrativo", "auditoria"})},
+    "ERP_CONTABLE": {"nombre": "Contax Contable", "modulos": frozenset({"contabilidad", "administrativo", "auditoria"})},
     "CASH": {"nombre": "Cash — Facturación", "modulos": frozenset({"facturacion", "inventario"})},
-    "ERP_ADMIN": {"nombre": "ERP Administrativo", "modulos": frozenset({"administrativo", "inventario"})},
+    "ERP_ADMIN": {"nombre": "Contax Administrativo", "modulos": frozenset({"administrativo", "inventario"})},
     "ALL_IN_ONE": {"nombre": "All in One", "modulos": frozenset(MODULOS)},
     # A medida: el Maestro elige los módulos y viajan FIRMADOS en el token (claim "modulos")
     "PERSONALIZADO": {"nombre": "Personalizado", "modulos": frozenset()},
+    # Prueba gratuita de 72 horas (una por organización): Facturación e Inventario
+    "DEMO": {"nombre": "Demo 72 h — Facturación e Inventario", "modulos": frozenset({"facturacion", "inventario"})},
 }
-PLANES_TIENDA = ("ERP_CONTABLE", "CASH", "ERP_ADMIN", "ALL_IN_ONE")   # los que se venden con precio fijo en la tienda
+PLANES_TIENDA = ("ERP_CONTABLE", "CASH", "ERP_ADMIN", "ALL_IN_ONE")   # los que se venden con precio fijo en la tienda (+ combos)
+DEMO_HORAS = 72
 # Licencias emitidas antes de existir los planes (token sin claim "plan"): conservan lo que el sistema ya ofrecía
 # (todo menos facturación) hasta que el proveedor las reemita con un plan. Nadie pierde funciones al actualizar.
 MODULOS_LEGADO = frozenset({"contabilidad", "administrativo", "auditoria", "inventario"})
@@ -30,6 +33,9 @@ PERMISO_MODULO = {
     "auditoria": "auditoria",
     "inventario": "inventario",
     "facturacion": "facturacion",
+    # Funciones compartidas: basta con que el plan traiga UNO de estos módulos
+    "compras": ("administrativo", "inventario", "facturacion"),      # órdenes de compra y proveedores
+    "whatsapp": ("facturacion", "inventario"),                       # bot de WhatsApp y pedidos
 }
 
 
@@ -51,10 +57,12 @@ def nombre_plan(claims: dict | None) -> str:
     return PLANES[plan]["nombre"] if plan in PLANES else ("Licencia anterior a los planes" if claims and plan is None else "—")
 
 
-def modulo_de_permiso(permiso: str) -> str | None:
+def modulo_de_permiso(permiso: str):
+    """Módulo (str) o módulos alternativos (tupla) que habilitan el permiso; None = núcleo."""
     return PERMISO_MODULO.get(permiso.split(".", 1)[0])
 
 
 def permiso_habilitado(permiso: str, modulos) -> bool:
     m = modulo_de_permiso(permiso)
-    return m is None or m in modulos
+    if m is None: return True
+    return any(x in modulos for x in m) if isinstance(m, tuple) else m in modulos

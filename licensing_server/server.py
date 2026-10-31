@@ -20,7 +20,7 @@ from collections import defaultdict, deque
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from flask import Flask, jsonify, request
-from sqlalchemy import (Column, Float, ForeignKey, Integer, MetaData, Numeric, String, Table, Text, create_engine, func,
+from sqlalchemy import (Column, Float, ForeignKey, Integer, MetaData, Numeric, String, Table, Text, create_engine, func, or_,
                         insert, select, update)
 from sqlalchemy.exc import IntegrityError
 
@@ -30,8 +30,16 @@ VIGENCIA_ORDEN_USDT_S = 24 * 3600    # una orden en USDT espera su pago 24 h
 VIGENCIA_TOKEN_S = 7 * 24 * 3600   # ventana offline máxima: 7 días
 LIMITE_PETICIONES = (20, 60)        # 20 peticiones por 60 s y por IP (endpoints públicos)
 TOLERANCIA_FIRMA_S = 300
-PLANES = ("ERP_CONTABLE", "CASH", "ERP_ADMIN", "ALL_IN_ONE", "PERSONALIZADO")
-PLANES_TIENDA = PLANES[:4]   # PERSONALIZADO se arma por módulos y lo emite el Maestro; no está en el catálogo
+PLANES = ("ERP_CONTABLE", "CASH", "ERP_ADMIN", "ALL_IN_ONE", "PERSONALIZADO", "DEMO")
+PLANES_TIENDA = PLANES[:4]   # PERSONALIZADO se vende como «combo» (lic_combos); DEMO es gratuita y dura 72 h
+DEMO_HORAS = 72
+DEMO_TOPES = dict(max_usuarios=2, max_empresas=1, max_equipos=2)
+# Precios de REFERENCIA (USD) del mercado venezolano de software administrativo en la nube (2026). Se siembran una sola vez
+# y solo donde no hay precio: nunca reemplazan un precio que el Maestro ya fijó. Anual = 10 meses (2 meses de regalo).
+PRECIOS_REFERENCIA = {  # plan: (mensual USD, usuarios, empresas, equipos)
+    "CASH": ("25.00", 3, 1, 3), "ERP_ADMIN": ("23.00", 5, 2, 5), "ERP_CONTABLE": ("45.00", 5, 5, 5), "ALL_IN_ONE": ("69.00", 10, 5, 10)}
+PRECIOS_MODULO_REFERENCIA = {"contabilidad": "25.00", "administrativo": "15.00", "auditoria": "12.00", "inventario": "12.00", "facturacion": "18.00"}
+DESCUENTO_ANUAL_PCT = Decimal("16.67")   # pagar 10 de 12 meses
 MODULOS_VALIDOS = ("contabilidad", "administrativo", "auditoria", "inventario", "facturacion")
 
 
@@ -85,7 +93,19 @@ ordenes = Table(
     Column("referencia_pago", Text), Column("detalle_pago", Text), Column("licencia_id", Integer),
     Column("creada_en", Float, nullable=False), Column("pagada_en", Float), Column("entregada_en", Float), Column("motivo", Text),
     Column("monto_esperado", Numeric(18, 4)), Column("expira_en", Float), Column("instrucciones", Text),
-    Column("cliente_rif", Text), Column("cliente_direccion", Text))
+    Column("cliente_rif", Text), Column("cliente_direccion", Text), Column("combo_id", Integer), Column("modulos", Text))
+# Combos personalizados: el Maestro arma un paquete de módulos con su período (mensual o anual), precio y topes.
+combos = Table(
+    "lic_combos", md,
+    Column("id", Integer, primary_key=True), Column("nombre", Text, nullable=False), Column("modulos", Text, nullable=False),
+    Column("meses", Integer, nullable=False), Column("monto_usd", Numeric(12, 2), nullable=False),
+    Column("max_usuarios", Integer, nullable=False), Column("max_empresas", Integer, nullable=False), Column("max_equipos", Integer, nullable=False),
+    Column("activo", Integer, nullable=False, default=1), Column("creado_en", Float, nullable=False))
+# Precio mensual de cada módulo: con él se calcula el precio sugerido de un combo según lo que incluya
+precios_modulo = Table(
+    "lic_precios_modulo", md,
+    Column("modulo", String(20), primary_key=True), Column("mensual_usd", Numeric(12, 2), nullable=False))
+meta = Table("lic_meta", md, Column("clave", String(40), primary_key=True), Column("valor", Text))
 # Cada transacción de Binance paga como máximo UNA orden (la clave primaria lo impone en la base de datos)
 pagos_usados = Table(
     "lic_pagos_usados", md,
@@ -93,7 +113,7 @@ pagos_usados = Table(
     Column("monto", Numeric(18, 8), nullable=False), Column("registrado_en", Float, nullable=False))
 COLUMNAS_NUEVAS = {"lic_licencias": [("modulos", "TEXT"), ("venta_monto", "NUMERIC(18,4)"), ("venta_moneda", "VARCHAR(4)"), ("venta_tasa", "NUMERIC(18,6)"),
                                      ("venta_forma_pago", "TEXT"), ("cliente_rif", "TEXT"), ("dias", "INTEGER")], "lic_ordenes": [("monto_esperado", "NUMERIC(18,4)"), ("expira_en", "FLOAT"), ("instrucciones", "TEXT"),
-                                   ("cliente_rif", "TEXT"), ("cliente_direccion", "TEXT")]}
+                                   ("cliente_rif", "TEXT"), ("cliente_direccion", "TEXT"), ("combo_id", "INTEGER"), ("modulos", "TEXT")]}
 
 
 def _h(clave: str) -> str:
@@ -150,12 +170,14 @@ class Almacen:
                 existentes = {x["name"] for x in inspect(c).get_columns(tabla)}
                 for nombre, tipo in cols:
                     if nombre not in existentes: c.execute(text(f"ALTER TABLE {tabla} ADD COLUMN {nombre} {tipo}"))
+        self.sembrar_referencia()
 
     # ---------------- licencias ----------------
     def crear_licencia(self, cliente, dias=365, max_usuarios=5, max_empresas=10, max_instancias=1, plan="ERP_CONTABLE",
                        max_equipos=None, correo=None, organizacion_ref=None, origen="maestro", con=None, modulos=None) -> tuple[int, str]:
         if plan not in PLANES: raise ValueError(f"Plan inválido: {plan}")
         modulos = _modulos(modulos) if plan == "PERSONALIZADO" else None
+        if plan == "DEMO": dias = DEMO_HORAS // 24   # la demo dura 72 h, la emita quien la emita
         if correo and not RE_CORREO.match(correo): raise ValueError("Correo inválido")
         clave, ahora = nueva_clave(), self.reloj()
         datos = dict(key_hash=_h(clave), cliente=str(cliente)[:200], correo=correo, organizacion_ref=organizacion_ref, estado="activa", plan=plan,
@@ -244,6 +266,68 @@ class Almacen:
         with self.eng.connect() as c:
             return [{**dict(r._mapping), "monto_usd": str(r.monto_usd)} for r in c.execute(select(precios).order_by(precios.c.plan, precios.c.meses))]
 
+    def sembrar_referencia(self, forzar=False) -> int:
+        """Precios de referencia (mercado VE): solo agrega lo que falta; un precio ya fijado por el Maestro no se toca.
+        Sin `forzar` corre una única vez por base (marca en lic_meta), para no reponer lo que el Maestro haya retirado."""
+        n = 0
+        with self.eng.begin() as c:
+            if not forzar and c.execute(select(meta.c.valor).where(meta.c.clave == "precios_referencia")).first(): return 0
+            for plan, (mensual, us, em, eq) in PRECIOS_REFERENCIA.items():
+                for meses in (1, 12):
+                    if c.execute(select(precios.c.plan).where(precios.c.plan == plan, precios.c.meses == meses)).first(): continue
+                    monto = Decimal(mensual) * (10 if meses == 12 else 1)
+                    c.execute(insert(precios).values(plan=plan, meses=meses, monto_usd=monto, max_usuarios=us, max_empresas=em, max_equipos=eq)); n += 1
+            for mod, v in PRECIOS_MODULO_REFERENCIA.items():
+                if not c.execute(select(precios_modulo.c.modulo).where(precios_modulo.c.modulo == mod)).first():
+                    c.execute(insert(precios_modulo).values(modulo=mod, mensual_usd=Decimal(v))); n += 1
+            if not c.execute(select(meta.c.clave).where(meta.c.clave == "precios_referencia")).first():
+                c.execute(insert(meta).values(clave="precios_referencia", valor=str(self.reloj())))
+        return n
+
+    # ---------------- combos personalizados ----------------
+    def precios_modulos(self) -> dict:
+        with self.eng.connect() as c:
+            return {r.modulo: str(r.mensual_usd) for r in c.execute(select(precios_modulo))}
+
+    def fijar_precio_modulo(self, modulo, mensual_usd):
+        if modulo not in MODULOS_VALIDOS: raise ValueError("Módulo inválido")
+        v = _dec(mensual_usd, "precio del módulo")
+        with self.eng.begin() as c:
+            if c.execute(select(precios_modulo.c.modulo).where(precios_modulo.c.modulo == modulo)).first():
+                c.execute(update(precios_modulo).where(precios_modulo.c.modulo == modulo).values(mensual_usd=v))
+            else:
+                c.execute(insert(precios_modulo).values(modulo=modulo, mensual_usd=v))
+
+    def precio_sugerido(self, modulos, meses) -> Decimal:
+        """Suma mensual de los módulos incluidos × meses; 12 meses o más pagan 10 de cada 12. Se redondea a dólares enteros."""
+        mods, meses = _modulos(modulos).split(","), _entero(meses, "meses", 1, 60)
+        tabla = self.precios_modulos()
+        faltan = [m for m in mods if m not in tabla]
+        if faltan: raise ValueError("Falta el precio mensual de: " + ", ".join(faltan))
+        total = sum((Decimal(tabla[m]) for m in mods), Decimal(0)) * meses
+        if meses >= 12: total = total * (100 - DESCUENTO_ANUAL_PCT) / 100
+        return total.quantize(Decimal("1"), ROUND_HALF_UP).quantize(Decimal("0.01"))
+
+    def crear_combo(self, nombre, modulos, meses, monto_usd=None, max_usuarios=5, max_empresas=2, max_equipos=5) -> int:
+        nombre = str(nombre or "").strip()[:80]
+        if not nombre: raise ValueError("Indique el nombre del combo")
+        mods, meses = _modulos(modulos), _entero(meses, "meses", 1, 60)
+        monto = _dec(monto_usd, "precio") if monto_usd not in (None, "") else self.precio_sugerido(mods, meses)
+        with self.eng.begin() as c:
+            return c.execute(insert(combos).values(nombre=nombre, modulos=mods, meses=meses, monto_usd=monto, max_usuarios=_entero(max_usuarios, "usuarios", 1),
+                                                   max_empresas=_entero(max_empresas, "empresas", 1), max_equipos=_entero(max_equipos, "equipos", 1),
+                                                   activo=1, creado_en=self.reloj()).returning(combos.c.id)).scalar()
+
+    def activar_combo(self, cid, activo: bool):
+        with self.eng.begin() as c:
+            if not c.execute(update(combos).where(combos.c.id == int(cid)).values(activo=1 if activo else 0)).rowcount: raise LookupError("Combo inexistente")
+
+    def combos(self, solo_activos=False):
+        q = select(combos).order_by(combos.c.activo.desc(), combos.c.nombre, combos.c.meses)
+        if solo_activos: q = q.where(combos.c.activo == 1)
+        with self.eng.connect() as c:
+            return [{**dict(r._mapping), "monto_usd": str(r.monto_usd)} for r in c.execute(q)]
+
 
 # ======================================================================================================================
 def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str | None = None, binance=None, correo=None, config=None) -> Flask:
@@ -323,15 +407,17 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         from app import plantilla_correo as pc
         url_erp = cfg.get("url_erp") or ""
         parrafos = [f"Estimado(a) {cliente}:", motivo,
-                    "Para activarla, ingrese al ERP con su usuario Administrador, vaya a Organización → Licencia, pegue la clave "
+                    "Para activarla, ingrese a Contax con su usuario Administrador, vaya a Organización → Licencia, pegue la clave "
                     "en «Activar licencia» y pulse Activar."]
-        filas = [("Plan", plan), ("Vigente hasta", time.strftime("%d/%m/%Y", time.gmtime(vence_en)))]
+        from app.planes import PLANES as NOMBRES
+        plan = NOMBRES[plan]["nombre"] if plan in NOMBRES else plan
+        filas = [("Plan", plan), ("Vigente hasta", time.strftime("%d/%m/%Y %H:%M UTC" if plan.startswith("Demo") else "%d/%m/%Y", time.gmtime(vence_en)))]
         nota = ("Esta clave se envía una sola vez y no se guarda legible en nuestros sistemas. No la comparta: quien la tenga puede "
                 "activarla. Si la pierde, solicite una nueva al soporte de Gigadevs; la anterior quedará anulada.")
-        boton = ("Ingresar al ERP", f"{url_erp}/admin/licencia") if url_erp else None
-        titulo = "Su licencia de ERP"
-        correo(correo_destino, f"Su licencia ERP ({plan})", pc.texto(titulo, parrafos, boton, ("Clave de licencia", clave), filas, nota),
-               html=pc.html(titulo, parrafos, url_erp or "https://erp", "ERP", "Tu empresa en orden. Tu fisco al día.", boton,
+        boton = ("Ingresar a Contax", f"{url_erp}/admin/licencia") if url_erp else None
+        titulo = "Su licencia de Contax"
+        correo(correo_destino, f"Su licencia Contax ({plan})", pc.texto(titulo, parrafos, boton, ("Clave de licencia", clave), filas, nota),
+               html=pc.html(titulo, parrafos, url_erp or "https://contax", "Contax", "Tu empresa en orden. Tu fisco al día.", boton,
                             ("Clave de licencia", clave), filas, nota))
         con.execute(update(licencias).where(licencias.c.id == lic_id).values(clave_enviada_en=reloj()))
         st.log(con, lic_id, "clave_enviada", correo_destino)
@@ -346,7 +432,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
             lid = o.licencia_id
             if lid is None:
                 lid, clave = st.crear_licencia(o.cliente, o.meses * 31, o.max_usuarios, o.max_empresas, 1, o.plan, o.max_equipos, o.correo,
-                                               o.organizacion_ref, "pago", con=con)
+                                               o.organizacion_ref, "pago", con=con, modulos=o.modulos)
                 con.execute(update(ordenes).where(ordenes.c.id == o.id).values(estado="pagada", pagada_en=reloj(), licencia_id=lid,
                                                                                detalle_pago=str(detalle_pago)[:2000]))
                 st.log(con, lid, "licencia_por_pago", f"orden={ref}", ip)
@@ -460,18 +546,83 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         st.fijar_precio(d.get("plan"), d.get("meses"), d.get("monto_usd"), d.get("max_usuarios"), d.get("max_empresas"), d.get("max_equipos"))
         return jsonify(ok=True)
 
+    @app.post("/admin/v1/precios/referencia")
+    def a_sembrar_precios():
+        """Vuelve a cargar los precios de referencia del mercado venezolano SOLO donde falten (no altera los existentes)."""
+        return jsonify(agregados=st.sembrar_referencia(forzar=True))
+
+    @app.get("/admin/v1/combos")
+    def a_combos():
+        return jsonify(combos=st.combos(request.args.get("activos") == "1"), precios_modulo=st.precios_modulos(),
+                       descuento_anual_pct=str(DESCUENTO_ANUAL_PCT))
+
+    @app.post("/admin/v1/combos")
+    def a_crear_combo():
+        d = cuerpo()
+        cid = st.crear_combo(d.get("nombre"), d.get("modulos"), d.get("meses"), d.get("monto_usd"), d.get("max_usuarios", 5), d.get("max_empresas", 2), d.get("max_equipos", 5))
+        return jsonify(id=cid), 201
+
+    @app.patch("/admin/v1/combos/<int:cid>")
+    def a_activar_combo(cid):
+        st.activar_combo(cid, bool(cuerpo().get("activo")))
+        return jsonify(ok=True)
+
+    @app.get("/admin/v1/combos/sugerido")
+    def a_precio_sugerido():
+        return jsonify(monto_usd=str(st.precio_sugerido(request.args.get("modulos", ""), request.args.get("meses", 1))))
+
+    @app.put("/admin/v1/precios-modulo")
+    def a_precio_modulo():
+        d = cuerpo()
+        st.fijar_precio_modulo(d.get("modulo"), d.get("mensual_usd"))
+        return jsonify(ok=True)
+
+    @app.post("/admin/v1/demo")
+    def a_demo():
+        """Demo gratuita de 72 h (Facturación + Inventario). UNA por organización, por RIF y por correo."""
+        d = cuerpo()
+        org = str(d.get("organizacion_ref") or "")
+        if not re.fullmatch(r"[0-9]{1,12}", org): raise ValueError("Organización inválida")
+        correo_d = str(d.get("correo") or "").strip().lower()
+        if not RE_CORREO.match(correo_d): raise ValueError("Correo inválido")
+        rif = str(d.get("cliente_rif") or "").strip().upper()
+        if rif and not re.fullmatch(r"[VEJPGC]-\d{8}-\d", rif): raise ValueError("RIF inválido")
+        with st.eng.begin() as con:
+            mismos = [licencias.c.organizacion_ref == org, licencias.c.correo == correo_d] + ([licencias.c.cliente_rif == rif] if rif else [])
+            previa = select(licencias.c.id).where(licencias.c.plan == "DEMO", or_(*mismos))
+            if con.execute(previa).first(): raise ValueError("Su organización ya utilizó su demo de 72 horas. Compre una licencia para continuar.")
+            lid, clave = st.crear_licencia(d.get("cliente") or "Cliente", 3, DEMO_TOPES["max_usuarios"], DEMO_TOPES["max_empresas"], 1, "DEMO",
+                                           DEMO_TOPES["max_equipos"], correo_d, org, "demo", con=con)
+            if rif: con.execute(update(licencias).where(licencias.c.id == lid).values(cliente_rif=rif))
+            st.log(con, lid, "demo_emitida", d.get("autor", ""))
+            lic = con.execute(select(licencias).where(licencias.c.id == lid)).first()
+            enviar_clave(con, lid, clave, correo_d, lic.cliente, "Demo 72 h — Facturación e Inventario", lic.vence_en,
+                         "Su demo gratuita de 72 horas (módulos de Facturación e Inventario) está lista. Vence exactamente 72 horas después de emitida:")
+        return jsonify(id=lid, vence_en=lic.vence_en), 201
+
     @app.post("/admin/v1/ordenes")
     def a_crear_orden():
         """El ERP pide una orden en nombre del Administrador de un cliente. El MONTO lo fija el catálogo del servidor."""
         d = cuerpo()
-        plan, meses, moneda = d.get("plan"), _entero(d.get("meses"), "meses", 1, 60), d.get("moneda")
-        if plan not in PLANES_TIENDA or moneda not in ("USDT", "VES"): raise ValueError("Plan o moneda inválidos")
+        moneda, combo = d.get("moneda"), None
+        if d.get("combo_id") not in (None, ""):   # combo personalizado: plan PERSONALIZADO con los módulos del combo
+            with st.eng.connect() as c:
+                combo = c.execute(select(combos).where(combos.c.id == _entero(d["combo_id"], "combo", 1, 10**9), combos.c.activo == 1)).first()
+            if combo is None: raise ValueError("Ese combo no está a la venta")
+            plan, meses = "PERSONALIZADO", combo.meses
+        else:
+            plan, meses = d.get("plan"), _entero(d.get("meses"), "meses", 1, 60)
+            if plan not in PLANES_TIENDA: raise ValueError("Plan o moneda inválidos")
+        if moneda not in ("USDT", "VES"): raise ValueError("Plan o moneda inválidos")
         if not RE_CORREO.match(str(d.get("correo", ""))): raise ValueError("Correo inválido")
         org = str(d.get("organizacion_ref") or "")[:40]
         if not re.fullmatch(r"[0-9]{1,12}", org): raise ValueError("Organización inválida")
-        with st.eng.connect() as c:
-            p = c.execute(select(precios).where(precios.c.plan == plan, precios.c.meses == meses)).first()
-        if p is None: raise ValueError("Ese plan/período no está a la venta")
+        if combo is not None:
+            p = combo
+        else:
+            with st.eng.connect() as c:
+                p = c.execute(select(precios).where(precios.c.plan == plan, precios.c.meses == meses)).first()
+            if p is None: raise ValueError("Ese plan/período no está a la venta")
         tasa = _tasa(d.get("tasa_bcv")) if moneda == "VES" else (_tasa(d["tasa_bcv"]) if d.get("tasa_bcv") else None)
         cliente_rif = str(d.get("cliente_rif") or "").strip().upper()[:15]
         if cliente_rif and not re.fullmatch(r"[VEJPGC]-\d{8}-\d", cliente_rif): raise ValueError("RIF del cliente inválido")
@@ -480,7 +631,8 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         fila = dict(ref=ref, organizacion_ref=org, cliente=str(d.get("cliente") or "Cliente")[:200], correo=d["correo"], plan=plan, meses=meses,
                     max_usuarios=p.max_usuarios, max_empresas=p.max_empresas, max_equipos=p.max_equipos, moneda=moneda, monto=monto,
                     monto_usd=p.monto_usd, tasa_bcv=tasa, proveedor="binance" if moneda == "USDT" else "pago_movil", estado="pendiente", creada_en=reloj(),
-                    cliente_rif=cliente_rif or None, cliente_direccion=str(d.get("cliente_direccion") or "")[:300] or None)
+                    cliente_rif=cliente_rif or None, cliente_direccion=str(d.get("cliente_direccion") or "")[:300] or None,
+                    combo_id=combo.id if combo is not None else None, modulos=combo.modulos if combo is not None else None)
         resp = {"ref": ref, "monto": str(monto), "moneda": moneda}
         if moneda == "USDT":
             if binance is None or not cfg.get("binance_pay_id"): raise ValueError("El cobro en USDT no está habilitado")
@@ -622,7 +774,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         if not f.get("cliente_correo"): raise ValueError("La factura no tiene correo del cliente")
         intro = intro or (f"Estimado(a) {f['cliente_nombre']}: adjuntamos la factura de su compra. Su clave de licencia llegó en un correo aparte."
                           if f.get("orden_ref") else f"Estimado(a) {f['cliente_nombre']}: le enviamos su factura.")
-        correo(f["cliente_correo"], f"Factura N° {f['numero_completo']} · ERP", fx_texto(f, intro), html=pc.factura_html(f, cfg.get("url_erp") or "", intro))
+        correo(f["cliente_correo"], f"Factura N° {f['numero_completo']} · Contax", fx_texto(f, intro), html=pc.factura_html(f, cfg.get("url_erp") or "", intro))
         with st.eng.begin() as c:
             c.execute(update(fx.facturas).where(fx.facturas.c.id == fid).values(correo_enviado_en=reloj()))
         return f
@@ -641,7 +793,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
             usdt = o.moneda == "USDT"
             f = fx.emitir(con, cliente_nombre=o.cliente, cliente_rif=o.cliente_rif, cliente_direccion=o.cliente_direccion, cliente_correo=o.correo,
                           moneda="USDT" if usdt else "VES", tasa_bcv=o.tasa_bcv, monto_con_iva=(o.monto_esperado or o.monto) if usdt else o.monto,
-                          concepto=_concepto(o.plan, None, meses=o.meses), forma_pago="USDT por Binance" if usdt else "Pago móvil (Bs)",
+                          concepto=_concepto(o.plan, o.modulos, meses=o.meses), forma_pago="USDT por Binance" if usdt else "Pago móvil (Bs)",
                           orden_ref=ref, licencia_id=o.licencia_id, reloj=reloj)
             st.log(con, o.licencia_id, "factura_emitida", f"orden={ref} factura={f['serie']}{f['numero']} control={f['numero_control']}")
         enviar_factura(f["id"])
@@ -649,10 +801,11 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
 
     def _concepto(plan, modulos, meses=None, dias=None):
         from app.planes import MODULOS
-        nombre = {"ERP_CONTABLE": "ERP Contable", "CASH": "Cash — Facturación", "ERP_ADMIN": "ERP Administrativo", "ALL_IN_ONE": "All in One"}.get(plan, plan or "ERP")
+        nombre = {"ERP_CONTABLE": "Contax Contable", "CASH": "Cash — Facturación", "ERP_ADMIN": "Contax Administrativo", "ALL_IN_ONE": "All in One",
+                  "DEMO": "Demo 72 h"}.get(plan, plan or "Contax")
         if plan == "PERSONALIZADO": nombre = "Personalizado (" + ", ".join(MODULOS.get(m, m) for m in (modulos or "").split(",") if m) + ")"
         tiempo = f"{meses} mes(es)" if meses else (f"{dias} días" if dias else "")
-        return f"Licencia de uso ERP — plan {nombre}" + (f", {tiempo}" if tiempo else "")
+        return f"Licencia de uso Contax — plan {nombre}" + (f", {tiempo}" if tiempo else "")
 
     def facturar_licencia(lid):
         """Factura de una licencia emitida por el Maestro con venta registrada (idempotente)."""
@@ -677,7 +830,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
             qo = select(ordenes).where(ordenes.c.estado == "entregada")
             ql = select(licencias).where(licencias.c.venta_monto.is_not(None), licencias.c.origen == "maestro")
             if org: qo, ql = qo.where(ordenes.c.organizacion_ref == str(org)), ql.where(licencias.c.organizacion_ref == str(org))
-            out = [{"tipo": "orden", "ref": o.ref, "organizacion_ref": o.organizacion_ref, "cliente": o.cliente, "concepto": _concepto(o.plan, None, meses=o.meses),
+            out = [{"tipo": "orden", "ref": o.ref, "organizacion_ref": o.organizacion_ref, "cliente": o.cliente, "concepto": _concepto(o.plan, o.modulos, meses=o.meses),
                     "moneda": "USDT" if o.moneda == "USDT" else "VES", "monto": str(o.monto_esperado or o.monto), "fecha": o.entregada_en}
                    for o in c.execute(qo) if o.ref not in facturadas_o]
             out += [{"tipo": "licencia", "ref": str(l.id), "organizacion_ref": l.organizacion_ref, "cliente": l.cliente, "concepto": _concepto(l.plan, l.modulos, dias=l.dias),
