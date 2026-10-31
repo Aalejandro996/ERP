@@ -7,12 +7,39 @@
 {% elif c.t == 'textarea' %}<textarea name="{{ c.n }}" rows="{{ c.filas or 3 }}" maxlength="{{ c.max or 4000 }}" {{ 'required' if c.req }} {% if c.ph %}placeholder="{{ c.ph }}"{% endif %}>{{ c.valor if c.valor is not none else '' }}</textarea>
 {% elif c.t == 'file' %}<input name="{{ c.n }}" type="file" {{ 'required' if c.req }} accept="{{ c.accept or '' }}">
 {% else %}<input name="{{ c.n }}" type="{{ c.t }}" {{ 'required' if c.req }} {% if c.t == 'number' %}step="any"{% endif %} value="{{ c.valor if c.valor is not none else '' }}" maxlength="500" autocomplete="{{ 'new-password' if c.t == 'password' else 'off' }}">{% endif %}</label>{% endif %}{% endfor %}</div>{% endmacro %}
+{% macro px_campo(c) %}{% if c.t == 'hidden' %}<input type="hidden" name="{{ c.n }}" value="{{ c.valor if c.valor is not none else '' }}">
+{% elif c.t in ('tarjetas', 'checks') %}<div class="px-ancho"><div class="px-etq">{{ c.l }}</div><div class="px-cards">{% for o in c.opciones %}
+  <label class="px-card"><input type="{{ 'radio' if c.t == 'tarjetas' else 'checkbox' }}" name="{{ c.n }}" value="{{ o[0] }}" data-titulo="{{ o[1] }}" {{ 'required' if c.req and c.t == 'tarjetas' }}
+    {{ 'checked' if (c.valor is defined and c.valor is not none and (o[0]|string == c.valor|string or (c.valor is iterable and c.valor is not string and o[0] in c.valor))) }}>
+    <span class="px-card-t">{{ o[1] }}</span>{% if o|length > 2 and o[2] %}<span class="peq">{{ o[2] }}</span>{% endif %}{% if o|length > 3 and o[3] %}<span class="px-precio">{{ o[3] }}</span>{% endif %}</label>{% endfor %}</div></div>
+{% elif c.t == 'segmento' %}<div class="px-ancho"><div class="px-etq">{{ c.l }}</div><div class="px-segmento" role="radiogroup">{% for o in c.opciones %}
+  <label><input type="radio" name="{{ c.n }}" value="{{ o[0] }}" data-titulo="{{ o[1] }}" {{ 'checked' if (c.valor is defined and c.valor is not none and o[0]|string == c.valor|string) or ((c.valor is not defined or c.valor is none) and loop.first) }}><span><b>{{ o[1] }}</b>{% if o|length > 2 %}<small>{{ o[2] }}</small>{% endif %}</span></label>{% endfor %}</div></div>
+{% elif c.t == 'textarea' %}<label class="px-ancho">{{ c.l }}<textarea name="{{ c.n }}" rows="{{ c.filas or 3 }}" maxlength="{{ c.max or 4000 }}" {{ 'required' if c.req }} {% if c.ph %}placeholder="{{ c.ph }}"{% endif %}>{{ c.valor if c.valor is not none else '' }}</textarea></label>
+{% elif c.t == 'select' %}<label>{{ c.l }}<select name="{{ c.n }}" {{ 'required' if c.req }}>{% for o in c.opciones %}{{ opcion(o, c.valor) }}{% endfor %}</select></label>
+{% elif c.t == 'file' %}<label>{{ c.l }}<input name="{{ c.n }}" type="file" {{ 'required' if c.req }} accept="{{ c.accept or '' }}"></label>
+{% else %}<label>{{ c.l }}<input name="{{ c.n }}" type="{{ c.t }}" {{ 'required' if c.req }} {% if c.t == 'number' %}step="any" min="0"{% endif %} value="{{ c.valor if c.valor is not none else '' }}" maxlength="500" {% if c.ph %}placeholder="{{ c.ph }}"{% endif %} autocomplete="off"></label>{% endif %}{% endmacro %}
+{% macro asistente(a) %}<form method="post" action="{{ a.action }}" class="px px-asistente" {% if a.archivo %}enctype="multipart/form-data"{% endif %} {% if a.confirmar %}data-confirmar="{{ a.confirmar }}"{% endif %} {% if a.calculo %}data-calculo='{{ a.calculo|tojson }}'{% endif %}>
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% for c in a.ocultos or [] %}<input type="hidden" name="{{ c[0] }}" value="{{ c[1] }}">{% endfor %}
+<div class="px-cuerpo">{% if a.titulo %}<h2 class="px-titulo">{{ a.titulo }}</h2>{% if a.nota %}<p class="peq nota">{{ a.nota }}</p>{% endif %}{% endif %}
+{% for paso in a.pasos %}<section><h2><span class="px-n">{{ loop.index }}</span> {{ paso.titulo }}{% if paso.sub %} <small class="peq">{{ paso.sub }}</small>{% endif %}</h2>
+  {% if paso.nota %}<p class="peq nota">{{ paso.nota }}</p>{% endif %}
+  {% set simples = paso.campos|rejectattr('t', 'in', ['tarjetas', 'checks', 'segmento', 'textarea', 'hidden'])|list %}
+  {% for c in paso.campos if c.t in ('segmento', 'tarjetas', 'checks', 'hidden') %}{{ px_campo(c) }}{% endfor %}
+  {% if simples %}<div class="px-grid2">{% for c in simples %}{{ px_campo(c) }}{% endfor %}</div>{% endif %}
+  {% for c in paso.campos if c.t == 'textarea' %}{{ px_campo(c) }}{% endfor %}</section>{% endfor %}</div>
+<aside class="px-resumen"><div class="px-resumen-caja"><div class="px-resumen-t">{{ (a.resumen or {}).titulo or 'Resumen' }}</div>
+  {% for k, campo_eco in (a.resumen or {}).eco or [] %}<div class="px-fila"><span>{{ k }}</span><b data-eco="{{ campo_eco }}">—</b></div>{% endfor %}
+  {% for k, v in (a.resumen or {}).filas or [] %}<div class="px-fila"><span>{{ k }}</span><b>{{ v }}</b></div>{% endfor %}
+  {% if a.calculo %}<div class="px-fila px-total"><span>{{ a.calculo.etiqueta }}</span><b data-calc>—</b></div>{% endif %}
+  {% if (a.resumen or {}).nota %}<p class="peq">{{ a.resumen.nota }}</p>{% endif %}
+  <button class="px-boton">{{ a.boton }}</button></div></aside></form>{% endmacro %}
 {% block contenido %}
 <div class="cabecera"><div>{% if empresa %}<div class="ruta">{{ empresa.razon_social }} · RIF {{ empresa.rif }}</div>{% endif %}<h1>{{ titulo }}</h1></div>
 {% if acciones %}<div class="acciones">{% for a in acciones %}<a class="btn {{ '' if a.primaria else 'sec' }}" href="{{ a.url }}">{{ a.texto }}</a>{% endfor %}</div>{% endif %}</div>
 {% if pestanas %}<nav class="pestanas" aria-label="Secciones del módulo">{% for t in pestanas %}<a href="{{ t.url }}" class="{{ 'activo' if t.activo }}" {% if t.activo %}aria-current="page"{% endif %}>{{ t.texto }}</a>{% endfor %}</nav>{% endif %}
 {% for s in secciones %}
 {% if s.pasos %}<ol class="pasos">{% for t, est in s.pasos %}<li class="{{ est }}">{{ t }}</li>{% endfor %}</ol>
+{% elif s.asistente %}{{ asistente(s.asistente) }}
 {% elif s.logo %}<p><img class="logo-empresa" src="{{ s.logo }}" alt="Logo de la empresa"></p>
 {% elif s.kpis %}<div class="kpis">{% for k, v in s.kpis %}<div class="kpi"><span>{{ k }}</span><b>{{ v }}</b></div>{% endfor %}</div>
 {% else %}{% set plegar = s.form and not s.tabla and not s.pares and s.titulo and secciones|length > 2 and not s.abierto %}

@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block contenido %}
+<div class="cabecera"><div><div class="ruta">{{ empresa.razon_social }} · RIF {{ empresa.rif }}</div><h1>Nuevo presupuesto</h1></div>
+<div class="acciones"><a class="btn sec" href="{{ url_for('web.presupuestos', eid=empresa.id) }}">← Presupuestos</a></div></div>
+{% if pestanas %}<nav class="pestanas">{% for t in pestanas %}<a href="{{ t.url }}" class="{{ 'activo' if t.activo }}">{{ t.texto }}</a>{% endfor %}</nav>{% endif %}
+<script type="application/json" id="datos-presupuesto-cliente">{{ datos_js|safe }}</script>
+<form method="post" action="{{ url_for('web.presupuestos', eid=empresa.id) }}" id="form-pc" class="px">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<div class="px-cuerpo">
+  <section><h2><span class="px-n">1</span> Cliente</h2>
+    <label class="px-ancho">Cliente registrado<select name="cliente" id="pc-cliente"><option value="">— Cliente nuevo: escriba sus datos —</option>
+      {% for c in clientes %}<option value="{{ c.id }}">{{ c.razon_social }} ({{ c.rif }})</option>{% endfor %}</select></label>
+    <div class="px-grid2">
+      <label>Nombre o razón social<input name="nombre" id="pc-nombre" maxlength="200"></label>
+      <label>RIF / C.I.<input name="rif" id="pc-rif" maxlength="15" placeholder="J-12345678-9"></label>
+      <label>WhatsApp<input name="telefono" id="pc-telefono" maxlength="40" placeholder="58412…"></label>
+      <label>Correo<input name="email" id="pc-email" type="email" maxlength="200"></label>
+      <label>Dirección<input name="direccion" id="pc-direccion" maxlength="300"></label>
+    </div></section>
+
+  <section><h2><span class="px-n">2</span> Productos y servicios <small class="peq">precio sin IVA · vacío = el del inventario</small></h2>
+    <div class="tabla-wrap"><table class="px-tabla"><thead><tr><th>Producto o descripción</th><th class="n">Cant.</th><th class="n">Precio Bs</th><th>IVA</th><th class="n">Monto</th></tr></thead><tbody>
+    {% for i in range(1, n_lineas + 1) %}<tr data-linea="{{ i }}"><td><select name="l{{ i }}_cod" class="pc-prod"><option value="">— Del inventario —</option>
+        {% for p in productos %}<option value="{{ p.codigo }}">{{ p.codigo }} · {{ p.nombre }}</option>{% endfor %}</select>
+      <input name="l{{ i }}_desc" class="px-det" maxlength="300" placeholder="…o descripción libre"></td>
+      <td><input name="l{{ i }}_cant" type="number" step="any" min="0" class="n" value="{{ '1' if i == 1 }}"></td>
+      <td><input name="l{{ i }}_precio" type="number" step="any" min="0" class="n"></td>
+      <td class="pc-alic">—</td><td class="n px-monto">—</td></tr>{% endfor %}
+    </tbody></table></div></section>
+
+  <section><h2><span class="px-n">3</span> Condiciones</h2>
+    <div class="px-grid2"><label>Validez (días)<input name="validez" type="number" min="1" max="90" value="15"></label></div>
+    <label class="px-ancho">Observaciones<textarea name="nota" rows="3" maxlength="1000" placeholder="Tiempo de entrega, forma de pago, garantía…"></textarea></label></section>
+</div>
+<aside class="px-resumen"><div class="px-resumen-caja">
+  <div class="px-resumen-t">Resumen</div>
+  <div class="px-fila"><span>Cliente</span><b data-r="cliente">—</b></div>
+  <div class="px-fila"><span>Exento</span><b data-r="exento">Bs 0,00</b></div>
+  <div class="px-fila"><span>Base imponible</span><b data-r="base">Bs 0,00</b></div>
+  <div class="px-fila"><span>IVA</span><b data-r="iva">Bs 0,00</b></div>
+  <div class="px-fila px-total"><span>Total</span><b data-r="total">Bs 0,00</b></div>
+  <p class="peq">Después de crearlo lo envía por WhatsApp o correo, y cuando el cliente lo acepte lo factura con un clic.</p>
+  <button class="px-boton">Crear presupuesto</button></div></aside>
+</form>
+{% endblock %}

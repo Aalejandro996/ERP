@@ -286,3 +286,11 @@ details.seccion-plegable>section{border:0;box-shadow:none;margin:0;padding-top:0
 .px-total{font-size:1.25rem;border-bottom:0}.px-total b{color:var(--accent)}
 .px-resumen .peq{color:#a3a3a3;margin:10px 0 14px}
 .px-boton{width:100%;padding:14px;border:0;border-radius:12px;background:var(--accent);color:var(--accent-ink);font-weight:800;font-size:1rem;cursor:pointer}
+/* ---------- asistentes por pasos (mismo diseño del nuevo presupuesto) ---------- */
+.px-asistente{margin-bottom:22px}
+.px-titulo{font-size:1.25rem;margin:0 0 4px}
+.px-etq{font-size:.85rem;color:var(--muted);font-weight:600;margin:10px 0 8px}
+.px-card input[type=radio]{border-radius:50%}
+.px-card:has(input:checked) .px-card-t{color:var(--ink)}
+.px-segmento{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.px-resumen .px-fila b{text-align:right;max-width:60%;overflow-wrap:anywhere}

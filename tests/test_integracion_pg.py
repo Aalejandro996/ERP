@@ -690,6 +690,8 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     r = a.post(pr_url, data={"accion": "facturar", "serie_id": str(sid), "dias": "5"}, follow_redirects=True)
     assert "Factura N° B00000003" in r.get_data(as_text=True), r.get_data(as_text=True)[-800:]
     assert uno("SELECT estado FROM presupuestos_venta WHERE empresa_id=:e AND numero=1", e=eid) == "Facturado"
+    nuevo_pc = a.get(f"/e/{eid}/presupuestos/nuevo").get_data(as_text=True)
+    assert "Productos y servicios" in nuevo_pc and 'id="datos-presupuesto-cliente"' in nuevo_pc and "Comercial Beta CA" in nuevo_pc
 
     # --- Maestro: cliente que no se registró en 72 h → reenviar invitación o eliminarlo
     from app import totp
@@ -735,6 +737,9 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
 
     # --- Nuevo presupuesto (formulario por secciones), contrato desde el presupuesto aceptado y firma electrónica del cliente
     nuevo = root.get("/plataforma/presupuestos/nuevo").get_data(as_text=True)
+    for ruta_m, texto in (("/plataforma", "Nuevo cliente"), ("/plataforma/licencias", "Emitir licencia"), ("/plataforma/pagos", "Nuevo combo personalizado")):
+        t = root.get(ruta_m).get_data(as_text=True)
+        assert 'class="px px-asistente"' in t and texto in t, ruta_m
     assert "Del catálogo" in nuevo and 'id="datos-presupuesto"' in nuevo and "plan:ALL_IN_ONE" in nuevo
     px_url = r.headers["Location"]
     root.post(px_url, data={"accion": "Aceptado"})
