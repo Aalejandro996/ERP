@@ -406,3 +406,18 @@ details.seccion-plegable>section{border:0;box-shadow:none;margin:0;padding-top:0
 .lp-chat{bottom:0;right:-6px}
 @media (max-width:960px){.lp-hero-vis{min-height:0}}
 .lp-periodo{position:relative}.lp .lp-periodo>input{width:1px;height:1px;left:0;top:0;margin:0}
+
+/* ---------------------------------------------------------------- páginas de error (independientes del menú) */
+.err{margin:0;min-height:100vh;display:flex;flex-direction:column;background:radial-gradient(1200px 600px at 80% -10%,rgba(135,230,75,.18),transparent 60%),#191919;color:#fff;font-family:Inter,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
+.err-barra{padding:22px 28px}.err .lp-marca{color:#fff}
+.err-caja{flex:1;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;max-width:680px;width:100%;margin:0 auto;padding:24px 28px 48px;box-sizing:border-box;position:relative}
+.err-codigo{position:absolute;right:20px;top:50%;transform:translateY(-55%);font-size:clamp(7rem,22vw,13rem);font-weight:900;letter-spacing:-.06em;line-height:1;color:transparent;-webkit-text-stroke:2px rgba(135,230,75,.28);pointer-events:none;z-index:0}
+.err-caja>*:not(.err-codigo){position:relative;z-index:1}
+.err-chip{display:inline-block;padding:5px 12px;border-radius:999px;background:rgba(135,230,75,.15);color:#87e64b;font-weight:700;font-size:.8rem;letter-spacing:.04em;text-transform:uppercase}
+.err h1,.err .err-caja h1{color:#fff;font-size:clamp(1.9rem,5vw,2.8rem);margin:14px 0 10px;letter-spacing:-.03em;line-height:1.1}
+.err-msg{font-size:1.1rem;color:#e6e6e6;margin:0 0 6px;max-width:520px}.err-consejo{color:#a9a9a9;margin:0 0 18px;max-width:520px}
+.err-ref{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:10px 14px;color:#cfcfcf;margin:0 0 18px}
+.err .err-ref code{background:transparent;padding:0;color:#87e64b;font-weight:700;letter-spacing:.08em}
+.err-acc{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}.err-acc .lp-btn-linea{color:#fff;border-color:rgba(255,255,255,.35)}
+.err-pie{padding:18px 28px;color:#8a8a8a;font-size:.85rem;border-top:1px solid rgba(255,255,255,.08)}.err-pie a{color:#bdbdbd}
+@media (max-width:600px){.err-codigo{top:auto;bottom:10px;transform:none;opacity:.6}}
