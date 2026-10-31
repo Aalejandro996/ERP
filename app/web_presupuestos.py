@@ -145,21 +145,26 @@ def presupuestos(eid):
             dict(titulo="Presupuestos", tabla=dict(cols=["N°", "Fecha", "Cliente", "Total Bs", "Válido hasta", "Origen", "Estado"], num=[3], filas=[
                 dict(cells=[p.numero, p.fecha, p.cliente_nombre, p.total, p.valido_hasta, "WhatsApp" if p.origen == "whatsapp" else "Manual", p.estado],
                      url=url_for("web.presupuesto_ver", eid=eid, pid=p.id), clase="anulado" if p.estado in ("Anulado", "Rechazado") else "") for p in ps]))]
-    if tiene_permiso(g.usuario, "presupuestos.emitir"):
-        clientes = [("", "— Escribir los datos —")] + [(c.id, f"{c.razon_social} ({c.rif})") for c in db.session.execute(
-            select(ClienteFact).where(ClienteFact.empresa_id == eid).order_by(ClienteFact.razon_social)).scalars()]
-        prods = [("", "—")] + [(p.codigo, f"{p.codigo} {p.nombre} · Bs {p.precio_venta}") for p in db.session.execute(
-            select(Producto).where(Producto.empresa_id == eid).order_by(Producto.codigo)).scalars()]
-        lineas = sum([[campo(f"l{i}_cod", f"Producto {i}", "select", req=False, opciones=prods), campo(f"l{i}_desc", "o descripción libre", req=False),
-                       campo(f"l{i}_cant", "Cant.", "number", req=False), campo(f"l{i}_precio", "Precio sin IVA (vacío = el del inventario)", "number", req=False)]
-                      for i in range(1, N_LINEAS + 1)], [])
-        secs.append(dict(titulo="Nuevo presupuesto", nota="También lo pueden pedir sus clientes por WhatsApp escribiendo «presupuesto» (Bot de WhatsApp → modo automático o manual).",
-                         form=dict(action=request.path, boton="Crear presupuesto", campos=[
-                             campo("cliente", "Cliente", "select", req=False, opciones=clientes), campo("nombre", "Nombre (si lo escribe)", req=False),
-                             campo("rif", "RIF/C.I.", req=False), campo("direccion", "Dirección", req=False), campo("telefono", "WhatsApp (58412…)", req=False),
-                             campo("email", "Correo", "email", req=False), campo("validez", "Validez (días)", "number", valor=15),
-                             campo("nota", "Observaciones", "textarea", req=False)] + lineas)))
-    return pagina("Presupuestos", eid, secs)
+    return pagina("Presupuestos", eid, secs, acciones=[dict(url=url_for("web.presupuesto_nuevo", eid=eid), texto="+ Nuevo presupuesto", primaria=True)]
+                  if tiene_permiso(g.usuario, "presupuestos.emitir") else None)
+
+
+@ruta("/e/<int:eid>/presupuestos/nuevo", "presupuestos.emitir")
+def presupuesto_nuevo(eid):
+    """Mismo diseño por pasos del presupuesto de Gigadevs: cliente → productos (precio e IVA del inventario) → condiciones."""
+    import json
+    from flask import render_template
+    from .menu import pestanas
+    from .servicios_fact import alicuotas_vigentes
+    try: al = alicuotas_vigentes(hoy_ve())
+    except ValueError: al = {"G": 16, "R": 8, "A": 15}
+    prods = db.session.execute(select(Producto).where(Producto.empresa_id == eid).order_by(Producto.codigo)).scalars().all()
+    clis = db.session.execute(select(ClienteFact).where(ClienteFact.empresa_id == eid).order_by(ClienteFact.razon_social)).scalars().all()
+    datos = {"productos": {p.codigo: [p.nombre, str(p.precio_venta), p.alicuota_iva] for p in prods}, "alicuotas": {k: str(v) for k, v in al.items()},
+             "clientes": {str(c.id): [c.razon_social, c.rif, c.direccion or "", c.telefono or "", c.email or ""] for c in clis}}
+    datos_js = json.dumps(datos).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    return render_template("presupuesto_cliente.html", titulo="Nuevo presupuesto", empresa=db.session.get(Empresa, eid), productos=prods, clientes=clis,
+                           n_lineas=N_LINEAS, datos_js=datos_js, pestanas=pestanas(eid))
 
 
 @ruta("/e/<int:eid>/presupuestos/<int:pid>", "presupuestos.ver", ("GET", "POST"))

@@ -116,3 +116,78 @@
   });
   form.addEventListener("input", calcular); form.addEventListener("change", calcular); calcular();
 })();
+
+/* Asistentes por pasos: el resumen lateral repite lo elegido; los cálculos (p. ej. precio sugerido de un combo) son orientativos. */
+(function () {
+  "use strict";
+  document.querySelectorAll("form.px-asistente").forEach(function (form) {
+    var calc = form.getAttribute("data-calculo") ? JSON.parse(form.getAttribute("data-calculo")) : null;
+    var num = function (v) { var n = parseFloat(String(v || "").replace(",", ".")); return isFinite(n) ? n : 0; };
+    function valor(nombre) {
+      var els = form.querySelectorAll('[name="' + nombre + '"]');
+      if (!els.length) return "";
+      var e = els[0];
+      if (e.type === "radio" || e.type === "checkbox") {
+        var t = []; els.forEach(function (x) { if (x.checked) t.push(x.getAttribute("data-titulo") || x.value); });
+        return t.join(", ");
+      }
+      if (e.tagName === "SELECT") return e.value ? e.options[e.selectedIndex].text : "";
+      return e.value;
+    }
+    function actualizar() {
+      form.querySelectorAll("[data-eco]").forEach(function (b) { b.textContent = valor(b.getAttribute("data-eco")) || "—"; });
+      if (calc && calc.tipo === "combo") {
+        var meses = num((form.querySelector('[name="meses"]:checked') || {}).value || 1), suma = 0;
+        form.querySelectorAll('[name="modulos"]:checked').forEach(function (m) { suma += num(calc.precios[m.value]); });
+        var total = suma * meses; if (meses >= 12) total = total * (100 - num(calc.descuento)) / 100;
+        var manual = num((form.querySelector('[name="monto"]') || {}).value);
+        var el = form.querySelector("[data-calc]");
+        if (el) el.textContent = "$" + (manual || Math.round(total)).toLocaleString("es-VE", { minimumFractionDigits: 2 }) + (manual ? "" : " (sugerido)");
+      }
+    }
+    form.addEventListener("input", actualizar); form.addEventListener("change", actualizar); actualizar();
+  });
+})();
+
+/* Nuevo presupuesto de la empresa: precio e IVA del inventario y totales en bolívares en vivo. El servidor recalcula todo. */
+(function () {
+  "use strict";
+  var nodo = document.getElementById("datos-presupuesto-cliente");
+  if (!nodo) return;
+  var d = JSON.parse(nodo.textContent), form = document.getElementById("form-pc");
+  var num = function (v) { var n = parseFloat(String(v || "").replace(",", ".")); return isFinite(n) ? n : 0; };
+  var bs = function (n) { return "Bs " + n.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+  var pct = function (a) { return a === "E" ? 0 : (a === "A" ? num(d.alicuotas.G) + num(d.alicuotas.A) : num(d.alicuotas[a])); };
+  var NOM = { G: "General", R: "Reducida", A: "Lujo", E: "Exento" };
+  function calcular() {
+    var exento = 0, base = 0, iva = 0;
+    form.querySelectorAll("tr[data-linea]").forEach(function (f) {
+      var i = f.getAttribute("data-linea"), cod = form.elements["l" + i + "_cod"].value, p = d.productos[cod];
+      var a = p ? p[2] : "G", precio = form.elements["l" + i + "_precio"].value !== "" ? num(form.elements["l" + i + "_precio"].value) : (p ? num(p[1]) : 0);
+      var m = num(form.elements["l" + i + "_cant"].value) * precio;
+      var activa = !!(cod || form.elements["l" + i + "_desc"].value.trim());
+      f.querySelector(".px-monto").textContent = activa && m ? bs(m) : "—";
+      f.querySelector(".pc-alic").textContent = activa ? NOM[a] + (pct(a) ? " " + pct(a) + "%" : "") : "—";
+      if (!activa) return;
+      if (a === "E") exento += m; else { base += m; iva += m * pct(a) / 100; }
+    });
+    var put = function (k, v) { var el = form.querySelector('[data-r="' + k + '"]'); if (el) el.textContent = v; };
+    put("exento", bs(exento)); put("base", bs(base)); put("iva", bs(iva)); put("total", bs(exento + base + iva));
+    put("cliente", form.elements.nombre.value || "—");
+  }
+  form.querySelectorAll(".pc-prod").forEach(function (s) {
+    s.addEventListener("change", function () {
+      var p = d.productos[s.value], i = s.closest("tr").getAttribute("data-linea");
+      if (!p) return;
+      form.elements["l" + i + "_precio"].placeholder = num(p[1]).toFixed(2);
+      if (!num(form.elements["l" + i + "_cant"].value)) form.elements["l" + i + "_cant"].value = 1;
+    });
+  });
+  var sel = document.getElementById("pc-cliente");
+  sel.addEventListener("change", function () {
+    var c = d.clientes[sel.value]; if (!c) return;
+    ["nombre", "rif", "direccion", "telefono", "email"].forEach(function (k, j) { document.getElementById("pc-" + k).value = c[j] || ""; });
+    calcular();
+  });
+  form.addEventListener("input", calcular); form.addEventListener("change", calcular); calcular();
+})();

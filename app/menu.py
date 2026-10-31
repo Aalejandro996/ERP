@@ -14,6 +14,7 @@ MENU = [
         ("web.facturas", "🧾", "Documentos de venta", "facturacion.ver"),
         ("web.factura_nueva", "➕", "Nueva factura", "facturacion.emitir"),
         ("web.presupuestos", "📑", "Presupuestos", "presupuestos.ver"),
+        ("web.presupuesto_nuevo", "➕", "Nuevo presupuesto", "presupuestos.emitir"),
         ("web.libro_ventas", "📗", "Libro de ventas", "facturacion.ver"),
         ("web.clientes_fact", "👥", "Clientes", "facturacion.ver"),
         ("web.series", "🔢", "Series y control", "facturacion.configurar")]),
@@ -61,6 +62,7 @@ PESTANAS = [
     ["web.pedidos", "web.whatsapp_config"],
     ["web.periodos", "web.cuadre"],
     ["web.empresa_datos", "web.migracion"],
+    ["web.presupuestos", "web.presupuesto_nuevo"],
 ]
 _TEXTO = {ep: (ic, tx, pm) for _, items in MENU for ep, ic, tx, pm in items}
 
