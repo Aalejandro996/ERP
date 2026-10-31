@@ -36,7 +36,7 @@ def menu(tipo, empresa) -> str:
                 "1️⃣ Órdenes de compra pendientes\n2️⃣ Enviar oferta o cotización\n3️⃣ Hablar con una persona\n"
                 "Para responder una orden: *CONFIRMAR 12* o *RECHAZAR 12 motivo*.")
     return (f"*{empresa}* · ¿Qué desea hacer?\n"
-            "1️⃣ Ver catálogo\n2️⃣ Ver mi pedido\n3️⃣ Confirmar pedido\n4️⃣ Estado de mis pedidos\n5️⃣ Hablar con una persona\n"
+            "1️⃣ Ver catálogo\n2️⃣ Ver mi pedido\n3️⃣ Confirmar pedido\n4️⃣ Estado de mis pedidos\n5️⃣ Hablar con una persona\n6️⃣ Pedir presupuesto de lo que agregué\n"
             "Para pedir escriba el código y la cantidad, p. ej. *A001 3*. Para quitar: *QUITAR A001*. *VACIAR* borra el pedido.")
 
 
@@ -129,6 +129,15 @@ def responder(texto, tipo, estado, catalogo, empresa, pedidos=(), ordenes=(), bi
         return ["📋 *Sus pedidos*\n" + "\n".join(f"• N° {p[0]} · {p[1]} · Bs {bs(p[2])}" for p in pedidos[:10])], est, ev
     if t == "5":
         ev.append({"atencion": True}); return ["Un miembro del equipo le responderá en breve por este chat."], est, ev
+    if t in ("6", "presupuesto", "cotizar", "cotizacion", "pedir presupuesto"):
+        if not carrito: return ["Para su presupuesto agregue los productos (código y cantidad, p. ej. *" + (next(iter(catalogo)) if catalogo else "A001") + " 3*) y luego escriba *6*."], est, ev
+        lineas = [{"codigo": c, "descripcion": catalogo.get(c, (c,))[0], "cantidad": str(q)} for c, q in carrito.items()]
+        ev.append({"crear_presupuesto": {"lineas": lineas}})
+        return ["📑 Estamos preparando su presupuesto."], {k: v for k, v in est.items() if k != "carrito"}, ev
+    m = re.fullmatch(r"(?:acepto|aceptar|aprobado)\s*(?:presupuesto)?\s*#?\s*(\d{1,9})", t)
+    if m:
+        ev.append({"presupuesto_aceptado": int(m.group(1))})
+        return ["Gracias, registramos su aceptación."], est, ev
     if t == "vaciar":
         return ["Su pedido quedó vacío."], {k: v for k, v in est.items() if k != "carrito"}, ev
     m = re.fullmatch(r"(?:quitar|eliminar|borrar)\s+([a-z0-9.\-_]{1,40})", t)

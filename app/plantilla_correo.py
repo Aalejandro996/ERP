@@ -218,3 +218,82 @@ def orden_compra_html(oc: dict, base_url: str, intro=None, titulo="ORDEN DE COMP
  <tr><td style="padding:18px 8px;text-align:center;font-size:12px;line-height:1.6;color:{SUAVE}">{e(pie) if pie else 'Para confirmar esta orden responda por WhatsApp <b>CONFIRMAR ' + e(str(oc['numero'])) + '</b> o escriba a ' + e(em.get('email') or em['razon_social']) + '.'}<br>
    Generado con <strong style="color:{TINTA}">Contax</strong>® · una marca de Gigadevs Corp · <img src="{e(base)}/static/marca/icono-192.png" width="14" height="14" alt="" style="vertical-align:-2px;border:0;border-radius:3px"></td></tr>
 </table></td></tr></table></body></html>"""
+
+
+def _usd(v) -> str:
+    return "$" + _bs(v)
+
+
+def presupuesto_html(p: dict, em: dict, base_url: str, intro=None) -> str:
+    """Presupuesto de Gigadevs con el formato de Contax: cabecera negra con el logo de Contax y de Gigadevs, franja lima,
+    emisor y cliente, líneas con su detalle, subtotal, IVA y total en USD, vigencia y condiciones."""
+    e = escape
+    base = base_url.rstrip("/")
+    filas = ""
+    for l in p["lineas"]:
+        det = f'<div style="font-size:12px;color:{SUAVE};margin-top:3px;line-height:1.45">{e(l["detalle"])}</div>' if l.get("detalle") else ""
+        filas += (f'<tr><td style="padding:12px 8px;border-bottom:1px solid {LINEA};font-size:13px;color:{TEXTO}"><b>{e(l["descripcion"])}</b>{" (E)" if l["alicuota"] == "E" else ""}{det}</td>'
+                  f'<td align="right" style="padding:12px 8px;border-bottom:1px solid {LINEA};font-size:13px;vertical-align:top">{e(l["cantidad"])}</td>'
+                  f'<td align="right" style="padding:12px 8px;border-bottom:1px solid {LINEA};font-size:13px;vertical-align:top">{e(_usd(l["precio"]))}</td>'
+                  f'<td align="right" style="padding:12px 8px;border-bottom:1px solid {LINEA};font-size:13px;font-weight:700;vertical-align:top">{e(_usd(l["monto"]))}</td></tr>')
+    pct = str(p["iva_pct"]).rstrip("0").rstrip(".")
+    totales = "".join(f'<tr><td style="padding:6px 8px;font-size:13px;color:{SUAVE}">{k}</td><td align="right" style="padding:6px 8px;font-size:13px">{e(_usd(v))}</td></tr>'
+                      for k, v in (("Subtotal (sin IVA)", p["subtotal"]), (f"IVA {pct}%", p["iva"])))
+    totales += (f'<tr><td style="padding:10px 8px;border-top:2px solid {TINTA};font-size:17px;font-weight:800;color:{TINTA}">TOTAL (USD)</td>'
+                f'<td align="right" style="padding:10px 8px;border-top:2px solid {TINTA};font-size:17px;font-weight:800;color:{TINTA}">{e(_usd(p["total"]))}</td></tr>')
+    fecha = lambda f: "/".join(reversed(str(f).split("-")))
+    periodo = {"mensual": "Mensual", "anual": "Anual (12 meses)", "unico": "Pago único"}.get(p.get("periodo"), p.get("periodo") or "—")
+    cond = (p.get("condiciones") or "").strip()
+    cond_html = "".join(f'<li style="margin:3px 0">{e(x.strip("-• "))}</li>' for x in cond.splitlines() if x.strip())
+    sello = {"Aceptado": "#188038", "Rechazado": "#c8372d", "Anulado": "#c8372d"}.get(p.get("estado"))
+    return f"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light">
+<title>Presupuesto {e(p['numero_txt'])} · {e(p['cliente_nombre'])}</title></head><body style="margin:0;padding:0;background:{FONDO};font-family:{FUENTE}">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{FONDO}"><tr><td align="center" style="padding:28px 10px">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:720px">
+ <tr><td style="background:{TINTA};border-radius:16px 16px 0 0;padding:20px 26px">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+   <td valign="middle"><table role="presentation" cellpadding="0" cellspacing="0"><tr>
+     <td style="padding-right:10px"><img src="{e(base)}/static/marca/icono-192.png" width="40" height="40" alt="Contax" style="display:block;border:0;border-radius:9px"></td>
+     <td><div style="font-size:21px;font-weight:800;color:#fff">Conta<span style="color:{LIMA}">x</span><sup style="font-size:10px">®</sup></div><div style="font-size:11px;color:#a3a3a3">Tu empresa en orden. Tu fisco al día.</div></td></tr></table></td>
+   <td align="right" valign="middle"><img src="{e(base)}/static/marca/gigadevs.png" width="58" height="58" alt="Gigadevs Corp" style="display:block;border:0"></td>
+  </tr></table></td></tr>
+ <tr><td style="height:4px;background:{LIMA};font-size:0;line-height:0">&nbsp;</td></tr>
+ <tr><td style="background:#ffffff;padding:26px;border:1px solid {LINEA};border-top:0;border-radius:0 0 16px 16px">
+  {f'<p style="margin:0 0 18px;font-size:14px;line-height:1.6;color:{TEXTO}">{e(intro)}</p>' if intro else ''}
+  {f'<div style="margin:0 0 16px;padding:10px 14px;border:2px solid {sello};border-radius:10px;color:{sello};font-weight:800;text-align:center">PRESUPUESTO {e(p["estado"].upper())}</div>' if sello else ''}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-bottom:2px solid {TINTA};padding-bottom:12px;margin-bottom:14px"><tr>
+   <td valign="top" style="font-size:13px;line-height:1.55;color:{TEXTO}"><div style="font-size:16px;font-weight:800;color:{TINTA}">{e(em.get('razon_social') or 'Gigadevs Corp')}</div>
+     {('RIF: <b>' + e(em['rif']) + '</b><br>') if em.get('rif') else ''}{e(em.get('domicilio') or 'Venezuela')}{('<br>Tel.: ' + e(em['telefono'])) if em.get('telefono') else ''}{('<br>' + e(em['correo'])) if em.get('correo') else ''}</td>
+   <td valign="top" align="right" style="font-size:13px;line-height:1.6;color:{TEXTO}"><div style="font-size:22px;font-weight:800;letter-spacing:.04em;color:{TINTA}">PRESUPUESTO</div>
+     N° <b>{e(p['numero_txt'])}</b><br>Fecha: {e(fecha(p['fecha']))}<br><span style="display:inline-block;border:2px solid {TINTA};border-radius:8px;padding:2px 8px;font-weight:700">Válido hasta {e(fecha(p['valido_hasta']))}</span></td></tr></table>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px"><tr>
+   <td valign="top" width="50%" style="background:{FONDO};border-radius:10px;padding:12px;font-size:13px;line-height:1.55;color:{TEXTO}"><b>Cliente</b><br>{e(p['cliente_nombre'])}
+     {('<br>RIF: ' + e(p['cliente_rif'])) if p.get('cliente_rif') else ''}{('<br>' + e(p['cliente_direccion'])) if p.get('cliente_direccion') else ''}
+     {('<br>Atención: ' + e(p['atencion'])) if p.get('atencion') else ''}{('<br>' + e(p['cliente_correo'])) if p.get('cliente_correo') else ''}{('<br>Tel.: ' + e(p['cliente_telefono'])) if p.get('cliente_telefono') else ''}</td>
+   <td width="12"></td>
+   <td valign="top" width="50%" style="background:{FONDO};border-radius:10px;padding:12px;font-size:13px;line-height:1.55;color:{TEXTO}"><b>Condiciones</b><br>Período: {e(periodo)}<br>Moneda: USD
+     <br>Pago en USDT (Binance Pay) o en bolívares a la tasa BCV del día de pago</td></tr></table>
+  {f'<div style="font-size:16px;font-weight:800;color:{TINTA};margin:4px 0 8px">{e(p["titulo"])}</div>' if p.get('titulo') else ''}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+   <th align="left" style="padding:8px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:{SUAVE};border-bottom:1px solid {LINEA}">Descripción</th>
+   <th align="right" style="padding:8px;font-size:11px;text-transform:uppercase;color:{SUAVE};border-bottom:1px solid {LINEA}">Cant.</th>
+   <th align="right" style="padding:8px;font-size:11px;text-transform:uppercase;color:{SUAVE};border-bottom:1px solid {LINEA}">Precio unit.</th>
+   <th align="right" style="padding:8px;font-size:11px;text-transform:uppercase;color:{SUAVE};border-bottom:1px solid {LINEA}">Monto</th></tr>{filas}</table>
+  <table role="presentation" cellpadding="0" cellspacing="0" align="right" style="margin-top:12px;min-width:320px">{totales}</table>
+  <div style="clear:both"></div>
+  {f'<div style="margin-top:20px;font-size:13px;color:{TEXTO}"><b>Condiciones de la propuesta</b><ul style="margin:6px 0 0;padding-left:18px;line-height:1.5">{cond_html}</ul></div>' if cond_html else ''}
+  <p style="margin:22px 0 0;font-size:11px;line-height:1.55;color:{SUAVE};border-top:1px dashed #bbb;padding-top:10px">
+   Este presupuesto no es una factura. Al aceptarlo, Gigadevs Corp emite la factura fiscal correspondiente y, para licencias, envía la clave de activación por correo.
+   Precios en dólares estadounidenses; el IVA se calcula a la alícuota vigente.</p>
+ </td></tr>
+ <tr><td style="padding:18px 8px;text-align:center;font-size:12px;line-height:1.6;color:{SUAVE}">Para aceptar, responda este correo o escríbanos por WhatsApp.<br>
+   <strong style="color:{TINTA}">Contax</strong>® · una marca registrada de Gigadevs Corp · Venezuela</td></tr>
+</table></td></tr></table></body></html>"""
+
+
+def presupuesto_texto(p: dict, em: dict) -> str:
+    lineas = "\n".join(f"  - {l['descripcion']}  x{l['cantidad']}  {_usd(l['monto'])}" for l in p["lineas"])
+    return (f"PRESUPUESTO {p['numero_txt']} · Fecha {p['fecha']} · Válido hasta {p['valido_hasta']}\n"
+            f"Emisor: {em.get('razon_social') or 'Gigadevs Corp'}{(' · RIF ' + em['rif']) if em.get('rif') else ''}\n"
+            f"Cliente: {p['cliente_nombre']}{(' · RIF ' + p['cliente_rif']) if p.get('cliente_rif') else ''}\n\n{lineas}\n\n"
+            f"Subtotal: {_usd(p['subtotal'])}\nIVA {p['iva_pct']}%: {_usd(p['iva'])}\nTOTAL: {_usd(p['total'])}\n—\nContax® · una marca de Gigadevs Corp")

@@ -98,6 +98,7 @@ class WhatsappConfig(db.Model):
     factura_automatica = db.Column(db.Boolean, nullable=False, default=False, server_default=db.text("false"))
     serie_id = db.Column(db.Integer)               # serie con la que el bot factura
     dias_credito = db.Column(db.Integer, nullable=False, default=0, server_default=db.text("0"))
+    presupuesto_modo = db.Column(db.Text, nullable=False, default="automatico", server_default=db.text("'automatico'"))  # automatico | manual
     usuario_id = db.Column(db.ForeignKey("usuarios.id"))   # en nombre de quién emite el bot (quien lo configuró)
     activo = db.Column(db.Boolean, nullable=False, default=True)
     actualizado = db.Column(db.DateTime(timezone=True), default=_ahora)
@@ -181,3 +182,36 @@ class AsientoOrigen(db.Model):
     origen = db.Column(db.Text, primary_key=True)          # venta | compra | cxc | apertura_inv | apertura_cxc | apertura_cxp
     origen_id = db.Column(db.BigInteger, primary_key=True)
     asiento_id = db.Column(db.BigInteger, nullable=False)
+
+
+ESTADOS_PRESUPUESTO = ("Borrador", "Enviado", "Aceptado", "Rechazado", "Facturado", "Anulado")
+
+
+class PresupuestoVenta(db.Model):
+    """Presupuesto (cotización) de una empresa a su cliente. Lo emite el personal o el bot de WhatsApp: en modo automático
+    el bot lo envía al instante; en modo manual queda en BORRADOR para que una persona lo revise y lo envíe."""
+    __tablename__ = "presupuestos_venta"
+    id = db.Column(db.BigInteger, primary_key=True)
+    empresa_id = db.Column(db.ForeignKey("empresas.id"), nullable=False, index=True)
+    numero = db.Column(db.Integer, nullable=False)
+    fecha = db.Column(db.Date, nullable=False)
+    valido_hasta = db.Column(db.Date, nullable=False)
+    cliente_rif = db.Column(db.Text)
+    cliente_nombre = db.Column(db.Text, nullable=False)
+    cliente_direccion = db.Column(db.Text)
+    cliente_telefono = db.Column(db.Text)
+    cliente_email = db.Column(db.Text)
+    contacto_id = db.Column(db.ForeignKey("whatsapp_contactos.id"))
+    lineas = db.Column(db.JSON, nullable=False, default=list)   # [{codigo, descripcion, cantidad, precio, alicuota}] precio sin IVA (Bs)
+    exento = db.Column(M, nullable=False, default=0)
+    base = db.Column(M, nullable=False, default=0)
+    iva = db.Column(M, nullable=False, default=0)
+    total = db.Column(M, nullable=False, default=0)
+    nota = db.Column(db.Text)
+    estado = db.Column(db.Text, nullable=False, default="Borrador")
+    origen = db.Column(db.Text, nullable=False, default="manual")
+    documento_venta_id = db.Column(db.BigInteger)
+    creado_por = db.Column(db.Text, nullable=False)
+    creado_en = db.Column(db.DateTime(timezone=True), default=_ahora, nullable=False)
+    __table_args__ = (UniqueConstraint("empresa_id", "numero", name="uq_presupuesto_empresa_numero"),
+                      CheckConstraint(f"estado IN {ESTADOS_PRESUPUESTO}", name="ck_presupuesto_estado"))

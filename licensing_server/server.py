@@ -163,7 +163,8 @@ class Almacen:
         self.reloj = reloj
         md.create_all(self.eng)
         from . import facturas as fx
-        fx.instalar(self.eng)
+        from . import presupuestos as px
+        fx.instalar(self.eng); px.instalar(self.eng)
         from sqlalchemy import inspect, text
         with self.eng.begin() as c:  # bases creadas antes: se agregan las columnas nuevas (nombres fijos, no hay datos del usuario)
             for tabla, cols in COLUMNAS_NUEVAS.items():
@@ -836,6 +837,58 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
             out += [{"tipo": "licencia", "ref": str(l.id), "organizacion_ref": l.organizacion_ref, "cliente": l.cliente, "concepto": _concepto(l.plan, l.modulos, dias=l.dias),
                      "moneda": l.venta_moneda, "monto": str(l.venta_monto), "fecha": l.creada_en} for l in c.execute(ql) if l.id not in facturadas_l]
         return sorted(out, key=lambda x: x["fecha"] or 0)
+
+    # ------------------------------------------------------------------ presupuestos de Gigadevs
+    from . import presupuestos as px
+
+    def emisor_px():
+        with st.eng.connect() as c:
+            cf = dict(c.execute(select(fx.config).where(fx.config.c.id == 1)).first()._mapping)
+        return {k: (str(cf.get(k)) if cf.get(k) is not None else "") for k in ("razon_social", "rif", "domicilio", "telefono", "correo", "iva_pct")}
+
+    @app.get("/admin/v1/presupuestos")
+    def a_px_listar():
+        with st.eng.connect() as c:
+            return jsonify(presupuestos=[px.como_dict(r) for r in c.execute(select(px.presupuestos).order_by(px.presupuestos.c.id.desc()).limit(500))])
+
+    @app.get("/admin/v1/presupuestos/catalogo")
+    def a_px_catalogo():
+        return jsonify(catalogo=px.catalogo(st), iva_pct=emisor_px()["iva_pct"] or "16")
+
+    @app.post("/admin/v1/presupuestos")
+    def a_px_crear():
+        with st.eng.begin() as c:
+            pid = px.crear(c, cuerpo(), emisor_px()["iva_pct"] or 16, reloj=reloj)
+        return jsonify(id=pid), 201
+
+    @app.get("/admin/v1/presupuestos/<int:pid>")
+    def a_px_ver(pid):
+        with st.eng.connect() as c:
+            r = c.execute(select(px.presupuestos).where(px.presupuestos.c.id == pid)).first()
+        if r is None: raise LookupError("Presupuesto inexistente")
+        return jsonify(presupuesto=px.como_dict(r), emisor=emisor_px())
+
+    @app.post("/admin/v1/presupuestos/<int:pid>/estado")
+    def a_px_estado(pid):
+        with st.eng.begin() as c: px.cambiar_estado(c, pid, cuerpo().get("estado"))
+        return jsonify(ok=True)
+
+    @app.post("/admin/v1/presupuestos/<int:pid>/enviar")
+    def a_px_enviar(pid):
+        if correo is None: raise RuntimeError("Correo no configurado")
+        with st.eng.connect() as c:
+            r = c.execute(select(px.presupuestos).where(px.presupuestos.c.id == pid)).first()
+        if r is None: raise LookupError("Presupuesto inexistente")
+        p, em = px.como_dict(r), emisor_px()
+        destino = str(cuerpo().get("correo") or p.get("cliente_correo") or "").strip().lower()
+        if not RE_CORREO.match(destino): raise ValueError("Indique el correo del cliente")
+        intro = f"Estimado(a) {p.get('atencion') or p['cliente_nombre']}: le enviamos el presupuesto {p['numero_txt']}. Quedamos atentos a sus comentarios."
+        correo(destino, f"Presupuesto {p['numero_txt']} · Contax", intro + "\n\n" + pc.presupuesto_texto(p, em),
+               html=pc.presupuesto_html(p, em, cfg.get("url_erp") or "", intro))
+        with st.eng.begin() as c:
+            c.execute(update(px.presupuestos).where(px.presupuestos.c.id == pid).values(correo_enviado_en=reloj(),
+                      estado="Enviado" if p["estado"] == "Emitido" else p["estado"]))
+        return jsonify(ok=True)
 
     @app.get("/admin/v1/facturas/pendientes")
     def a_fx_pendientes():

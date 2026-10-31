@@ -773,4 +773,4 @@ def _seccion_bitacora():
                 tabla=dict(cols=["Fecha (UTC)", "Usuario", "IP", "Acción", "Detalle"], filas=[dict(cells=[l.ts.strftime("%Y-%m-%d %H:%M:%S"), l.usuario, l.ip or "", l.accion, (l.detalles or "")[:120]]) for l in logs]))
 
 
-from . import web_admin, web_compras, web_cuadre, web_empresa, web_facturacion, web_fiscal, web_migracion, web_plataforma  # noqa: E402,F401  (registran sus rutas en el mismo blueprint)
+from . import web_admin, web_compras, web_cuadre, web_empresa, web_facturacion, web_fiscal, web_migracion, web_plataforma, web_presupuestos  # noqa: E402,F401  (registran sus rutas en el mismo blueprint)

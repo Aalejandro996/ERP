@@ -36,6 +36,7 @@ PERMISO_MODULO = {
     # Funciones compartidas: basta con que el plan traiga UNO de estos módulos
     "compras": ("administrativo", "inventario", "facturacion"),      # órdenes de compra y proveedores
     "whatsapp": ("facturacion", "inventario"),                       # bot de WhatsApp y pedidos
+    "presupuestos": ("facturacion", "inventario"),                   # presupuestos (cotizaciones) a clientes
 }
 
 

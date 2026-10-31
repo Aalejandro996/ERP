@@ -27,6 +27,7 @@
     <a href="{{ url_for('web.plataforma') }}" class="{{ 'activo' if ep == 'web.plataforma' }}">Clientes</a>
     <a href="{{ url_for('web.maestro_licencias') }}" class="{{ 'activo' if ep == 'web.maestro_licencias' }}">Licencias y equipos</a>
     <a href="{{ url_for('web.maestro_pagos') }}" class="{{ 'activo' if ep == 'web.maestro_pagos' }}">Pagos y precios</a>
+    <a href="{{ url_for('web.maestro_presupuestos') }}" class="{{ 'activo' if ep in ('web.maestro_presupuestos', 'web.maestro_presupuesto_ver') }}">Presupuestos</a>
     <a href="{{ url_for('web.maestro_facturas') }}" class="{{ 'activo' if ep in ('web.maestro_facturas', 'web.maestro_factura_ver') }}">Facturación Gigadevs</a>
     <a href="{{ url_for('web.maestro_bd') }}" class="{{ 'activo' if ep == 'web.maestro_bd' }}">Base de datos</a>
     <a href="{{ url_for('web.admin_fiscal') }}" class="{{ 'activo' if ep == 'web.admin_fiscal' }}">Parámetros legales</a>

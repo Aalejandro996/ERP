@@ -102,3 +102,12 @@ def test_wasender_lee_avisos_firma_envio_y_adjuntos():
     assert datos.startswith(b"%PDF") and mime == "application/pdf" and llamadas[1][2] == {"data": {"messages": adj["raw"]}}
     with pytest.raises(WA.ErrorWhatsapp, match="límite"): WS.estado_sesion(None, "KEY", transporte=t)
     with pytest.raises(WA.ErrorWhatsapp): WS.enviar_texto("http://inseguro", "KEY", "04141234567", "x", transporte=t)
+
+
+def test_presupuesto_por_el_bot():
+    r, est, ev = B.responder("6", "cliente", {}, CAT, "Bodega")
+    assert ev == [] and "agregue los productos" in r[0]
+    _, est, _ = B.responder("A001 4", "cliente", {}, CAT, "Bodega")
+    r, est, ev = B.responder("presupuesto", "cliente", est, CAT, "Bodega")
+    assert ev == [{"crear_presupuesto": {"lineas": [{"codigo": "A001", "descripcion": "Harina PAN 1kg", "cantidad": "4"}]}}] and "carrito" not in est
+    assert B.responder("ACEPTO 12", "cliente", {}, CAT, "Bodega")[2] == [{"presupuesto_aceptado": 12}]

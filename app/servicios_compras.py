@@ -26,6 +26,13 @@ def _siguiente(eid, Modelo) -> int:
     return (ultimo or 0) + 1
 
 
+def emisor_dict(e: Empresa) -> dict:
+    """Datos de la empresa emisora para sus documentos (orden de compra, orden de venta, presupuesto), con su logo."""
+    import base64
+    return {"razon_social": e.razon_social, "rif": e.rif, "direccion": e.direccion, "telefono": e.telefono, "email": e.correo,
+            "contribuyente_especial": e.es_sujeto_pasivo_especial, "logo": f"data:{e.logo_mime};base64,{base64.b64encode(e.logo).decode()}" if e.logo else None}
+
+
 def numero_oc(n) -> str:
     return f"OC-{int(n):06d}"
 
@@ -145,8 +152,7 @@ def oc_dict(oc: OrdenCompra) -> dict:
             "estado": oc.estado, "tipo_destinatario": oc.tipo_destinatario, "moneda": oc.moneda, "tasa_bcv": str(oc.tasa_bcv),
             "condicion_pago": oc.condicion_pago, "lugar_entrega": oc.lugar_entrega, "observaciones": oc.observaciones, "creado_por": oc.creado_por,
             "exento": str(oc.exento), "base": str(oc.base), "iva": str(oc.iva), "total": str(oc.total), "total_bs": str(oc.total_bs),
-            "emisor": {"razon_social": e.razon_social, "rif": e.rif, "direccion": e.direccion, "telefono": e.telefono, "contribuyente_especial": e.es_sujeto_pasivo_especial,
-                       "email": e.correo, "logo": (f"data:{e.logo_mime};base64,{__import__('base64').b64encode(e.logo).decode()}" if e.logo else None)},
+            "emisor": emisor_dict(e),
             "destinatario": {"nombre": oc.dest_nombre, "rif": oc.dest_rif, "direccion": oc.dest_direccion, "telefono": oc.dest_telefono, "email": oc.dest_email},
             "lineas": [{"codigo": l.codigo, "descripcion": l.descripcion, "unidad": l.unidad, "cantidad": format(l.cantidad.normalize(), "f"),
                         "precio": str(l.precio), "alicuota": l.alicuota, "monto": str(l.monto)} for l in oc.lineas]}
@@ -250,6 +256,21 @@ def procesar_mensaje(eid, telefono, nombre, texto, wamid, adjunto=None, modulos=
             db.session.add(p); db.session.flush()
             respuestas = [r + f"\nN° de {'pedido' if p.tipo == 'venta' else 'oferta'}: *{p.numero}*" if i == 0 else r for i, r in enumerate(respuestas)]
             registrar("whatsapp", "PEDIDO_WHATSAPP", f"empresa={eid} {p.tipo} N°{p.numero} tel=…{tel[-4:]} total={total}")
+        if "crear_presupuesto" in ev:
+            from . import web_presupuestos as WP
+            auto = (cfg.presupuesto_modo if cfg else "automatico") == "automatico"
+            pv = WP.crear(eid, "whatsapp", dict(nombre=c.nombre or ("+" + tel), rif=c.rif, telefono=tel), ev["crear_presupuesto"]["lineas"], origen="whatsapp",
+                          estado="Enviado" if auto else "Borrador", contacto_id=c.id)
+            respuestas = [WP.resumen_whatsapp(pv)] if auto else [f"📑 Recibimos su solicitud de presupuesto N° {pv.numero}. Un asesor lo revisará y se lo enviará por aquí en breve."]
+        if "presupuesto_aceptado" in ev:
+            from .models_compras import PresupuestoVenta
+            pv = db.session.execute(select(PresupuestoVenta).where(PresupuestoVenta.empresa_id == eid, PresupuestoVenta.numero == ev["presupuesto_aceptado"],
+                                                                   PresupuestoVenta.contacto_id == c.id).with_for_update()).scalar_one_or_none()
+            if pv is None or pv.estado not in ("Enviado", "Borrador"):
+                respuestas = [f"No encontramos un presupuesto N° {ev['presupuesto_aceptado']} pendiente a su nombre."]
+            else:
+                pv.estado = "Aceptado"; registrar("whatsapp", "PRESUPUESTO_ACEPTADO", f"empresa={eid} N°{pv.numero}")
+                respuestas = [f"✅ Presupuesto N° {pv.numero} aceptado. Le confirmaremos la factura y la entrega por aquí."]
         if "oc_confirmada" in ev or "oc_rechazada" in ev:
             num = ev.get("oc_confirmada") or ev.get("oc_rechazada")
             oc = db.session.execute(select(OrdenCompra).where(OrdenCompra.empresa_id == eid, OrdenCompra.numero == num, OrdenCompra.dest_whatsapp == tel)
@@ -314,8 +335,7 @@ def pedido_dict(p: Pedido) -> dict:
     return {"numero": p.numero, "numero_txt": f"OV-{p.numero:06d}", "fecha": str(p.creado_en.date()), "fecha_entrega": None, "estado": p.estado,
             "tipo_destinatario": "cliente", "moneda": "VES", "tasa_bcv": "1", "condicion_pago": "Pago en oficina / transferencia", "lugar_entrega": e.direccion,
             "observaciones": nota or None, "creado_por": "Bot de WhatsApp", "exento": str(exento), "base": str(base), "iva": str(iva), "total": str(total), "total_bs": str(total),
-            "emisor": {"razon_social": e.razon_social, "rif": e.rif, "direccion": e.direccion, "telefono": e.telefono, "email": e.correo,
-                       "contribuyente_especial": e.es_sujeto_pasivo_especial, "logo": (f"data:{e.logo_mime};base64,{__import__('base64').b64encode(e.logo).decode()}" if e.logo else None)},
+            "emisor": emisor_dict(e),
             "destinatario": {"nombre": p.nombre or ("+" + (p.telefono or "")), "rif": p.rif or "—", "direccion": None, "telefono": ("+" + p.telefono) if p.telefono else None, "email": None},
             "lineas": lineas}
 
