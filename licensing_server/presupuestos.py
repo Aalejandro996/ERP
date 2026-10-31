@@ -96,3 +96,54 @@ def como_dict(fila) -> dict:
 def cambiar_estado(con, pid, estado):
     if estado not in ESTADOS: raise ValueError("Estado inválido")
     if not con.execute(update(presupuestos).where(presupuestos.c.id == pid).values(estado=estado)).rowcount: raise LookupError("Presupuesto inexistente")
+
+
+# ====================================================================== contratos (desde un presupuesto aceptado)
+ESTADOS_CONTRATO = ("Borrador", "Enviado", "Firmado", "Anulado")
+contratos = Table(
+    "lic_contratos", md,
+    Column("id", Integer, primary_key=True), Column("numero", Integer, nullable=False, unique=True), Column("presupuesto_id", Integer),
+    Column("cliente_nombre", Text, nullable=False), Column("cliente_rif", Text), Column("cliente_domicilio", Text), Column("cliente_correo", Text),
+    Column("representante", Text), Column("representante_ci", Text), Column("representante_cargo", Text),
+    Column("objeto", Text, nullable=False), Column("monto", Numeric(14, 2), nullable=False), Column("forma_pago", Text),
+    Column("soporte_mensual", Numeric(14, 2)), Column("inicio", String(10), nullable=False), Column("fin", String(10), nullable=False),
+    Column("opcionales", Text), Column("especiales", Text), Column("estado", String(10), nullable=False, default="Borrador"),
+    Column("version_legal", Text), Column("creado_por", Text), Column("creado_en", Float, nullable=False), Column("enviado_en", Float),
+    Column("firmado_en", Float), Column("firma_nombre", Text), Column("firma_ci", Text), Column("firma_ip", Text), Column("firma_agente", Text),
+    Column("firma_hash", String(64)))
+
+
+def crear_contrato(con, d: dict, reloj=time.time) -> int:
+    import re
+    p = con.execute(select(presupuestos).where(presupuestos.c.id == int(d.get("presupuesto_id") or 0))).first()
+    if p is None: raise ValueError("Elija un presupuesto")
+    if p.estado != "Aceptado": raise ValueError("Solo se arma contrato de un presupuesto ACEPTADO")
+    if con.execute(select(contratos.c.id).where(contratos.c.presupuesto_id == p.id, contratos.c.estado != "Anulado")).first():
+        raise ValueError("Ese presupuesto ya tiene un contrato vigente")
+    t = lambda k, n=300: (str(d.get(k) or "").strip()[:n] or None)
+    rif = (t("cliente_rif", 20) or p.cliente_rif or "").upper()
+    if rif and not re.fullmatch(r"[VEJPGC]-\d{8}-\d", rif): raise ValueError("RIF del cliente inválido (J-12345678-9)")
+    if not t("representante") or not t("representante_ci", 20): raise ValueError("Indique el representante legal y su cédula")
+    lineas = json.loads(p.lineas)
+    inicio = date.fromisoformat(d.get("inicio") or date.fromtimestamp(reloj()).isoformat())
+    meses = int(d.get("meses") or (12 if p.periodo == "anual" else 1))
+    fin = date(inicio.year + (inicio.month - 1 + meses) // 12, (inicio.month - 1 + meses) % 12 + 1, 1) - timedelta(days=1) if meses else inicio
+    numero = (con.execute(select(func.max(contratos.c.numero))).scalar() or 0) + 1
+    sop = d.get("soporte_mensual")
+    return con.execute(insert(contratos).values(
+        numero=numero, presupuesto_id=p.id, cliente_nombre=t("cliente_nombre", 200) or p.cliente_nombre, cliente_rif=rif or None,
+        cliente_domicilio=t("cliente_domicilio") or p.cliente_direccion, cliente_correo=(t("cliente_correo") or p.cliente_correo or "").lower() or None,
+        representante=t("representante"), representante_ci=t("representante_ci", 20), representante_cargo=t("representante_cargo", 80),
+        objeto=t("objeto", 2000) or "; ".join(l["descripcion"] for l in lineas), monto=q2(d.get("monto") or p.total),
+        forma_pago=t("forma_pago", 500) or "100% al firmar", soporte_mensual=q2(sop) if sop not in (None, "") else None,
+        inicio=inicio.isoformat(), fin=fin.isoformat(), opcionales=",".join(sorted({x for x in (d.get("opcionales") or []) if x})),
+        especiales=t("especiales", 3000), estado="Borrador", version_legal=str(d.get("version_legal") or "")[:40], creado_por=str(d.get("autor") or "")[:80],
+        creado_en=reloj())).inserted_primary_key[0]
+
+
+def contrato_dict(fila, presupuesto_numero=None) -> dict:
+    d = {k: (str(v) if isinstance(v, Decimal) else v) for k, v in dict(fila._mapping).items()}
+    d["numero_txt"] = f"C-{int(d['numero']):06d}"
+    d["opcionales"] = [x for x in (d.get("opcionales") or "").split(",") if x]
+    d["presupuesto_txt"] = f"P-{int(presupuesto_numero):06d}" if presupuesto_numero else ""
+    return d

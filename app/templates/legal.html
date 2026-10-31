@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block contenido %}
+<div class="cabecera"><div><div class="ruta">{{ config.APP_NOMBRE }}® · Gigadevs Corp</div><h1>{{ titulo }}</h1></div></div>
+<nav class="pestanas" aria-label="Documentos legales">{% for k, v in paginas.items() %}<a href="{{ url_for('web.legal', pagina=k) }}" class="{{ 'activo' if k == pagina }}">{{ v[0] }}</a>{% endfor %}</nav>
+<section class="legal">
+{% for t, ps in secciones %}<h2>{{ loop.index }}. {{ t }}</h2>{% for p in ps %}<p>{{ p }}</p>{% endfor %}{% endfor %}
+<p class="peq nota">Versión {{ version }}. Contax® es una marca registrada de Gigadevs Corp. Consultas: gigadevsc@gmail.com · WhatsApp +58 424 258 8321.</p>
+</section>
+{% endblock %}

@@ -81,6 +81,13 @@ class ClienteAdmin:
     def presupuesto(self, pid): return self._req("GET", f"/admin/v1/presupuestos/{int(pid)}")
     def estado_presupuesto(self, pid, estado): return self._req("POST", f"/admin/v1/presupuestos/{int(pid)}/estado", {"estado": estado})
     def enviar_presupuesto(self, pid, correo=None): return self._req("POST", f"/admin/v1/presupuestos/{int(pid)}/enviar", {"correo": correo})
+    # contratos
+    def contratos(self): return self._req("GET", "/admin/v1/contratos")["contratos"]
+    def crear_contrato(self, **d): return self._req("POST", "/admin/v1/contratos", d)
+    def contrato(self, cid): return self._req("GET", f"/admin/v1/contratos/{int(cid)}")
+    def estado_contrato(self, cid, estado): return self._req("POST", f"/admin/v1/contratos/{int(cid)}/estado", {"estado": estado})
+    def firmar_contrato(self, cid, **d): return self._req("POST", f"/admin/v1/contratos/{int(cid)}/firmar", d)
+    def enviar_contrato(self, cid, url, correo=None): return self._req("POST", f"/admin/v1/contratos/{int(cid)}/enviar", {"url": url, "correo": correo})
     def crear_orden(self, **d): return self._req("POST", "/admin/v1/ordenes", d)
     def ordenes(self, org=None): return self._req("GET", "/admin/v1/ordenes", params={"org": org})["ordenes"]
     def informar_pago(self, ref, **d): return self._req("POST", f"/admin/v1/ordenes/{ref}/referencia", d)

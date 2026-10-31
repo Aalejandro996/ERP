@@ -6,7 +6,7 @@ from .planes import MODULOS, modulos_de, nombre_plan
 
 RUTAS_LIBRES = {"salud", "auth.login", "auth.logout", "auth.mfa_verificar", "auth.mfa_configurar", "auth.mfa_codigos", "auth.cambiar_clave",
                 "auth.verificar_correo", "auth.correo_confirmar", "auth.invitacion", "auth.recuperar", "auth.recuperar_token",
-                "auth.cuenta", "web.admin_licencia", "static"}
+                "auth.cuenta", "web.admin_licencia", "static", "web.legal"}
 
 
 class AlmacenLicenciaOrg:

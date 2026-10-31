@@ -78,3 +78,41 @@
   if (cond) cond.addEventListener("change", verCondicion);
   verCondicion(); recalcular();
 })();
+
+/* Nuevo presupuesto (Maestro): precios del catálogo según el período y totales en vivo. El servidor recalcula todo. */
+(function () {
+  "use strict";
+  var nodo = document.getElementById("datos-presupuesto");
+  if (!nodo) return;
+  var d = JSON.parse(nodo.textContent), form = document.getElementById("form-presupuesto");
+  var num = function (v) { var n = parseFloat(String(v || "").replace(",", ".")); return isFinite(n) ? n : 0; };
+  var usd = function (n) { return "$" + n.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+  var periodo = function () { var r = form.querySelector('input[name="periodo"]:checked'); return r ? r.value : "anual"; };
+  function calcular() {
+    var p = periodo() === "mensual" ? "mensual" : "anual", iva = num(d.iva), gravado = 0, exento = 0;
+    form.querySelectorAll(".px-precio").forEach(function (el) {
+      var it = d.items[el.getAttribute("data-clave")] || {}, v = it.fijo || it[p];
+      el.textContent = v ? usd(num(v)) + (it.fijo ? "" : (p === "mensual" ? " /mes" : " /año")) : "sin precio " + p;
+    });
+    form.querySelectorAll('input[name="items"]:checked').forEach(function (c) {
+      var it = d.items[c.value] || {}; gravado += num(it.fijo || it[p]) * 100 / (100 + iva);
+    });
+    form.querySelectorAll("tr[data-servicio]").forEach(function (f) {
+      var i = f.getAttribute("data-servicio"), m = num(form.elements["l" + i + "_cant"].value) * num(form.elements["l" + i + "_precio"].value);
+      f.querySelector(".px-monto").textContent = m ? usd(m) : "—";
+      if (form.elements["l" + i + "_alic"].value === "E") exento += m; else gravado += m;
+    });
+    var ivaM = gravado * iva / 100;
+    var put = function (k, v) { var el = form.querySelector('[data-r="' + k + '"]'); if (el) el.textContent = usd(v); };
+    put("sub", gravado + exento); put("iva", ivaM); put("total", gravado + exento + ivaM);
+  }
+  var org = document.getElementById("px-org");
+  if (org) org.addEventListener("change", function () {
+    var o = org.options[org.selectedIndex];
+    if (!o.value) return;
+    document.getElementById("px-nombre").value = o.getAttribute("data-nombre");
+    document.getElementById("px-rif").value = o.getAttribute("data-rif");
+    document.getElementById("px-correo").value = o.getAttribute("data-correo");
+  });
+  form.addEventListener("input", calcular); form.addEventListener("change", calcular); calcular();
+})();

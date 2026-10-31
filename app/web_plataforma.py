@@ -664,17 +664,6 @@ def maestro_presupuestos():
             dict(titulo="Presupuestos emitidos", tabla=dict(cols=["N°", "Fecha", "Cliente", "Período", "Total USD", "Válido hasta", "Estado"], num=[4], filas=[
                 dict(cells=[p["numero_txt"], p["fecha"], p["cliente_nombre"], p["periodo"], p["total"], p["valido_hasta"], p["estado"]],
                      url=url_for("web.maestro_presupuesto_ver", pid=p["id"])) for p in ps])),
-            dict(titulo="Nuevo presupuesto", abierto=True, nota=f"Los planes, combos y módulos se cotizan al precio VIGENTE del período que elija el cliente "
-                 f"(los precios del catálogo ya incluyen IVA {datos['iva_pct']}%). Los servicios se cargan sin IVA.",
-                 form=dict(action=request.path, boton="Emitir presupuesto", campos=[h("crear"),
-                     campo("org", "Cliente registrado (opcional)", "select", req=False, opciones=[("", "— Cliente nuevo —")] + [(o.id, f"{o.nombre} ({o.rif})") for o in orgs]),
-                     campo("cliente_nombre", "Cliente (si es nuevo)", req=False), campo("cliente_rif", "RIF", req=False), campo("cliente_correo", "Correo", "email", req=False),
-                     campo("cliente_direccion", "Dirección", req=False), campo("cliente_telefono", "Teléfono", req=False), campo("atencion", "Atención a", req=False),
-                     campo("titulo", "Título (p. ej. «Implementación de Contax All in One»)", req=False),
-                     campo("periodo", "Período", "select", opciones=[("anual", "Anual (12 meses, 2 de regalo)"), ("mensual", "Mensual"), ("unico", "Pago único (servicios)")]),
-                     campo("items", "Del catálogo (precio vigente)", "checks", req=False, opciones=items),
-                     campo("validez", "Validez (días)", "number", valor=15),
-                     campo("condiciones", "Condiciones (una por línea)", "textarea", req=False, valor=CONDICIONES_PX, filas=5)] + lineas)),
             dict(titulo="Precios vigentes (mensual y anual)", nota="Son los que usan los presupuestos nuevos y la tienda en línea. Precios en USD con IVA incluido.",
                  tabla=dict(cols=["Plan", "Mensual USD", "Anual USD", "Incluye"], num=[1, 2], filas=[
                      dict(cells=[PLANES.get(p["plan"], {}).get("nombre", p["plan"]), p.get("mensual", "—"), p.get("anual", "—"), p.get("topes", "")]) for p in cat["planes"]]
@@ -683,7 +672,41 @@ def maestro_presupuestos():
                  campo("meses", "Período", "select", opciones=[(1, "Mensual"), (12, "Anual")]), campo("monto", "Precio USD (IVA incluido)", "number")])),
             dict(titulo="Actualizar precio mensual de un módulo", form=dict(action=request.path, boton="Actualizar", campos=[h("precio_modulo"),
                  campo("modulo", "Módulo", "select", opciones=list(MODULOS.items())), campo("monto", "USD por mes", "number")]))]
-    return pagina("Presupuestos", None, secs)
+    return pagina("Presupuestos", None, secs, acciones=[dict(url=url_for("web.maestro_presupuesto_nuevo"), texto="+ Nuevo presupuesto", primaria=True),
+                                                         dict(url=url_for("web.maestro_contratos"), texto="Contratos")])
+
+
+@ruta("/plataforma/presupuestos/nuevo", "plataforma")
+def maestro_presupuesto_nuevo():
+    """Formulario por secciones: cliente → período → catálogo (precio vigente según el período) → servicios → condiciones, con
+    resumen y totales en vivo. Lo procesa maestro_presupuestos (POST accion=crear)."""
+    import json as _json
+    from flask import render_template
+    from .licensing.admin import ErrorAdmin
+    from .planes import MODULOS, PLANES
+    try:
+        datos = _admin().px_catalogo()
+    except (ErrorAdmin, ValueError, OSError) as e:
+        flash(str(e)); return redirect(url_for("web.maestro_presupuestos"))
+    cat, items = datos["catalogo"], {}
+    planes = []
+    for x in cat["planes"]:
+        k = f"plan:{x['plan']}"; items[k] = {"mensual": x.get("mensual"), "anual": x.get("anual")}
+        planes.append(dict(clave=k, nombre=PLANES.get(x["plan"], {}).get("nombre", x["plan"]),
+                           detalle=", ".join(MODULOS[m] for m in sorted(PLANES.get(x["plan"], {}).get("modulos", []))) + f" · {x.get('topes', '')}"))
+    combos = []
+    for c in cat["combos"]:
+        k = f"combo:{c['id']}"; items[k] = {"fijo": c["monto_usd"]}
+        combos.append(dict(clave=k, nombre=f"Combo {c['nombre']}", detalle=f"{', '.join(MODULOS.get(m, m) for m in c['modulos'].split(','))} · "
+                                                                        f"{'mensual' if c['meses'] == 1 else str(c['meses']) + ' meses'}"))
+    mods = []
+    for m in cat["modulos"]:
+        k = f"mod:{m['modulo']}"; items[k] = {"mensual": m["mensual"], "anual": m["anual"]}
+        mods.append(dict(clave=k, nombre=f"Módulo {MODULOS.get(m['modulo'], m['modulo'])}", detalle="Para armar a la medida"))
+    orgs = db.session.execute(select(Organizacion).order_by(Organizacion.nombre)).scalars().all()
+    datos_js = _json.dumps({"items": items, "iva": datos["iva_pct"]}).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    return render_template("presupuesto_nuevo.html", titulo="Nuevo presupuesto", empresa=None, orgs=orgs, iva=str(datos["iva_pct"]).rstrip("0").rstrip("."),
+                           catalogo=[("Planes", planes), ("Combos", combos), ("Módulos sueltos", mods)], condiciones=CONDICIONES_PX, datos_js=datos_js)
 
 
 @ruta("/plataforma/presupuestos/<int:pid>", "plataforma", ("GET", "POST"))
@@ -715,6 +738,8 @@ def maestro_presupuesto_ver(pid):
                     f'<input name="correo" type="email" placeholder="{escape(p.get("cliente_correo") or "correo del cliente")}" style="padding:9px;border:1px solid #ccc;border-radius:10px;margin-right:4px">')
              + (form("Aceptado", "Marcar aceptado", "border:0;background:#191919;color:#fff") + form("Rechazado", "Rechazado", "border:1px solid #ccc;background:#fff")
                 if p["estado"] in ("Emitido", "Enviado") else "")
+             + (f'<a href="{url_for("web.maestro_contratos", presupuesto=pid)}" style="{st};border:0;background:#191919;color:#fff;text-decoration:none">Armar contrato →</a>'
+                if p["estado"] == "Aceptado" else "")
              + '</div>' + "".join(f'<div class="no-print" role="alert" style="max-width:720px;margin:10px auto 0;padding:10px 14px;border-radius:10px;background:#eef9e6;font-family:sans-serif">{escape(m)}</div>'
                                   for m in get_flashed_messages())
              + f'<script src="{url_for("static", filename="app.js")}" defer></script><style>@media print{{.no-print{{display:none!important}}}}</style>')

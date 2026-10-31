@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block contenido %}
+<div class="cabecera"><div><div class="ruta">Consola Maestro · Presupuestos</div><h1>Nuevo presupuesto</h1></div>
+<div class="acciones"><a class="btn sec" href="{{ url_for('web.maestro_presupuestos') }}">← Presupuestos</a></div></div>
+<script type="application/json" id="datos-presupuesto">{{ datos_js|safe }}</script>
+<form method="post" action="{{ url_for('web.maestro_presupuestos') }}" id="form-presupuesto" class="px">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="accion" value="crear">
+<div class="px-cuerpo">
+  <section><h2><span class="px-n">1</span> Cliente</h2>
+    <label class="px-ancho">Cliente registrado en Contax
+      <select name="org" id="px-org"><option value="">— Cliente nuevo: escriba sus datos —</option>{% for o in orgs %}<option value="{{ o.id }}" data-nombre="{{ o.nombre }}" data-rif="{{ o.rif }}" data-correo="{{ o.correo_contacto or '' }}">{{ o.nombre }} ({{ o.rif }})</option>{% endfor %}</select></label>
+    <div class="px-grid2">
+      <label>Razón social<input name="cliente_nombre" id="px-nombre" maxlength="200" placeholder="General de Suministros Orituco, C.A."></label>
+      <label>RIF<input name="cliente_rif" id="px-rif" maxlength="15" placeholder="J-12345678-9"></label>
+      <label>Atención a<input name="atencion" maxlength="120" placeholder="Nombre de la persona de contacto"></label>
+      <label>Correo<input name="cliente_correo" id="px-correo" type="email" maxlength="200"></label>
+      <label>Teléfono<input name="cliente_telefono" maxlength="40"></label>
+      <label>Dirección<input name="cliente_direccion" maxlength="300"></label>
+    </div></section>
+
+  <section><h2><span class="px-n">2</span> Período y título</h2>
+    <div class="px-segmento" role="radiogroup" aria-label="Período">
+      {% for v, t, s in [('anual', 'Anual', '12 meses · 2 de regalo'), ('mensual', 'Mensual', 'pago mes a mes'), ('unico', 'Pago único', 'servicios e implementación')] %}
+      <label><input type="radio" name="periodo" value="{{ v }}" {{ 'checked' if loop.first }}><span><b>{{ t }}</b><small>{{ s }}</small></span></label>{% endfor %}
+    </div>
+    <label class="px-ancho">Título del presupuesto<input name="titulo" maxlength="200" placeholder="Implementación de Contax® All in One"></label></section>
+
+  <section><h2><span class="px-n">3</span> Del catálogo <small class="peq">precio vigente · IVA incluido</small></h2>
+    {% for grupo, items in catalogo %}{% if items %}<div class="px-subt">{{ grupo }}</div>
+    <div class="px-cards">{% for it in items %}
+      <label class="px-card"><input type="checkbox" name="items" value="{{ it.clave }}">
+        <span class="px-card-t">{{ it.nombre }}</span><span class="peq">{{ it.detalle }}</span>
+        <span class="px-precio" data-clave="{{ it.clave }}">—</span></label>{% endfor %}</div>{% endif %}{% endfor %}</section>
+
+  <section><h2><span class="px-n">4</span> Servicios a la medida <small class="peq">precio sin IVA</small></h2>
+    <div class="tabla-wrap"><table class="px-tabla"><thead><tr><th>Descripción y detalle</th><th class="n">Cant.</th><th class="n">Precio USD</th><th>IVA</th><th class="n">Monto</th></tr></thead><tbody>
+    {% for i in range(1, 7) %}<tr data-servicio="{{ i }}"><td><input name="l{{ i }}_desc" maxlength="200" placeholder="{{ 'Ej.: Integración con Profit Plus' if i == 1 else '' }}">
+      <input name="l{{ i }}_det" maxlength="400" class="px-det" placeholder="Detalle (opcional)"></td>
+      <td><input name="l{{ i }}_cant" type="number" step="any" min="0" value="1" class="n"></td><td><input name="l{{ i }}_precio" type="number" step="any" min="0" class="n"></td>
+      <td><select name="l{{ i }}_alic"><option value="G">16 %</option><option value="E">Exento</option></select></td><td class="n px-monto">—</td></tr>{% endfor %}
+    </tbody></table></div></section>
+
+  <section><h2><span class="px-n">5</span> Condiciones</h2>
+    <div class="px-grid2"><label>Validez (días)<input name="validez" type="number" min="1" max="90" value="15"></label></div>
+    <label class="px-ancho">Condiciones (una por línea)<textarea name="condiciones" rows="5" maxlength="3000">{{ condiciones }}</textarea></label></section>
+</div>
+<aside class="px-resumen"><div class="px-resumen-caja">
+  <div class="px-resumen-t">Resumen</div>
+  <div class="px-fila"><span>Subtotal (sin IVA)</span><b data-r="sub">$0,00</b></div>
+  <div class="px-fila"><span>IVA {{ iva }} %</span><b data-r="iva">$0,00</b></div>
+  <div class="px-fila px-total"><span>Total USD</span><b data-r="total">$0,00</b></div>
+  <p class="peq">Los precios del catálogo ya incluyen IVA: se cotizan sin IVA para que el total sea el del catálogo.</p>
+  <button class="px-boton">Emitir presupuesto</button></div></aside>
+</form>
+{% endblock %}
