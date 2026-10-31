@@ -179,9 +179,15 @@ def enviar_wa(eid, destino, texto, contacto=None) -> str:
     if cfg is None or not cfg.activo: raise WA.ErrorWhatsapp("La empresa no tiene el bot de WhatsApp configurado y activo")
     cif = current_app.extensions["cifrador"]
     tel = WA.telefono(destino)
-    transporte = current_app.extensions.get("whatsapp_transporte") or WA._http
     try:
-        wamid = WA.enviar_texto(cfg.phone_number_id, cif.descifrar(cfg.token_cifrado), tel, texto, transporte=transporte); res = "ok"
+        if cfg.proveedor == "wasender":
+            from . import wasender as WS
+            wamid = WS.enviar_texto(cfg.api_url, cif.descifrar(cfg.token_cifrado), tel, texto, transporte=current_app.extensions.get("wasender_transporte"))
+        else:
+            wamid = WA.enviar_texto(cfg.phone_number_id, cif.descifrar(cfg.token_cifrado), tel, texto,
+                                    transporte=current_app.extensions.get("whatsapp_transporte") or WA._http)
+        wamid = ("ws." + wamid) if wamid and cfg.proveedor == "wasender" else wamid
+        res = "ok"
     except WA.ErrorWhatsapp as e:
         wamid, res = None, str(e)[:300]
     if contacto is None:
@@ -327,7 +333,11 @@ def procesar_orden_pdf(eid, c: WhatsappContacto, adjunto, modulos) -> list[str]:
     descarga = current_app.extensions.get("whatsapp_descarga")
     responder = lambda t: enviar_wa(eid, c.telefono, t, c)
     try:
-        datos, _ = descarga(adjunto["id"]) if descarga else WA.descargar_media(adjunto["id"], cif.descifrar(cfg.token_cifrado))
+        if descarga: datos, _ = descarga(adjunto["id"])
+        elif cfg.proveedor == "wasender":
+            from . import wasender as WS
+            datos, _ = WS.descargar_media(cfg.api_url, cif.descifrar(cfg.token_cifrado), adjunto["raw"], transporte=current_app.extensions.get("wasender_transporte"))
+        else: datos, _ = WA.descargar_media(adjunto["id"], cif.descifrar(cfg.token_cifrado))
         leido = LP.interpretar(LP.texto_pdf(datos), catalogo_bot(eid) | {p.codigo: (p.nombre, p.precio_venta, p.cantidad_actual) for p in
                                                                         db.session.execute(select(Producto).where(Producto.empresa_id == eid)).scalars()})
     except (LP.ErrorLectura, WA.ErrorWhatsapp) as err:

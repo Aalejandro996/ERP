@@ -378,12 +378,22 @@ def whatsapp_config(eid):
         def guardar():
             nonlocal cfg
             if a == "guardar":
+                prov = F.get("proveedor") or (cfg.proveedor if cfg else ("meta" if F.get("phone_number_id") else "wasender"))
+                if prov not in ("meta", "wasender"): raise ValueError("Conexión inválida")
+                cambia = cfg is not None and cfg.proveedor != prov
+                if (cfg is None or cambia) and not (F.get("token") and F.get("app_secret")):
+                    raise ValueError("Indique la clave de API y el secreto de webhook de WasenderAPI" if prov == "wasender" else "Indique el token de acceso y el App Secret de Meta")
                 if cfg is None:
-                    if not (F.get("token") and F.get("app_secret")): raise ValueError("Indique el token de acceso y el App Secret")
                     cfg = WhatsappConfig(empresa_id=eid, clave_webhook=secrets.token_urlsafe(24), verify_token=secrets.token_urlsafe(18))
                     db.session.add(cfg)
-                cfg.phone_number_id = F["phone_number_id"].strip()
-                if not cfg.phone_number_id.isdigit(): raise ValueError("El Phone Number ID es numérico (lo muestra Meta en WhatsApp → Configuración de la API)")
+                cfg.proveedor = prov
+                if prov == "meta":
+                    cfg.phone_number_id = (F.get("phone_number_id") or "").strip()
+                    if not cfg.phone_number_id.isdigit(): raise ValueError("El Phone Number ID es numérico (lo muestra Meta en WhatsApp → Configuración de la API)")
+                else:
+                    u = (F.get("api_url") or "").strip().rstrip("/")
+                    if u and not u.startswith("https://"): raise ValueError("La URL de WasenderAPI debe empezar por https://")
+                    cfg.api_url = u or None
                 cfg.numero_visible = (F.get("numero_visible") or "").strip()[:30] or None
                 if F.get("token"): cfg.token_cifrado = cif.cifrar(F["token"].strip())
                 if F.get("app_secret"): cfg.app_secret_cifrado = cif.cifrar(F["app_secret"].strip())
@@ -405,29 +415,45 @@ def whatsapp_config(eid):
                 registrar(g.usuario.username, "WHATSAPP_WEBHOOK_ROTADO", f"empresa={eid}")
             elif a == "prueba":
                 SC.enviar_wa(eid, F["telefono"], "Mensaje de prueba del bot de WhatsApp de Contax ✅")
+            elif a == "estado":
+                if cfg is None or cfg.proveedor != "wasender": raise ValueError("Disponible solo con WasenderAPI")
+                from . import wasender as WS
+                flash(f"Sesión de WasenderAPI: {WS.estado_sesion(cfg.api_url, cif.descifrar(cfg.token_cifrado), current_app.extensions.get('wasender_transporte'))}")
             else: raise ValueError("Acción inválida")
             db.session.commit()
         try:
-            intentar(guardar, {"guardar": "Configuración guardada", "rotar": "Se generó una URL nueva: actualícela en Meta", "prueba": "Mensaje de prueba enviado"}.get(a, "Hecho"))
+            intentar(guardar, {"guardar": "Configuración guardada", "rotar": "Se generó una URL nueva: actualícela en Meta o en WasenderAPI", "prueba": "Mensaje de prueba enviado",
+                               "estado": "Conexión verificada"}.get(a, "Hecho"))
         except WA.ErrorWhatsapp as e:
             db.session.commit(); flash(str(e))
         return redirect(request.url)
     url = current_app.config["APP_BASE_URL"].rstrip("/") + url_for("web.whatsapp_webhook", clave=cfg.clave_webhook) if cfg else None
     series = [(x.id, f"Serie {x.serie or '(sin serie)'} · control hasta {x.control_prefijo}-{x.control_hasta:08d}") for x in db.session.execute(
         select(SerieFacturacion).where(SerieFacturacion.empresa_id == eid, SerieFacturacion.activa.is_(True))).scalars()]
-    secs = [dict(pares=[("Estado", ("Activo" if cfg.activo else "Pausado") if cfg else "Sin configurar"), ("Número", (cfg.numero_visible or cfg.phone_number_id) if cfg else "—"),
-                        ("URL del webhook (pegar en Meta)", url or "—"), ("Token de verificación (pegar en Meta)", cfg.verify_token if cfg else "—"),
-                        ("Campo a suscribir en Meta", "messages")]),
-            dict(titulo="Cómo conectarlo", nota="1) En developers.facebook.com cree una app de tipo Business con el producto WhatsApp y registre el número de la empresa. "
-                 "2) Copie el Phone Number ID, un token de acceso PERMANENTE (usuario del sistema) y el App Secret (Configuración → Básica) y guárdelos abajo. "
-                 "3) En WhatsApp → Configuración pegue la URL del webhook y el token de verificación de arriba y suscriba el campo «messages». "
-                 "Desde ese momento el bot atiende a clientes (catálogo y pedidos con los precios del inventario) y a proveedores (órdenes de compra y ofertas). "
-                 "Si un cliente o proveedor envía su ORDEN DE COMPRA en PDF, el bot la lee, la ajusta a la existencia, emite la factura (o una orden de venta) y le "
-                 "responde con el total, el enlace al documento y cómo pagar o retirar en la oficina."),
-            dict(titulo="Credenciales de WhatsApp Business", nota="El token y el App Secret se guardan cifrados; déjelos vacíos para conservar los actuales.",
-                 form=dict(action=request.path, boton="Guardar", campos=[h("guardar"), campo("phone_number_id", "Phone Number ID", valor=cfg.phone_number_id if cfg else None),
-                           campo("numero_visible", "Número visible (+58 412…)", req=False, valor=cfg.numero_visible if cfg else None),
-                           campo("token", "Token de acceso permanente", "password", req=False), campo("app_secret", "App Secret", "password", req=False),
+    ws = cfg is None or cfg.proveedor == "wasender"
+    pares = [("Estado", ("Activo" if cfg.activo else "Pausado") if cfg else "Sin configurar"),
+             ("Conexión", ("WasenderAPI (WhatsApp por código QR)" if ws else "WhatsApp Cloud API oficial de Meta") if cfg else "—"),
+             ("Número", (cfg.numero_visible or cfg.phone_number_id or "—") if cfg else "—"), ("URL del webhook (pegar en " + ("WasenderAPI" if ws else "Meta") + ")", url or "—")]
+    if cfg and not ws: pares += [("Token de verificación (pegar en Meta)", cfg.verify_token), ("Campo a suscribir en Meta", "messages")]
+    if cfg and ws: pares += [("Eventos a activar en WasenderAPI", "Mensajes recibidos (messages.received / messages.upsert)")]
+    pasos_ws = ("Con WasenderAPI (recomendado para empezar): 1) En wasenderapi.com cree una sesión y escanee el código QR con el WhatsApp Business de la empresa "
+                "(el mismo del teléfono). 2) Copie la clave de API de esa sesión y el secreto de webhook y guárdelos abajo. 3) Guarde para obtener la URL del "
+                "webhook, péguela en la sesión de WasenderAPI y active los mensajes recibidos. Tenga presente que es una conexión no oficial: WhatsApp puede "
+                "bloquear el número si detecta envíos masivos; úselo para atender, no para publicidad en masa.")
+    pasos_meta = ("Con Meta (oficial): 1) En developers.facebook.com cree una app Business con WhatsApp y registre el número. 2) Copie el Phone Number ID, un token "
+                  "PERMANENTE y el App Secret. 3) Pegue la URL del webhook y el token de verificación en WhatsApp → Configuración y suscriba «messages».")
+    secs = [dict(pares=pares),
+            dict(titulo="Cómo conectarlo", nota=(pasos_ws + " " + pasos_meta) + " Con cualquiera de las dos el bot atiende a clientes (catálogo y pedidos) y a "
+                 "proveedores (órdenes de compra y ofertas), y si le envían una ORDEN DE COMPRA en PDF la lee, emite la factura u orden de venta y responde cómo pagar."),
+            dict(titulo="Credenciales", abierto=True, nota="Las claves se guardan cifradas; déjelas vacías para conservar las actuales (al cambiar de conexión son obligatorias).",
+                 form=dict(action=request.path, boton="Guardar", campos=[h("guardar"),
+                           campo("proveedor", "Conexión", "select", opciones=[("wasender", "WasenderAPI · WhatsApp por código QR"), ("meta", "Meta · WhatsApp Cloud API oficial")],
+                                 valor=cfg.proveedor if cfg else "wasender"),
+                           campo("token", "Clave de API de la sesión (WasenderAPI) o token permanente (Meta)", "password", req=False),
+                           campo("app_secret", "Secreto de webhook (WasenderAPI) o App Secret (Meta)", "password", req=False),
+                           campo("numero_visible", "Número de WhatsApp de la empresa (+58 412…)", req=False, valor=cfg.numero_visible if cfg else None),
+                           campo("phone_number_id", "Phone Number ID (solo Meta)", req=False, valor=cfg.phone_number_id if cfg else None),
+                           campo("api_url", "URL de la API (solo WasenderAPI; vacío = https://www.wasenderapi.com/api)", req=False, valor=cfg.api_url if cfg else None),
                            campo("bienvenida", "Mensaje de bienvenida (opcional)", "textarea", req=False, valor=cfg.bienvenida if cfg else None),
                            campo("instrucciones_pago", "Cómo pagar o retirar (se envía con cada orden de venta o factura)", "textarea", req=False,
                                  valor=cfg.instrucciones_pago if cfg else None, ph="Pago móvil 0102 J-12345678-9 0414-0000000 · Retiro en Av. … de 8 a 5"),
@@ -436,14 +462,16 @@ def whatsapp_config(eid):
                            campo("serie_id", "Serie para facturar", "select", req=False, opciones=[("", "—")] + series, valor=cfg.serie_id if cfg else None),
                            campo("dias_credito", "Días de crédito de esas facturas", "number", req=False, valor=cfg.dias_credito if cfg else 0),
                            campo("activo", "Bot", "select", opciones=[("1", "Activo"), ("0", "Pausado")], valor="1" if (cfg is None or cfg.activo) else "0")]))]
+    if cfg and ws:
+        secs.append(dict(titulo="Verificar la conexión con WasenderAPI", form=dict(action=request.path, boton="Verificar", campos=[h("estado")])))
     if cfg:
         secs += [dict(titulo="Enviar mensaje de prueba", form=dict(action=request.path, boton="Enviar", campos=[h("prueba"), campo("telefono", "WhatsApp destino (58412…)")])),
                  dict(titulo="Regenerar URL del webhook", nota="Si la URL o el token se filtraron: la anterior deja de funcionar al instante.",
-                      form=dict(action=request.path, boton="Regenerar", confirmar="¿Regenerar la URL? Deberá actualizarla en Meta.", campos=[h("rotar")]))]
+                      form=dict(action=request.path, boton="Regenerar", confirmar="¿Regenerar la URL? Deberá actualizarla en Meta o en WasenderAPI.", campos=[h("rotar")]))]
     return pagina("Bot de WhatsApp", eid, secs)
 
 
-# ====================================================================== webhook público (Meta)
+# ====================================================================== webhook público (Meta o WasenderAPI)
 @bp.route("/wa/<clave>", methods=["GET", "POST"])
 @csrf.exempt
 @limiter.limit("300/minute")
@@ -456,13 +484,19 @@ def whatsapp_webhook(clave):
     rls.fijar_org(db, org)
     cfg = SC.config_wa(eid)
     if cfg is None: abort(404)
-    if request.method == "GET":  # verificación de la suscripción
+    if request.method == "GET" and cfg.proveedor == "wasender": return {"ok": True}
+    if request.method == "GET":  # verificación de la suscripción (Meta)
         if request.args.get("hub.mode") == "subscribe" and secrets.compare_digest(request.args.get("hub.verify_token", ""), cfg.verify_token):
             return Response(request.args.get("hub.challenge", "")[:200], mimetype="text/plain")
         abort(403)
     cuerpo = request.get_data(cache=True)
-    if not WA.firma_valida(current_app.extensions["cifrador"].descifrar(cfg.app_secret_cifrado), cuerpo, request.headers.get("X-Hub-Signature-256", "")):
-        abort(403)
+    secreto = current_app.extensions["cifrador"].descifrar(cfg.app_secret_cifrado)
+    if cfg.proveedor == "wasender":
+        from . import wasender as WS
+        valida, lector = WS.firma_valida(secreto, cuerpo, request.headers.get("X-Webhook-Signature", "")), WS.mensajes_entrantes
+    else:
+        valida, lector = WA.firma_valida(secreto, cuerpo, request.headers.get("X-Hub-Signature-256", "")), WA.mensajes_entrantes
+    if not valida: abort(403)
     est = current_app.extensions["gestor_licencia"](org).estado()
     from .planes import modulos_de
     if not (est.valida and {"facturacion", "inventario"} & set(modulos_de(est.claims))):
@@ -472,7 +506,7 @@ def whatsapp_webhook(clave):
     except ValueError:
         return {"ok": True}
     modulos = db.session.get(Empresa, eid).modulos_empresa(modulos_de(est.claims))
-    for tel, nombre, texto, wamid, adjunto in WA.mensajes_entrantes(aviso):
+    for tel, nombre, texto, wamid, adjunto in lector(aviso):
         try:
             SC.procesar_mensaje(eid, tel, nombre, texto, wamid, adjunto=adjunto, modulos=modulos); db.session.commit()
         except Exception:  # noqa: BLE001 — un mensaje defectuoso no debe frenar a los demás ni provocar reintentos en bucle

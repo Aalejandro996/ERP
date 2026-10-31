@@ -56,7 +56,7 @@ def entorno():
     with app_owner.app_context():
         db.session.execute(text("CREATE EXTENSION IF NOT EXISTS citext")); db.session.commit()
         db.create_all()
-        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql"):
+        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql"):
             db.session.execute(text(pathlib.Path("migrations", m).read_text(encoding="utf-8"))); db.session.commit()
     with owner.connect() as c:
         c.execute(text("GRANT USAGE ON SCHEMA public TO erp_app"))
@@ -643,6 +643,29 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     assert uno("SELECT cantidad_actual FROM productos WHERE empresa_id=:e AND codigo='A001'", e=eid) == Decimal("55")   # 50 + 10 (OC) − 5
     assert uno("SELECT count(*) FROM documentos_cxc WHERE empresa_id=:e AND deudor_rif='J-12345678-9' AND origen='manual'", e=eid) == 1
     assert uno("SELECT estado FROM pedidos WHERE empresa_id=:e AND referencia_cliente='779'", e=eid) == "Facturado"
+
+    # --- Misma empresa conectada por WasenderAPI (WhatsApp por QR): aviso con su secreto, respuesta por /send-message
+    ws_env = []
+    def ws_t(metodo, url, cuerpo, cab):
+        ws_env.append((url, json.loads(cuerpo) if cuerpo else None, cab)); return 200, b'{"success":true,"data":{"msgId":%d}}' % len(ws_env)
+    app.extensions["wasender_transporte"] = ws_t
+    r = a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "guardar", "proveedor": "wasender", "token": "WS-KEY", "app_secret": "WS-SECRET", "activo": "1",
+                                               "numero_visible": "+58 414 0000000", "factura_automatica": "1", "serie_id": str(sid),
+                                               "instrucciones_pago": "Pague en caja: Calle 5, Maracay, de 8 a 5."}, follow_redirects=True)
+    assert "Configuración guardada".encode() in r.data and "WasenderAPI (WhatsApp por código QR)".encode() in r.data, alerta(r)
+    assert anon.get(hook).status_code == 200                                                           # WasenderAPI no usa el reto de Meta
+    def ws_aviso(m, firma="WS-SECRET"):
+        return anon.post(hook, data=json.dumps({"event": "messages.received", "data": {"messages": m}}).encode(), content_type="application/json",
+                         headers={"X-Webhook-Signature": firma})
+    hola = {"key": {"id": "WS1", "fromMe": False, "remoteJid": "584125550000@s.whatsapp.net"}, "pushName": "Luis", "message": {"conversation": "Hola"}}
+    assert ws_aviso(hola, "otra").status_code == 403
+    assert ws_aviso(hola).status_code == 200
+    assert ws_env[-1][0] == "https://www.wasenderapi.com/api/send-message" and ws_env[-1][1]["to"] == "+584125550000" and ws_env[-1][2]["Authorization"] == "Bearer WS-KEY"
+    archivos["WS2"] = pdf(["Orden de compra N° 780", "RIF J-12345678-9", "A001 Harina PAN 1kg 2"])
+    ws_aviso({"key": {"id": "WS2", "fromMe": False, "remoteJid": "584149990000@s.whatsapp.net"},
+              "message": {"documentMessage": {"mimetype": "application/pdf", "fileName": "OC780.pdf"}}})
+    assert "Factura N° B00000002" in ws_env[-1][1]["text"], ws_env[-1][1]["text"]
+    assert uno("SELECT cantidad_actual FROM productos WHERE empresa_id=:e AND codigo='A001'", e=eid) == Decimal("53")
 
     # --- Maestro: cliente que no se registró en 72 h → reenviar invitación o eliminarlo
     from app import totp

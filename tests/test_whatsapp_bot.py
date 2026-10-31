@@ -67,3 +67,38 @@ def test_cliente_de_api_whatsapp():
     assert enviados[0][0].endswith("/123/messages") and enviados[0][2]["Authorization"] == "Bearer TOK" and b"584125551234" in enviados[0][1]
     with pytest.raises(WA.ErrorWhatsapp, match="24 h"):
         WA.enviar_texto("123", "TOK", "04125551234", "x", transporte=lambda *a: (400, b'{"error":{"message":"Re-engagement","code":131047}}'))
+
+
+# ------------------------------------------------------------------ WasenderAPI (WhatsApp por QR)
+def test_wasender_lee_avisos_firma_envio_y_adjuntos():
+    import json
+    from app import wasender as WS
+    aviso = {"event": "messages.received", "data": {"messages": {
+        "key": {"id": "ABC1", "fromMe": False, "remoteJid": "584141234567@s.whatsapp.net"}, "pushName": "Ana",
+        "message": {"conversation": "hola"}}}}
+    assert list(WS.mensajes_entrantes(aviso)) == [("584141234567", "Ana", "hola", "ws.ABC1", None)]
+    doc = {"event": "messages.upsert", "data": {"messages": [
+        {"key": {"id": "D1", "fromMe": False, "remoteJid": "584149990000@s.whatsapp.net"},
+         "message": {"documentMessage": {"mimetype": "application/pdf", "fileName": "OC.pdf", "caption": "mi orden"}}},
+        {"key": {"id": "X", "fromMe": True, "remoteJid": "584149990000@s.whatsapp.net"}, "message": {"conversation": "eco"}},
+        {"key": {"id": "G", "remoteJid": "1203630@g.us"}, "message": {"conversation": "grupo"}}]}}
+    (tel, _, texto, mid, adj), = list(WS.mensajes_entrantes(doc))                 # se ignoran fromMe y grupos
+    assert tel == "584149990000" and texto == "mi orden" and adj["nombre"] == "OC.pdf" and adj["raw"]["key"]["id"] == "D1"
+    assert list(WS.mensajes_entrantes({"event": "messages.update", "data": aviso["data"]})) == []
+    cuerpo = b'{"a":1}'
+    assert WS.firma_valida("sec", cuerpo, "sec") and WS.firma_valida("sec", cuerpo, hmac.new(b"sec", cuerpo, hashlib.sha256).hexdigest())
+    assert not WS.firma_valida("sec", cuerpo, "otro") and not WS.firma_valida("", cuerpo, "")
+    llamadas = []
+    def t(metodo, url, cuerpo, cab):
+        llamadas.append((metodo, url, json.loads(cuerpo) if cuerpo else None, cab))
+        if url.endswith("/send-message"): return 200, b'{"success":true,"data":{"msgId":77}}'
+        if url.endswith("/decrypt-media"): return 200, b'{"success":true,"publicUrl":"https://cdn.wasender.test/x.pdf"}'
+        if url.startswith("https://cdn."): return 200, b"%PDF-1.4 ..."
+        return 429, b'{"success":false,"message":"Too many requests"}'
+    assert WS.enviar_texto(None, "KEY", "0414-1234567", "hola", transporte=t) == "77"
+    assert llamadas[0][1] == "https://www.wasenderapi.com/api/send-message" and llamadas[0][2] == {"to": "+584141234567", "text": "hola"}
+    assert llamadas[0][3]["Authorization"] == "Bearer KEY"
+    datos, mime = WS.descargar_media(None, "KEY", adj["raw"], transporte=t)
+    assert datos.startswith(b"%PDF") and mime == "application/pdf" and llamadas[1][2] == {"data": {"messages": adj["raw"]}}
+    with pytest.raises(WA.ErrorWhatsapp, match="límite"): WS.estado_sesion(None, "KEY", transporte=t)
+    with pytest.raises(WA.ErrorWhatsapp): WS.enviar_texto("http://inseguro", "KEY", "04141234567", "x", transporte=t)
