@@ -40,6 +40,11 @@ class Licencia:
 
 @pytest.fixture(scope="module")
 def entorno():
+    return crear_entorno()
+
+
+def crear_entorno():
+    """Base limpia con migraciones, app con rol limitado (RLS) y servidor de licencias en proceso (también lo usa tests/e2e)."""
     from sqlalchemy import create_engine, text
     from config import Config
     from app import create_app
@@ -83,6 +88,12 @@ def entorno():
     app.config["PAGO_MOVIL_INSTRUCCIONES"] = "Banco Prueba 0414-0000000, RIF J-00000000-0."
     app.extensions["admin_licencias"] = lambda: ClienteAdmin("https://lic.test", "z" * 40, transporte=transporte)
     return dict(app=app, owner=owner, planes=planes, app_owner=app_owner, correos_lic=correos_lic)
+
+
+def _consulta(motor, *args):
+    """SELECT como dueño (sin RLS) cerrando la conexión: dejarla abierta agota el pool en intérpretes que no la liberan al instante."""
+    with motor.connect() as c:
+        return c.execute(*args).freeze()()
 
 
 def _cliente(app):
@@ -188,7 +199,7 @@ def test_flujo_completo(entorno):
     # --- Cliente A (ALL_IN_ONE): empresa, cuentas, inventario, serie ---
     r = a.post("/", data={"razon_social": "Comercial Uno CA", "rif": "j-22222222-2", "spe": "1"}, follow_redirects=True)
     assert "Empresa creada".encode() in r.data, re.findall(r'role="alert">([^<]+)', r.get_data(as_text=True))
-    dueño = lambda sql: owner.connect().execute(text(sql)).scalar()                                  # el dueño no está sujeto a RLS
+    dueño = lambda sql: _consulta(owner, text(sql)).scalar()                                  # el dueño no está sujeto a RLS
     eid_a = dueño("SELECT id FROM empresas WHERE rif='J-22222222-2'")
     for cod, nom, tipo in (("1.1", "Caja y bancos", "Activo"), ("1.2", "Cuentas por cobrar", "Activo"), ("1.3", "Inventario", "Activo"),
                            ("2.1", "IVA débito fiscal", "Pasivo"), ("2.2", "IGTF por pagar", "Pasivo"), ("4.1", "Ventas", "Ingreso"), ("5.1", "Costo de ventas", "Gasto")):
@@ -408,11 +419,11 @@ def test_contabilidad_compras_y_bot_de_whatsapp(entorno):
             c.execute(text("INSERT INTO alicuotas_impuesto(codigo, porcentaje, fecha_vigencia) VALUES (:c, :p, '2025-06-01') ON CONFLICT DO NOTHING"), {"c": cod, "p": pct})
         c.execute(text("INSERT INTO tasa_cambio(fecha, tasa_usd_ves, tasa_eur_ves, fuente) VALUES (:f, 40, 44, 'prueba') ON CONFLICT DO NOTHING"), {"f": hoy})
         c.commit()
-    tasa = owner.connect().execute(text("SELECT tasa_usd_ves FROM tasa_cambio WHERE fecha=:f"), {"f": hoy}).scalar()
+    tasa = _consulta(owner, text("SELECT tasa_usd_ves FROM tasa_cambio WHERE fecha=:f"), {"f": hoy}).scalar()
     org, a = _org_con_admin(entorno, "Delta Comercial", "J-44444444-4", "adminD")
     _, x = _org_con_admin(entorno, "Intrusa SA", "J-55555555-5", "adminX")
     a.post("/", data={"razon_social": "Delta Comercial CA", "rif": "J-44444444-4", "spe": "0", "direccion": "Av. Bolívar, Valencia"})
-    eid = owner.connect().execute(text("SELECT id FROM empresas WHERE rif='J-44444444-4'")).scalar()
+    eid = _consulta(owner, text("SELECT id FROM empresas WHERE rif='J-44444444-4'")).scalar()
     alerta = lambda r: re.findall(r'role="alert">([^<]+)', r.get_data(as_text=True))
 
     # --- Plan de cuentas: el cliente sube el que ya tiene (CSV de su sistema anterior) y además carga el modelo VEN-NIF
@@ -447,7 +458,7 @@ def test_contabilidad_compras_y_bot_de_whatsapp(entorno):
     a.post(f"/e/{eid}/inventario", data={"accion": "entrada", "codigo": "A001", "cantidad": "10", "costo": "40", "fecha": hoy, "pago": "Contado"})
     r = a.post(f"/e/{eid}/compras/proveedores", data={"rif": "j-66666666-6", "razon_social": "Distribuidora Seis CA", "whatsapp": "0414-1234567", "email": "ventas@seis.test"}, follow_redirects=True)
     assert "Proveedor guardado".encode() in r.data, alerta(r)
-    pid = owner.connect().execute(text("SELECT id FROM proveedores WHERE rif='J-66666666-6'")).scalar()
+    pid = _consulta(owner, text("SELECT id FROM proveedores WHERE rif='J-66666666-6'")).scalar()
     r = a.post(f"/e/{eid}/compras/ordenes", data={"destinatario": f"P:{pid}", "fecha": hoy, "moneda": "USD", "condicion_pago": "Crédito 15 días",
                                                    "l1_cod": "A001", "l1_cant": "100", "l1_precio": "1.10", "l1_alic": "G",
                                                    "l2_desc": "Flete", "l2_cant": "1", "l2_precio": "20", "l2_alic": "E"})
@@ -468,7 +479,7 @@ def test_contabilidad_compras_y_bot_de_whatsapp(entorno):
     app.extensions["whatsapp_transporte"] = lambda url, cuerpo, cab: (enviados.append(json.loads(cuerpo)) or (200, b'{"messages":[{"id":"wamid.out%d"}]}' % len(enviados)))
     r = a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "guardar", "phone_number_id": "1098765", "token": "TOKEN-META", "app_secret": "APPSECRET", "activo": "1"}, follow_redirects=True)
     assert "Configuración guardada".encode() in r.data, alerta(r)
-    cfg = owner.connect().execute(text("SELECT clave_webhook, verify_token, token_cifrado FROM whatsapp_config WHERE empresa_id=:e"), {"e": eid}).one()
+    cfg = _consulta(owner, text("SELECT clave_webhook, verify_token, token_cifrado FROM whatsapp_config WHERE empresa_id=:e"), {"e": eid}).one()
     assert "TOKEN-META" not in cfg[2]                                               # cifrado en reposo
     hook = f"/wa/{cfg[0]}"
     assert anon.get(hook, query_string={"hub.mode": "subscribe", "hub.verify_token": cfg[1], "hub.challenge": "42"}).data == b"42"
@@ -484,26 +495,26 @@ def test_contabilidad_compras_y_bot_de_whatsapp(entorno):
         assert aviso("584241112233", msg, f"wamid.c{i}").status_code == 200
     aviso("584241112233", "3", "wamid.c4")                                          # aviso repetido por Meta: no duplica
     assert "Pedido recibido" in enviados[-1]["text"]["body"] and enviados[-1]["to"] == "584241112233"
-    ped = owner.connect().execute(text("SELECT numero, tipo, total, estado FROM pedidos WHERE empresa_id=:e"), {"e": eid}).all()
+    ped = _consulta(owner, text("SELECT numero, tipo, total, estado FROM pedidos WHERE empresa_id=:e"), {"e": eid}).all()
     assert [tuple(p) for p in ped] == [(1, "venta", Decimal("136.50"), "Nuevo")]
     # la empresa envía la OC por WhatsApp y el proveedor (reconocido por su número) la confirma desde el chat
     r = a.post(oc_url + "/accion", data={"accion": "whatsapp"}, follow_redirects=True)
     assert "enviada por WhatsApp".encode() in r.data and enviados[-1]["to"] == "584141234567" and "CONFIRMAR 1" in enviados[-1]["text"]["body"]
     aviso("584141234567", "CONFIRMAR 1", "wamid.p1")
-    assert owner.connect().execute(text("SELECT estado FROM ordenes_compra WHERE empresa_id=:e"), {"e": eid}).scalar() == "Confirmada"
+    assert _consulta(owner, text("SELECT estado FROM ordenes_compra WHERE empresa_id=:e"), {"e": eid}).scalar() == "Confirmada"
     # el proveedor envía una oferta; la empresa la convierte en orden de compra
     for i, msg in enumerate(["2", "A001 200 1,05", "FIN"]): aviso("584141234567", msg, f"wamid.o{i}")
-    oferta = owner.connect().execute(text("SELECT id FROM pedidos WHERE tipo='compra' AND empresa_id=:e"), {"e": eid}).scalar()
+    oferta = _consulta(owner, text("SELECT id FROM pedidos WHERE tipo='compra' AND empresa_id=:e"), {"e": eid}).scalar()
     r = a.post(f"/e/{eid}/whatsapp/pedidos", data={"accion": "oc", "pid": oferta, "moneda": "USD"}, follow_redirects=True)
     assert "OC-000002".encode() in r.data, alerta(r)
     # pedido de cliente: confirmar y avisar
-    pv = owner.connect().execute(text("SELECT id FROM pedidos WHERE tipo='venta' AND empresa_id=:e"), {"e": eid}).scalar()
+    pv = _consulta(owner, text("SELECT id FROM pedidos WHERE tipo='venta' AND empresa_id=:e"), {"e": eid}).scalar()
     a.post(f"/e/{eid}/whatsapp/pedidos", data={"accion": "estado", "pid": pv, "estado": "Confirmado", "avisar": "1"})
     assert "fue confirmado" in enviados[-1]["text"]["body"]
     # recibir la OC 1: la harina entra al inventario al costo en Bs (1,10 USD × tasa BCV)
     r = a.post(oc_url + "/accion", data={"accion": "recibir"}, follow_redirects=True)
     assert "1 producto(s) entraron al inventario".encode() in r.data, r.data[-600:]
-    assert owner.connect().execute(text("SELECT cantidad_actual, costo_promedio_actual FROM productos WHERE empresa_id=:e AND codigo='A001'"), {"e": eid}).one() == (Decimal("110"), ((Decimal(400) + Decimal("1.10") * tasa * 100) / 110).quantize(Decimal("0.0001")))
+    assert _consulta(owner, text("SELECT cantidad_actual, costo_promedio_actual FROM productos WHERE empresa_id=:e AND codigo='A001'"), {"e": eid}).one() == (Decimal("110"), ((Decimal(400) + Decimal("1.10") * tasa * 100) / 110).quantize(Decimal("0.0001")))
     # aislamiento: la otra organización no ve pedidos, chats ni la configuración del bot
     assert x.get(f"/e/{eid}/whatsapp/pedidos").status_code == 404 and x.get(f"/e/{eid}/compras/ordenes").status_code == 404
     with app.app_context():
@@ -521,7 +532,7 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     from sqlalchemy import text
     app, owner = entorno["app"], entorno["owner"]
     hoy = hoy_ve().isoformat()
-    uno = lambda sql, **p: owner.connect().execute(text(sql), p).scalar()
+    uno = lambda sql, **p: _consulta(owner, text(sql), p).scalar()
     alerta = lambda r: re.findall(r'role="alert">([^<]+)', r.get_data(as_text=True))
     org, a = _org_con_admin(entorno, "Epsilon Market", "J-77777777-7", "adminE")
 
@@ -561,7 +572,7 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     buf = io.BytesIO(); wb.save(buf)
     r = a.post(f"/e/{eid}/migracion", data={"archivo": (io.BytesIO(buf.getvalue()), "profit.xlsx")}, content_type="multipart/form-data")
     assert "/migracion/" in r.headers["Location"], alerta(a.get(f"/e/{eid}/migracion"))
-    ms = owner.connect().execute(text("SELECT id, tipo, sistema FROM migraciones WHERE empresa_id=:e ORDER BY id"), {"e": eid}).all()
+    ms = _consulta(owner, text("SELECT id, tipo, sistema FROM migraciones WHERE empresa_id=:e ORDER BY id"), {"e": eid}).all()
     assert [(t, s) for _, t, s in ms] == [("clientes", "Profit Plus"), ("productos", "Profit Plus"), ("cxc", "Profit Plus")]
     vista = a.get(f"/e/{eid}/migracion/{ms[0][0]}").get_data(as_text=True)
     assert "✔ Nuevo" in vista and "✘ Error" in vista and "J-12345678-9" in vista

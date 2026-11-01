@@ -64,10 +64,41 @@ def paginar(tabla, clave):
                     "ant": url(actual - 1) if actual > 1 else None, "sig": url(actual + 1) if actual < paginas else None, "todas": url("todo")}}
 
 
+RE_LINEA = re.compile(r"^l(\d+)_\w+$")
+LINEAS_VISIBLES, MAX_CAMPOS_A_LA_VISTA = 2, 8
+TIPOS_OPCIONALES = ("text", "number", "date", "email", "tel", "textarea", "url")
+
+
+def compactar(form):
+    """Formularios cortos para el cliente: las líneas repetidas (l1_…, l2_…) van en una tabla que muestra solo
+    LINEAS_VISIBLES filas y crece con «Agregar línea»; en formularios largos los campos opcionales de texto se pliegan
+    en «Más datos (opcional)». Los selectores y los obligatorios siguen a la vista. El envío no cambia."""
+    lineas, resto = {}, []
+    for c in form.get("campos") or []:
+        m = RE_LINEA.match(c["n"]) if c["t"] != "hidden" else None
+        (lineas.setdefault(int(m[1]), []) if m else resto).append(c)
+    out = dict(form)
+    if len(lineas) >= 2:
+        nums = sorted(lineas)
+        cols = [re.sub(r"\s\d+(?=\s|$)", "", c["l"]).strip() for c in lineas[nums[0]]]
+        out["lineas"] = dict(cols=cols, filas=[dict(campos=lineas[i], extra=k >= LINEAS_VISIBLES and not any(c.get("req") and c["t"] != "select" for c in lineas[i]))
+                                               for k, i in enumerate(nums)])
+    else:
+        resto = form.get("campos") or []
+    visibles = [c for c in resto if c["t"] != "hidden"]
+    opcionales = [c for c in visibles if not c.get("req") and c["t"] in TIPOS_OPCIONALES]
+    if len(visibles) > MAX_CAMPOS_A_LA_VISTA and 3 <= len(opcionales) < len(visibles):
+        ids = {id(c) for c in opcionales}
+        resto, out["opcionales"] = [c for c in resto if id(c) not in ids], opcionales
+    out["campos"] = resto
+    return out
+
+
 def pagina(titulo, eid, secciones, acciones=None):
     emp = db.session.get(Empresa, eid) if eid else None
     secciones = [({**s, "tabla": paginar(s["tabla"], f"pag{i}" if i else "pag")} if isinstance(s, dict) and s.get("tabla") else s)
                  for i, s in enumerate(secciones)]
+    secciones = [({**s, "form": compactar(s["form"])} if isinstance(s, dict) and s.get("form") else s) for s in secciones]
     return render_template("pagina.html", titulo=titulo, empresa=emp, secciones=secciones, acciones=acciones or [],
                            pestanas=pestanas(eid) if emp is not None else [])
 
@@ -353,7 +384,7 @@ def cuentas(eid):
 def asientos(eid):
     if request.method == "POST":
         if not tiene_permiso(g.usuario, "asientos.crear"): return ("", 403)
-        lineas = [(F.get(f"c{i}", ""), F.get(f"d{i}") or 0, F.get(f"h{i}") or 0) for i in range(1, 9) if F.get(f"c{i}", "").strip()]
+        lineas = [(F.get(f"c{i}", ""), F.get(f"d{i}") or 0, F.get(f"h{i}") or 0) for i in range(1, LINEAS_ASIENTO + 1) if F.get(f"c{i}", "").strip()]
         if intentar(lambda: contab.crear_asiento(eid, g.usuario, F["fecha"], F["concepto"], lineas), lambda a: f"Asiento N°{a} registrado"):
             return redirect(request.url)
     cods = [(c, f"{c} {n}") for c, n in db.session.execute(select(Cuenta.codigo, Cuenta.nombre).where(Cuenta.empresa_id == eid).order_by(Cuenta.codigo))]
@@ -362,10 +393,14 @@ def asientos(eid):
                                   .group_by(Movimiento.asiento_id)).all())
     out = []
     if tiene_permiso(g.usuario, "asientos.crear"):
-        out.append(dict(titulo="Nuevo asiento", nota="Hasta 8 líneas. El total del debe debe ser igual al del haber; los períodos cerrados no admiten asientos.",
-                        form=dict(action=request.path, boton="Procesar asiento", campos=[campo("fecha", "Fecha", "date", valor=hoy()), campo("concepto", "Concepto")] + sum(
-                            [[campo(f"c{i}", f"Cuenta {i}", "select", req=i <= 2, opciones=[("", "—")] + cods), campo(f"d{i}", "Debe", "number", req=False),
-                              campo(f"h{i}", "Haber", "number", req=False)] for i in range(1, 9)], []))))
+        concepto, lineas, nota = "", [], "Agregue cada línea con su cuenta y su monto al debe o al haber. El total del debe debe ser igual al del haber; los períodos cerrados no admiten asientos."
+        if request.args.get("apertura"):
+            concepto, lineas = "Asiento de apertura de operaciones", _lineas_apertura(eid)
+            nota = ("Se cargaron las cuentas típicas de apertura de su catálogo: escriba los saldos iniciales y agregue las que falten."
+                    + (" Atención: esta empresa ya tiene asientos; el asiento de apertura solo se usa al comenzar, los saldos pasan solos de un año al siguiente."
+                       if ult else ""))
+        out.append(dict(titulo="Nuevo asiento", nota=nota, asiento=dict(action=request.path, cuentas=cods, fecha=hoy(), concepto=concepto, lineas=lineas,
+                                                                         apertura=url_for("web.asientos", eid=eid, apertura=1))))
     if tiene_permiso(g.usuario, "asientos.anular"):
         out.append(dict(titulo="Anular asiento (contra-asiento)", nota="Los asientos no se borran ni se editan: se anulan con un contra-asiento.",
                         form=dict(action=url_for("web.anular", eid=eid), boton="Anular", campos=[campo("asiento_id", "N° de asiento", "number"),
@@ -373,6 +408,24 @@ def asientos(eid):
     out.append(dict(titulo="Últimos asientos", tabla=dict(cols=["N°", "Fecha", "Concepto", "Total"], num=[3], filas=[
         dict(cells=[a.id, a.fecha, a.concepto, tot.get(a.id, 0)], url=url_for("web.diario", eid=eid, desde=a.fecha, hasta=a.fecha)) for a in ult])))
     return pagina("Asientos contables", eid, out)
+
+
+LINEAS_ASIENTO = 40
+APERTURA = (("caja",), ("banco",), ("inventario", "mercanc"), ("cuentas por cobrar", "clientes"), ("cuentas por pagar", "proveedores"), ("capital",))
+
+
+def _lineas_apertura(eid):
+    """Como el «asiento de apertura» de IQ_Contable, pero con las cuentas reales de la empresa (la de mayor detalle que
+    coincida con caja, bancos, inventario, CxC, CxP y capital) y sin montos inventados: el usuario escribe sus saldos."""
+    cuentas = db.session.execute(select(Cuenta.codigo, Cuenta.nombre, Cuenta.tipo).where(Cuenta.empresa_id == eid,
+                                 Cuenta.tipo.in_(("Activo", "Pasivo", "Patrimonio"))).order_by(Cuenta.codigo)).all()
+    elegidas = []
+    for claves in APERTURA:
+        hay = [c for c in cuentas if any(k in c.nombre.lower() for k in claves) and c.codigo not in {e[0] for e in elegidas}]
+        if hay:
+            c = max(hay, key=lambda x: (x.codigo.count("."), len(x.codigo)))   # la cuenta de movimiento, no la de grupo
+            elegidas.append((c.codigo, c.nombre, "", ""))
+    return elegidas
 
 
 @ruta("/e/<int:eid>/asientos/anular", "asientos.anular", ("POST",))

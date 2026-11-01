@@ -33,6 +33,27 @@
   {% if a.calculo %}<div class="px-fila px-total"><span>{{ a.calculo.etiqueta }}</span><b data-calc>—</b></div>{% endif %}
   {% if (a.resumen or {}).nota %}<p class="peq">{{ a.resumen.nota }}</p>{% endif %}
   <button class="px-boton">{{ a.boton }}</button></div></aside></form>{% endmacro %}
+{% macro editor_asiento(a) %}<form method="post" action="{{ a.action }}" class="asiento-ed" data-asiento><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<div class="asiento-cab"><a class="btn sec" href="{{ a.apertura }}">Generar asiento de apertura</a>
+  <label>Fecha del comprobante<input name="fecha" type="date" required value="{{ a.fecha }}"></label>
+  <label class="largo">Concepto general<input name="concepto" required maxlength="500" autocomplete="off" value="{{ a.concepto or '' }}"></label></div>
+<fieldset class="asiento-ctrl"><legend>Agregar / editar línea de asiento</legend>
+  <label class="largo">Cuenta<select data-l="cuenta"><option value="">— Seleccione la cuenta —</option>{% for o in a.cuentas %}<option value="{{ o[0] }}">{{ o[1] }}</option>{% endfor %}</select></label>
+  <label>Debe<input data-l="debe" type="number" step="0.01" min="0" placeholder="0,00"></label>
+  <label>Haber<input data-l="haber" type="number" step="0.01" min="0" placeholder="0,00"></label>
+  <button type="button" data-l="agregar">Agregar línea</button><button type="button" class="peligro" data-l="eliminar">Eliminar línea</button>
+  <p class="asiento-aviso" data-l="aviso" role="status"></p></fieldset>
+<div class="tabla-wrap"><table class="asiento-lineas"><thead><tr><th>Código</th><th>Cuenta</th><th class="n">Debe</th><th class="n">Haber</th></tr></thead>
+<tbody data-l="lineas">{% for c, n, d, h in a.lineas %}<tr><td><input type="hidden" name="c{{ loop.index }}" value="{{ c }}">{{ c }}</td><td>{{ n }}</td>
+<td class="n"><input name="d{{ loop.index }}" type="number" step="0.01" min="0" value="{{ d }}" placeholder="0,00" aria-label="Debe de {{ n }}"></td><td class="n"><input name="h{{ loop.index }}" type="number" step="0.01" min="0" value="{{ h }}" placeholder="0,00" aria-label="Haber de {{ n }}"></td></tr>{% endfor %}</tbody>
+<tbody><tr class="vacio" data-l="vacio"{% if a.lineas %} hidden{% endif %}><td colspan="4" class="peq">Aún no hay líneas: elija la cuenta, escriba el monto y pulse «Agregar línea». Haga clic en una línea para seleccionarla.</td></tr></tbody></table></div>
+<div class="asiento-pie"><b class="asiento-tot" data-l="totales">DEBE: 0,00 &nbsp;|&nbsp; HABER: 0,00</b><button>Guardar asiento completo</button></div>
+<noscript><p class="msg">Active JavaScript para agregar líneas al asiento.</p></noscript></form>{% endmacro %}
+{% macro control(c, etiqueta) %}{% if c.t == 'select' %}<select name="{{ c.n }}" aria-label="{{ etiqueta }}" {{ 'required' if c.req }}>{% for o in c.opciones %}{{ opcion(o, c.valor) }}{% endfor %}</select>
+{% else %}<input name="{{ c.n }}" type="{{ c.t }}" aria-label="{{ etiqueta }}" {{ 'required' if c.req }} {% if c.t == 'number' %}step="any" min="0"{% endif %} value="{{ c.valor if c.valor is not none else '' }}" maxlength="500" autocomplete="off">{% endif %}{% endmacro %}
+{% macro tabla_lineas(L) %}<div class="tabla-wrap"><table class="lineas-form" data-lineas><thead><tr><th class="nro">#</th>{% for col in L.cols %}<th>{{ col }}</th>{% endfor %}</tr></thead><tbody>
+{% for f in L.filas %}<tr {% if f.extra %}hidden data-extra{% endif %}><td class="nro">{{ loop.index }}</td>{% set i = loop.index %}{% for c in f.campos %}<td class="t-{{ c.t }}">{{ control(c, L.cols[loop.index0] ~ ' de la línea ' ~ i) }}</td>{% endfor %}</tr>{% endfor %}
+</tbody></table></div>{% if L.filas|selectattr('extra')|list %}<button type="button" class="sec mas-linea" data-mas-linea>Agregar línea</button>{% endif %}{% endmacro %}
 {% block contenido %}
 <div class="cabecera"><div>{% if empresa %}<div class="ruta">{{ empresa.razon_social }} · RIF {{ empresa.rif }}</div>{% endif %}<h1>{{ titulo }}</h1></div>
 {% if acciones %}<div class="acciones">{% for a in acciones %}<a class="btn {{ '' if a.primaria else 'sec' }}" href="{{ a.url }}">{{ a.texto }}</a>{% endfor %}</div>{% endif %}</div>
@@ -53,7 +74,10 @@
 {% for x, et in gr.etiquetas %}<text x="{{ x }}" y="{{ gr.base + 16 }}" text-anchor="middle" class="viz-eje">{{ et }}</text>{% endfor %}</svg>
 <figcaption class="peq">{{ gr.nota }}</figcaption></figure>{% endif %}
 {% if s.form %}<form method="{{ s.form.metodo or 'post' }}" action="{{ s.form.action }}" {% if s.form.archivo %}enctype="multipart/form-data"{% endif %} {% if s.form.confirmar %}data-confirmar="{{ s.form.confirmar }}"{% endif %}>{% if (s.form.metodo or 'post') == 'post' %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
-{{ campos(s.form.campos) }}<div class="form-pie"><button>{{ s.form.boton }}</button></div></form>{% endif %}
+{{ campos(s.form.campos) }}{% if s.form.lineas %}{{ tabla_lineas(s.form.lineas) }}{% endif %}
+{% if s.form.opcionales %}<details class="opcionales"><summary>Más datos (opcional) <span class="peq">· {{ s.form.opcionales|length }} campos</span></summary>{{ campos(s.form.opcionales) }}</details>{% endif %}
+<div class="form-pie"><button>{{ s.form.boton }}</button></div></form>{% endif %}
+{% if s.asiento %}{{ editor_asiento(s.asiento) }}{% endif %}
 {% if s.enlace %}<div class="form-pie"><a class="btn" href="{{ s.enlace.url }}" rel="noopener noreferrer">{{ s.enlace.texto }} →</a></div>{% endif %}
 {% if s.pares %}<table class="pares">{% for k, v in s.pares %}<tr><th>{{ k }}</th><td class="n">{{ v }}</td></tr>{% endfor %}</table>{% endif %}
 {% if s.tabla %}<div class="tabla-wrap"><table class="{{ 'ancha' if s.tabla.ancha }}"><thead><tr>{% for c in s.tabla.cols %}<th class="{{ 'n' if loop.index0 in (s.tabla.num or []) }}">{{ c }}</th>{% endfor %}{% if s.tabla.accion %}<th></th>{% endif %}</tr></thead><tbody>

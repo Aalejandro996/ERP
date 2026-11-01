@@ -21,3 +21,6 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+tests/e2e/.accesos.json
+tests/e2e/capturas/
+comparacion/

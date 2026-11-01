@@ -96,23 +96,91 @@ td a.fila{color:var(--ink);font-weight:600;text-decoration:none}
 td a.fila:hover{text-decoration:underline}
 table.ancha{font-size:.8rem}
 table.pares th{text-transform:none;letter-spacing:0;font-size:.9rem;color:var(--text);font-weight:500;width:55%}
+table.pares td.n{white-space:normal;overflow-wrap:anywhere}
 
-/* ---------- formularios ---------- */
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px 14px}
-label{display:flex;flex-direction:column;gap:6px;font-size:.82rem;font-weight:500;color:var(--muted)}
-input,select,textarea{font:inherit;font-size:.95rem;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-sm);padding:.6rem .75rem;width:100%;min-width:0}
+/* ---------- formularios ----------
+   Un solo alto para todo control de una línea (input, select, fecha, número): las filas siempre quedan alineadas.
+   El control se pega al pie de su etiqueta, así una etiqueta de dos líneas no descuadra la fila. */
+:root{--control-h:2.75rem;--borde-control:#d9d9d5}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--borde-control:#3a3a3a}}
+:root[data-theme="dark"]{--borde-control:#3a3a3a}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px 16px;align-items:end}
+label{display:flex;flex-direction:column;gap:6px;font-size:.82rem;font-weight:500;color:var(--text);min-width:0}
+.grid>label>:is(input,select,textarea){margin-top:auto}
+.grid>label:has(textarea){grid-column:1/-1}            /* las notas ocupan su propia fila: no estiran la fila de campos */
+input,select,textarea{font:inherit;font-size:.95rem;color:var(--ink);background:var(--surface);border:1px solid var(--borde-control);border-radius:var(--radius-sm);
+  padding:0 .8rem;width:100%;min-width:0;transition:border-color .12s,box-shadow .12s}
+input:not([type=checkbox]):not([type=radio]):not([type=file]),select{height:var(--control-h);line-height:calc(var(--control-h) - 2px)}
+textarea{padding:.65rem .8rem;line-height:1.5;min-height:6rem;resize:vertical}
+input::placeholder,textarea::placeholder{color:var(--muted);opacity:.8}
+input:hover,select:hover,textarea:hover{border-color:#b9b9b4}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--ink);box-shadow:0 0 0 3px var(--accent-soft)}
-input[type=checkbox]{width:auto}
-.btn,button{font:inherit;font-weight:600;font-size:.92rem;border:0;border-radius:var(--radius-sm);padding:.62rem 1.1rem;cursor:pointer;background:var(--accent);color:var(--accent-ink);text-decoration:none;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+input:focus-visible,select:focus-visible,textarea:focus-visible{box-shadow:0 0 0 3px var(--accent)}
+input:disabled,select:disabled{background:var(--surface-2);color:var(--muted);cursor:not-allowed}
+input:user-invalid,select:user-invalid{border-color:var(--danger)}
+/* select con flecha propia: el nativo de cada navegador tiene otra altura y otro relleno */
+select{appearance:none;-webkit-appearance:none;padding-right:2.2rem;cursor:pointer;text-overflow:ellipsis;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%23707070' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right .85rem center}
+select[multiple]{height:auto;background-image:none;padding:.4rem}
+/* fechas: mismo alto que el resto y el ícono del calendario dentro del campo */
+input[type=date],input[type=month]{padding-right:.6rem}
+input[type=date]::-webkit-calendar-picker-indicator{opacity:.55;cursor:pointer}
+input[type=date]::-webkit-datetime-edit{padding:0}
+/* montos: a la derecha, cifras tabulares y sin flechas */
+input[type=number]{text-align:right;font-variant-numeric:tabular-nums;-moz-appearance:textfield}
+input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+input[type=file]{padding:.5rem;height:auto;background:var(--surface-2);cursor:pointer}
+input[type=file]::file-selector-button{font:inherit;font-weight:600;border:0;border-radius:8px;padding:.45rem .9rem;margin-right:.8rem;background:var(--ink);color:var(--surface);cursor:pointer}
+input[type=checkbox],input[type=radio]{width:1.05rem;height:1.05rem;accent-color:var(--accent-ink);margin:0;flex:none}
+.btn,button{font:inherit;font-weight:600;font-size:.92rem;border:0;border-radius:var(--radius-sm);padding:0 1.1rem;min-height:var(--control-h);cursor:pointer;background:var(--accent);color:var(--accent-ink);text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}
 .btn:hover,button:hover{background:var(--accent-hover)}
-.btn.sec,button.sec{background:var(--surface);color:var(--ink);border:1px solid var(--line)}
+.btn:focus-visible,button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.btn.sec,button.sec{background:var(--surface);color:var(--ink);border:1px solid var(--borde-control)}
 .btn.sec:hover,button.sec:hover{border-color:var(--ink);background:var(--surface)}
 .btn.osc,button.osc{background:var(--ink);color:var(--surface)}
 button.peligro{background:var(--danger);color:#fff}
-.form-pie{margin-top:16px;display:flex;gap:8px;flex-wrap:wrap}
+button:disabled{opacity:.6;cursor:progress}
+.form-pie{margin-top:18px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+/* formularios dentro de una tabla (cobrar, pagar, cerrar hallazgo): compactos y en una sola fila */
 .mini{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-.mini input{width:8rem;padding:.4rem .55rem}
-.mini button{padding:.42rem .8rem}
+.mini input,.mini select{--control-h:2.25rem;width:8.5rem;font-size:.88rem;padding:0 .55rem}
+.mini input[type=date]{width:9.5rem}
+.mini button{--control-h:2.25rem;padding:0 .8rem;font-size:.85rem}
+
+/* ---------- formularios compactos: líneas repetidas en tabla y opcionales plegados ---------- */
+.lineas-form{margin-top:16px}
+.lineas-form th{white-space:nowrap}
+.lineas-form td{padding:4px 5px;border-bottom:0;white-space:normal}
+.lineas-form tbody tr:hover{background:none}
+.lineas-form :is(input,select){--control-h:2.4rem;font-size:.9rem;padding:0 .6rem;min-width:5.5rem}
+.lineas-form select{padding-right:1.9rem;background-position:right .6rem center;min-width:9rem}
+.lineas-form td.t-text{min-width:12rem}.lineas-form td.t-number{width:8.5rem}
+.lineas-form .nro{width:1.8rem;color:var(--muted);font-variant-numeric:tabular-nums;text-align:center;padding-left:0;padding-right:0}
+.mas-linea{--control-h:2.3rem;margin-top:8px;font-size:.88rem}
+details.opcionales{margin-top:14px;border-top:1px dashed var(--line);padding-top:10px}
+details.opcionales>summary{cursor:pointer;font-size:.88rem;font-weight:600;color:var(--ink);list-style:none;display:inline-flex;align-items:center;gap:6px}
+details.opcionales>summary::-webkit-details-marker{display:none}
+details.opcionales>summary::before{content:"+";display:inline-flex;width:18px;height:18px;border-radius:50%;background:var(--surface-2);align-items:center;justify-content:center;font-weight:700}
+details.opcionales[open]>summary::before{content:"−"}
+details.opcionales>.grid{margin-top:12px}
+
+/* ---------- editor de asientos (como IQ_Contable): cabecera, una fila para agregar líneas, tabla y totales ---------- */
+.asiento-cab{display:flex;flex-wrap:wrap;gap:12px 16px;align-items:flex-end;margin-bottom:16px}
+.asiento-cab>label{flex:0 1 210px}.asiento-cab>label.largo{flex:1 1 320px}
+.asiento-cab>.btn{order:-1;flex:none}
+.asiento-ctrl{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;border:1px solid var(--line);border-radius:var(--radius-sm);padding:12px 16px 14px;margin:0 0 14px;background:var(--surface-2)}
+.asiento-ctrl legend{font-size:.82rem;font-weight:600;color:var(--ink);padding:0 6px}
+.asiento-ctrl>label{flex:0 1 150px}.asiento-ctrl>label.largo{flex:1 1 300px}
+.asiento-aviso{flex-basis:100%;margin:0;font-size:.85rem;color:var(--danger);min-height:0}
+.asiento-aviso:empty{display:none}
+.asiento-lineas td{white-space:normal}
+.asiento-lineas tbody[data-l=lineas] tr{cursor:pointer}
+.asiento-lineas tbody[data-l=lineas] tr.sel td{background:var(--accent-soft)}
+.asiento-lineas td.n input{--control-h:2.2rem;width:9rem;font-size:.9rem}
+.asiento-pie{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px}
+.asiento-tot{font-variant-numeric:tabular-nums;font-size:1.02rem;color:var(--muted)}
+.asiento-tot.ok{color:#2d7a0e}.asiento-tot.no{color:var(--danger)}
 
 /* ---------- mensajes ---------- */
 .msg{background:var(--warn-soft);color:var(--warn);border-radius:var(--radius-sm);padding:.75rem 1rem;margin-bottom:14px;font-weight:500;border:1px solid transparent}
@@ -254,7 +322,8 @@ details.seccion-plegable>section{border:0;box-shadow:none;margin:0;padding-top:0
 .pie-legal a{color:inherit}
 /* ---------- nuevo presupuesto (Maestro) ---------- */
 .px{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start}
-@media (max-width:1000px){.px{grid-template-columns:1fr}}
+@media (max-width:1000px){.px{grid-template-columns:minmax(0,1fr)}}
+.px-cuerpo{min-width:0}
 .px section h2{display:flex;align-items:center;gap:10px;font-size:1.1rem}
 .px-n{display:inline-flex;width:28px;height:28px;border-radius:50%;background:var(--accent);color:var(--accent-ink);align-items:center;justify-content:center;font-size:.9rem;font-weight:800}
 .px label{display:flex;flex-direction:column;gap:6px;font-size:.85rem;color:var(--muted);font-weight:600}
@@ -262,8 +331,9 @@ details.seccion-plegable>section{border:0;box-shadow:none;margin:0;padding-top:0
 .px-ancho{margin-top:12px}
 .px-grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px}
 .px-segmento{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-.px-segmento label{cursor:pointer}
-.px-segmento input{position:absolute;opacity:0;pointer-events:none}
+.px-segmento label{cursor:pointer;position:relative}
+.px-segmento input{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px;left:0;top:0}
+.px-segmento input:focus-visible+span{outline:2px solid var(--ink);outline-offset:2px}
 .px-segmento span{display:flex;flex-direction:column;padding:14px;border:2px solid var(--line);border-radius:12px;color:var(--text)}
 .px-segmento small{color:var(--muted);font-weight:500}
 .px-segmento input:checked+span{border-color:var(--accent);background:var(--accent-soft)}
@@ -365,7 +435,7 @@ details.seccion-plegable>section{border:0;box-shadow:none;margin:0;padding-top:0
 .lp-seg{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .lp-seg-i{background:#fff;border-radius:20px;padding:20px;display:flex;flex-direction:column;gap:6px}
 .lp-seg-i b{color:#191919}.lp-seg-i span{color:#5a5a5a;font-size:.92rem}
-.lp-periodo>input{position:absolute;opacity:0;pointer-events:none}
+.lp-periodo>input{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}
 .lp-periodo>label{display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border:2px solid #e6e6e3;border-radius:999px;font-weight:800;cursor:pointer;margin:0 6px 26px 0}
 .lp-periodo>label small{font-weight:700;color:#1a4200;background:#eefbe4;border-radius:999px;padding:2px 8px}
 .lp-periodo>input:checked+label{border-color:#191919;background:#191919;color:#fff}
