@@ -494,6 +494,7 @@ def _conectar_openwa(eid, cfg):
         ow.registrar_webhook(sid, url, secreto)
         cfg.proveedor, cfg.sesion_id, cfg.app_secret_cifrado, cfg.token_cifrado = "openwa", sid, cif.cifrar(secreto), None
     cfg.usuario_id = cfg.usuario_id or g.usuario.id
+    db.session.commit()      # ANTES de iniciar: la pasarela avisa al instante y el webhook debe encontrar ya la clave y el secreto
     try:
         ow.iniciar(cfg.sesion_id)
     except OW.SesionInexistente:          # la pasarela ya no la tiene (se reinstaló): se crea una nueva

@@ -822,7 +822,15 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
             return 200, json.dumps([{"id": SID, "name": f"contax-e{eid}-abcd", "status": pasarela["estado"], "phone": pasarela["telefono"]}]).encode()
         if (metodo, ruta) == ("POST", "/sessions"): return 201, json.dumps({"id": SID, "status": "created"}).encode()
         if ruta == f"/sessions/{SID}/webhooks": pasarela["webhook"] = d; return 201, b'{"id":"w1"}'
-        if ruta == f"/sessions/{SID}/start": pasarela["estado"] = "qr_ready"; return 200, b'{}'
+        if ruta == f"/sessions/{SID}/start":     # como la pasarela real: avisa el cambio de estado DURANTE el inicio
+            pasarela["estado"] = "qr_ready"
+            cuerpo_av = json.dumps({"event": "session.status", "sessionId": SID, "data": {"status": "qr_ready"}}).encode()
+            def avisar():             # en otro hilo: otra petición con su propia conexión, como llega en producción
+                pasarela["aviso_inicio"] = _cliente(app).post(pasarela["webhook"]["url"].replace("https://erp.test", ""), data=cuerpo_av, content_type="application/json",
+                    headers={"X-OpenWA-Signature": "sha256=" + hmac.new(pasarela["webhook"]["secret"].encode(), cuerpo_av, hashlib.sha256).hexdigest()}).status_code
+            import threading
+            hilo = threading.Thread(target=avisar); hilo.start(); hilo.join(20)
+            return 200, b'{}'
         if (metodo, ruta) == ("GET", f"/sessions/{SID}"):
             return 200, json.dumps({"status": pasarela["estado"], "phone": pasarela["telefono"], "pushName": "Epsilon"}).encode()
         if ruta == f"/sessions/{SID}/qr": return 200, b'{"qrCode":"data:image/png;base64,iVBORw0KGgo=","status":"qr_ready"}'
@@ -843,6 +851,7 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     r = a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "conectar"}, follow_redirects=True)
     t = r.get_data(as_text=True)
     assert "Escanee el código QR" in t and 'src="data:image/png;base64,iVBORw0KGgo="' in t and "Dispositivos vinculados" in t, alerta(r)
+    assert pasarela["aviso_inicio"] == 200                                                          # el aviso inmediato ya encuentra la conexión guardada
     clave = uno("SELECT clave_webhook FROM whatsapp_config WHERE empresa_id=:e", e=eid)
     assert pasarela["webhook"]["url"] == f"https://erp.test/wa/{clave}" and "message.received" in pasarela["webhook"]["events"]
     assert a.get(f"/e/{eid}/whatsapp/estado").get_json()["estado"] == "qr_ready"

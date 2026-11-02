@@ -103,6 +103,15 @@ if __name__ == "__main__":
     puerto = int(sys.argv[1]) if len(sys.argv) > 1 else 5055
     app.config.update(SESSION_COOKIE_SECURE=False, WTF_CSRF_ENABLED=True, APP_BASE_URL=f"http://127.0.0.1:{puerto}")
     ACCESOS_EID[0] = json.loads(ACCESOS.read_text())["eid"]
-    pasarela_simulada(app, entorno)
+    if os.environ.get("DEMO_OPENWA_URL"):         # pasarela OpenWA REAL (p. ej. el contenedor local) para vincular un teléfono
+        from sqlalchemy import text
+        clave = pathlib.Path(os.environ["DEMO_OPENWA_CLAVE"]).read_text().strip()
+        with entorno["owner"].begin() as c:
+            c.execute(text("INSERT INTO whatsapp_pasarela (id, url, api_key_cifrada) VALUES (1, :u, :k)"),
+                      {"u": os.environ["DEMO_OPENWA_URL"], "k": entorno["app_owner"].extensions["cifrador"].cifrar(clave)})
+        # los avisos salen del contenedor: el ERP se publica para él con el nombre del equipo anfitrión
+        app.config["APP_BASE_URL"] = os.environ.get("DEMO_URL_WEBHOOK", app.config["APP_BASE_URL"])
+    else:
+        pasarela_simulada(app, entorno)
     print(f"ERP de demostración en http://127.0.0.1:{puerto}", flush=True)
     app.run("127.0.0.1", puerto, debug=False, use_reloader=False)
