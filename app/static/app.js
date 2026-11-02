@@ -4,12 +4,47 @@
   document.addEventListener("click", function (e) {
     if (e.target.closest("[data-imprimir]")) window.print();
   });
+  // ---- Indicadores de carga: barra arriba al navegar o enviar, y el botón pulsado queda «Procesando…» ----
+  var raiz = document.documentElement, ocupados = [], respaldo;
+  function cargando(si) {
+    raiz.classList.toggle("cargando", si);
+    raiz.setAttribute("aria-busy", si ? "true" : "false");
+    clearTimeout(respaldo);
+    // una descarga (CSV, PDF) no cambia de página: pasado un rato la interfaz vuelve a quedar libre
+    if (si) respaldo = setTimeout(function () { cargando(false); liberar(); }, 15000);
+  }
+  function ocupar(b) {
+    if (!b || b.getAttribute("aria-busy") === "true") return;
+    b.setAttribute("data-texto", b.textContent);
+    b.setAttribute("aria-busy", "true");
+    b.textContent = b.getAttribute("data-cargando") || "Procesando…";
+    b.disabled = true;                                     // evita doble envío (doble factura)
+    ocupados.push(b);
+  }
+  function liberar() {
+    ocupados.forEach(function (b) { b.textContent = b.getAttribute("data-texto"); b.removeAttribute("aria-busy"); b.disabled = false; });
+    ocupados = [];
+  }
   document.addEventListener("submit", function (e) {
     var msg = e.target.getAttribute("data-confirmar");
     if (msg && !window.confirm(msg)) e.preventDefault();
-    var b = e.target.querySelector("button:not([type=button])");
-    if (b && !e.defaultPrevented) setTimeout(function () { b.disabled = true; }, 0); // evita doble envío (doble factura)
+    var b = e.submitter || e.target.querySelector("button:not([type=button])");
+    setTimeout(function () {                               // después de los demás manejadores (p. ej. el editor de asientos)
+      if (e.defaultPrevented) return;
+      cargando(true); ocupar(b);
+    }, 0);
   });
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest("a[href]");
+    if (!a || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    var href = a.getAttribute("href");
+    if (a.target === "_blank" || a.hasAttribute("download") || href.charAt(0) === "#" || /^(mailto|tel|javascript):/i.test(href)) return;
+    if (a.origin !== location.origin || /[?&]formato=|\.(csv|pdf|xlsx|txt)(\?|$)/i.test(href)) return;   // descargas y sitios externos
+    if (a.pathname === location.pathname && a.search === location.search && a.hash) return;
+    setTimeout(function () { cargando(true); }, 120);      // la barra solo aparece si la página tarda en llegar
+  });
+  // al volver con «Atrás» la página sale de la caché del navegador: nada debe quedar cargando
+  window.addEventListener("pageshow", function () { cargando(false); liberar(); });
 
   // Barra de áreas: en pantallas angostas se desplaza para que el área activa quede a la vista
   var areaActiva = document.querySelector(".areas .area.activo");
