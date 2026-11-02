@@ -290,7 +290,9 @@ def test_flujo_completo(entorno):
     assert b.get(f"/e/{eid_a}/facturacion").status_code == 404                                      # empresa de otro cliente
     assert b.get(f"/e/{eid_a}/facturacion/{d1.id}").status_code == 404
     assert b"Comercial Uno" in b.get("/").data
-    assert re.search(r'title="No incluido en su plan"><span class="ico"[^>]*>[^<]*</span>Libro diario', b.get(f"/e/{eid_b}/facturacion").get_data(as_text=True))               # menú bloqueado por plan
+    menu_b = b.get(f"/e/{eid_b}/facturacion").get_data(as_text=True)
+    assert re.search(r'class="area bloq" title="No incluido en su plan"><span[^>]*>[^<]*</span>Contabilidad', menu_b)  # área bloqueada por plan
+    assert "Libro diario" not in menu_b and "Documentos de venta" in menu_b                                            # la barra lateral: solo el área activa
     assert root.get(f"/e/{eid_a}/asientos").status_code == 403                                      # el Maestro no ve libros
     assert a.get("/plataforma").status_code == 403
 
@@ -555,7 +557,7 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     # módulos por empresa: contabilidad apagada en esta empresa → fuera del menú y 403, aunque el plan la incluya
     assert a.get(f"/e/{eid}/asientos").status_code == 403
     menu = a.get(f"/e/{eid}/inventario").get_data(as_text=True)
-    assert "Catálogo de cuentas" not in menu and 'class="nav-modulo' in menu and "Órdenes de compra" in menu
+    assert "Catálogo de cuentas" not in menu and 'class="areas"' in menu and "Órdenes de compra" in menu and ">Contabilidad<" not in menu
     a.post(f"/e/{eid}/empresa", data={"accion": "modulos", "modulos": ["facturacion", "inventario", "administrativo", "contabilidad"]})
     assert a.get(f"/e/{eid}/asientos").status_code == 200
 

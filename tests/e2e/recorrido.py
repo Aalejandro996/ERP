@@ -92,8 +92,12 @@ def interacciones(pag):
 
 
 def enlaces(pagina):
-    hrefs = pagina.eval_on_selector_all("aside a[href]", "as => as.map(a => a.getAttribute('href'))")
-    return sorted({h for h in hrefs if h.startswith("/") and h != "/" + "logout"})
+    """Todas las pantallas del menú: las de la barra lateral de cada área de la barra superior."""
+    leer = lambda sel: pagina.eval_on_selector_all(sel, "as => as.map(a => a.getAttribute('href'))")
+    rutas = set(leer("aside a[href]"))
+    for area in leer("nav.areas a[href]"):
+        pagina.goto(BASE + area); rutas |= set(leer("aside a[href]")) | {area}
+    return sorted(h for h in rutas if h.startswith("/"))
 
 
 def main():

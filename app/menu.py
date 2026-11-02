@@ -73,6 +73,58 @@ def _incluido(permiso, modulos) -> bool:
     return any(x in modulos for x in m) if isinstance(m, tuple) else m in modulos
 
 
+# Áreas de la barra superior (pedido de clientes: «separar Administración, Contabilidad, Clientes, Inventario arriba y que
+# el menú de la izquierda muestre solo lo de esa gestión»). Cada área agrupa grupos de MENU, en este orden.
+AREAS = [
+    ("Contabilidad", "📒", [("Contabilidad", ("web.cuentas", "web.asientos", "web.mayor", "web.diario", "web.balance_general", "web.comprobacion",
+                                              "web.resultados", "web.dashboard", "web.fiscal_libros", "web.bancos", "web.divisas", "web.periodos", "web.cuadre")),
+                           ("Fiscal Venezuela", None), ("Auditoría", None)]),
+    # la conciliación bancaria (módulo administrativo) va en el orden de IQ_Contable y también aquí, por si la contabilidad está apagada
+    ("Administración", "💼", [("Administración", ("web.cxc", "web.cxp", "web.libro_compras", "web.bancos"))]),
+    ("Clientes", "👥", [("Facturación", None), ("WhatsApp", ("web.pedidos", "web.whatsapp_config"))]),
+    ("Inventario", "📦", [("Inventario", ("web.inventario",)), ("Compras", ("web.ordenes_compra", "web.proveedores"))]),
+    ("Empresa", "🏢", [("Empresa", None)]),
+]
+COMPARTIDOS = {"web.bancos": "Administración"}   # aparece en dos áreas; por sí solo solo hace visible la suya
+_ITEMS = {ep: (ep, ic, tx, pm) for _, items in MENU for ep, ic, tx, pm in items}
+_GRUPO = {grupo: [i[0] for i in items] for grupo, items in MENU}
+# pantallas de detalle que no están en el menú: su área se deduce de la ruta
+PREFIJOS = (("/bancos", "Administración"), ("/facturacion", "Clientes"), ("/presupuestos", "Clientes"), ("/whatsapp", "Clientes"), ("/compras", "Inventario"),
+            ("/inventario", "Inventario"), ("/cxc", "Administración"), ("/cxp", "Administración"), ("/empresa", "Empresa"), ("/migracion", "Empresa"))
+
+
+def areas_empresa(eid):
+    """Áreas para la barra superior y, de la activa, sus grupos para la barra lateral (lista plana, sin desplegables).
+    Un área cuyo contenido no está en el plan se muestra bloqueada; una que el rol o la empresa no usan se omite."""
+    modulos, u = getattr(g, "modulos", frozenset()), g.usuario
+    del_plan = getattr(g, "modulos_licencia", modulos)
+    ep, ruta, out = request.endpoint, request.path, []
+    for area, icono, grupos in AREAS:
+        gs = []
+        for titulo, eps in grupos:
+            enl = []
+            for e in (eps or _GRUPO.get(titulo, ())):
+                _, ic, tx, pm = _ITEMS[e]
+                if not _incluido(pm, del_plan): enl.append(dict(texto=tx, icono=ic, estado="plan"))
+                elif _incluido(pm, modulos) and tiene_permiso(u, pm):
+                    enl.append(dict(texto=tx, icono=ic, estado="ok", url=url_for(e, eid=eid), activo=ep == e, ep=e))
+            if enl: gs.append(dict(titulo=titulo, enlaces=enl))
+        ok = [x for gr in gs for x in gr["enlaces"] if x["estado"] == "ok"]
+        propios = [x for x in ok if COMPARTIDOS.get(x["ep"], area) == area]
+        if propios: out.append(dict(titulo=area, icono=icono, url=propios[0]["url"], grupos=gs, activo=any(x["activo"] for x in ok)))
+        elif any(x["estado"] == "plan" for gr in gs for x in gr["enlaces"]): out.append(dict(titulo=area, icono=icono, bloqueado=True, grupos=[]))
+    activas = [a for a in out if a.get("activo")]
+    for a in activas[1:]: a["activo"] = False            # pantalla compartida: queda activa la primera área (orden de IQ_Contable)
+    if not activas:
+        destino = next((ar for pre, ar in PREFIJOS if f"/e/{eid}{pre}" in ruta), None)
+        for a in out:
+            if a["titulo"] == destino and not a.get("bloqueado"): a["activo"] = True
+    if not any(a.get("activo") for a in out):
+        primera = next((a for a in out if not a.get("bloqueado")), None)
+        if primera: primera["activo"] = True
+    return out
+
+
 def menu_empresa(eid):
     """Grupos desplegables con sus ítems: «ok» (enlace), «plan» (no incluido en el plan: bloqueado) u omitido (rol, o módulo
     que la empresa no trabaja). Solo el grupo de la página actual viene abierto, para que el menú no sea interminable."""

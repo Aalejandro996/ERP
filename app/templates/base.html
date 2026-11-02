@@ -11,12 +11,14 @@
   <div class="org"><b>{{ g.organizacion.nombre if g.organizacion else '' }}</b>
     {% if g.licencia %}<span class="chip">{{ plan_nombre }}</span>{% else %}<span class="chip rojo">Sin licencia</span>{% endif %}</div>
   <nav class="nav-grupo"><span>General</span><a href="/" class="{{ 'activo' if ep == 'web.inicio' }}">Panel de empresas</a></nav>
-  {% if empresa %}{% for grp in menu_empresa(empresa.id) %}<details class="nav-modulo{{ ' bloqueado' if grp.bloqueado }}" {{ 'open' if grp.abierto }}><summary><span class="ico" aria-hidden="true">{{ grp.icono }}</span>{{ grp.titulo }}</summary><nav class="nav-grupo">
+  {% if empresa %}{% set areas = areas_empresa(empresa.id) %}{% set area = areas|selectattr('activo')|first %}
+  {% if area %}<div class="area-titulo"><span class="ico" aria-hidden="true">{{ area.icono }}</span>{{ area.titulo }}</div>
+  {% for grp in area.grupos %}<nav class="nav-grupo">{% if grp.titulo != area.titulo %}<span>{{ grp.titulo }}</span>{% endif %}
     {% for it in grp.enlaces %}{% if it.estado == 'ok' %}<a href="{{ it.url }}" class="{{ 'activo' if it.activo }}"><span class="ico" aria-hidden="true">{{ it.icono }}</span>{{ it.texto }}</a>
-    {% else %}<span class="bloq" title="No incluido en su plan"><span class="ico" aria-hidden="true">{{ it.icono }}</span>{{ it.texto }}</span>{% endif %}{% endfor %}</nav></details>{% endfor %}
+    {% else %}<span class="bloq" title="No incluido en su plan"><span class="ico" aria-hidden="true">{{ it.icono }}</span>{{ it.texto }}</span>{% endif %}{% endfor %}</nav>{% endfor %}{% endif %}
   {% elif u and u.rol != 'Maestro' %}<p class="peq nav-aviso">📁 Abra una empresa del panel para ver sus carpetas y módulos.</p>
   {% endif %}
-  {% if u.rol == 'Administrador' %}<nav class="nav-grupo"><span>Organización</span>
+  {% if u.rol == 'Administrador' and (not empresa or (area and area.titulo == 'Empresa')) %}<nav class="nav-grupo"><span>Organización</span>
     <a href="{{ url_for('web.admin_usuarios') }}" class="{{ 'activo' if ep == 'web.admin_usuarios' }}">Usuarios</a>
     <a href="{{ url_for('web.admin_organizacion') }}" class="{{ 'activo' if ep == 'web.admin_organizacion' }}">Mi organización</a>
     <a href="{{ url_for('web.admin_equipos') }}" class="{{ 'activo' if ep == 'web.admin_equipos' }}">Equipos</a>
@@ -42,6 +44,8 @@
     {% if empresa and u.rol != 'Maestro' %}<details class="menu"><summary>{{ empresa.razon_social }}</summary><div class="panel">
       {% for x in mis_empresas() %}<a href="{{ url_empresa(x.id) or '/' }}">{{ x.razon_social }} <span class="peq">{{ x.rif }}</span></a>{% endfor %}</div></details>{% endif %}
     {% if u and u.rol != 'Maestro' %}{% if empresa %}<span class="estado-emp trabajando" title="Empresa activa">● Trabajando</span>{% else %}<span class="estado-emp libre">● Sin empresa</span>{% endif %}{% endif %}
+    {% if empresa and u.rol != 'Maestro' %}<nav class="areas" aria-label="Áreas de gestión">{% for a in areas %}{% if a.bloqueado %}<span class="area bloq" title="No incluido en su plan"><span aria-hidden="true">{{ a.icono }}</span>{{ a.titulo }}</span>
+      {% else %}<a class="area{{ ' activo' if a.activo }}" href="{{ a.url }}" {% if a.activo %}aria-current="page"{% endif %}><span aria-hidden="true">{{ a.icono }}</span>{{ a.titulo }}</a>{% endif %}{% endfor %}</nav>{% endif %}
     <span class="sp"></span>
     {% if demo_restante is not none %}<a class="chip-demo" href="{{ url_for('web.admin_licencia') if u.rol == 'Administrador' else '#' }}">DEMO · {{ demo_restante }}</a>{% endif %}
     {% if u %}<details class="menu"><summary><span class="avatar">{{ u.username[:2] }}</span>{{ u.username }}</summary><div class="panel">

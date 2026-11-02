@@ -11,6 +11,10 @@
     if (b && !e.defaultPrevented) setTimeout(function () { b.disabled = true; }, 0); // evita doble envío (doble factura)
   });
 
+  // Barra de áreas: en pantallas angostas se desplaza para que el área activa quede a la vista
+  var areaActiva = document.querySelector(".areas .area.activo");
+  if (areaActiva) areaActiva.parentNode.scrollLeft = areaActiva.offsetLeft - (areaActiva.parentNode.clientWidth - areaActiva.offsetWidth) / 2;
+
   // Formularios compactos: «Agregar línea» muestra la siguiente fila oculta de la tabla de líneas
   document.addEventListener("click", function (e) {
     var b = e.target.closest("[data-mas-linea]");

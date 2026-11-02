@@ -491,3 +491,20 @@ details.seccion-plegable>section{border:0;box-shadow:none;margin:0;padding-top:0
 .err-acc{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}.err-acc .lp-btn-linea{color:#fff;border-color:rgba(255,255,255,.35)}
 .err-pie{padding:18px 28px;color:#8a8a8a;font-size:.85rem;border-top:1px solid rgba(255,255,255,.08)}.err-pie a{color:#bdbdbd}
 @media (max-width:600px){.err-codigo{top:auto;bottom:10px;transform:none;opacity:.6}}
+
+/* ---------- áreas de gestión en la barra superior; la barra lateral muestra solo el área activa ---------- */
+.topbar{flex-wrap:wrap}
+.areas{display:flex;gap:4px;padding:4px;border-radius:999px;background:var(--surface-2);min-width:0;overflow-x:auto;scrollbar-width:none}
+.areas::-webkit-scrollbar{display:none}
+.area{display:inline-flex;align-items:center;gap:6px;padding:.42rem .9rem;border-radius:999px;font-size:.88rem;font-weight:600;color:var(--text);text-decoration:none;white-space:nowrap}
+.area:hover{background:var(--surface);color:var(--ink)}
+.area.activo{background:var(--ink);color:var(--surface)}
+.area.bloq{color:var(--muted);opacity:.6;cursor:not-allowed}
+.area.bloq::after{content:"Plan";font-size:.62rem;border:1px solid var(--line);border-radius:999px;padding:0 .4rem;margin-left:2px}
+.area-titulo{display:flex;align-items:center;gap:8px;color:#fff;font-weight:700;font-size:1rem;padding:2px 10px 0}
+@media (max-width:1180px){.areas{order:10;flex-basis:100%;border-radius:12px}}
+@media (max-width:860px){.areas{margin:0 -4px}.area{padding:.4rem .75rem}}
+@media (max-width:860px){
+  .topbar .estado-emp{display:none}
+  .topbar details.menu>summary{max-width:46vw;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;display:block}
+}

@@ -22,7 +22,7 @@ from .models2 import (CUENTAS_CFG, ConfigAsientos, DocumentoCxC, DocumentoCxP, E
                       PapelTrabajo)
 from .security import empresa_autorizada, requiere, tiene_permiso
 from .auditoria import verificar_cadena
-from .menu import menu_empresa, pestanas
+from .menu import areas_empresa, menu_empresa, pestanas
 
 bp = Blueprint("web", __name__)
 
@@ -159,7 +159,7 @@ F = LocalProxy(lambda: request.form)  # valores del formulario (se resuelve en c
 def ayudantes_plantilla():
     return {"puede": lambda p: g.usuario is not None and tiene_permiso(g.usuario, p),
             "mis_empresas": lambda: mis_empresas() if g.usuario is not None and g.usuario.organizacion_id else [],
-            "url_empresa": url_empresa, "menu_empresa": menu_empresa}
+            "url_empresa": url_empresa, "menu_empresa": menu_empresa, "areas_empresa": areas_empresa}
 
 
 # ---------------------------------------------------------------- panel y empresas
