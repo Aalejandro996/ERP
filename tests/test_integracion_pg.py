@@ -879,6 +879,12 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     assert "WhatsApp desvinculado" in r.get_data(as_text=True) and pasarela["borradas"] == [f"/sessions/{SID}"]
     assert uno("SELECT sesion_id IS NULL FROM whatsapp_config WHERE empresa_id=:e", e=eid)
     assert ow_aviso("message.received", {"id": "x2", "from": "584125550000@c.us", "body": "Hola", "kind": "individual"}).get_json()["ignorado"] == "sesion"
+    # cada despliegue vuelve a aplicar TODAS las migraciones: deben pasar con datos reales ya en OpenWA (en producción la 009
+    # restringía de nuevo los proveedores y el despliegue falló)
+    import pathlib as _pl2
+    assert uno("SELECT proveedor FROM whatsapp_config WHERE empresa_id=:e", e=eid) == "openwa"
+    with owner.connect() as c:
+        for m in sorted(_pl2.Path("migrations").glob("0*.sql")): c.execute(text(m.read_text(encoding="utf-8")))
 
 
 def test_paginas_publicas_seo_y_errores(entorno):
