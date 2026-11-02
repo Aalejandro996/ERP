@@ -24,3 +24,4 @@ __pycache__/
 tests/e2e/.accesos.json
 tests/e2e/capturas/
 comparacion/
+tests/e2e/.openwa_demo.json

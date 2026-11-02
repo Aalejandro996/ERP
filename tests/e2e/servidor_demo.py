@@ -60,11 +60,49 @@ def sembrar(entorno):
     return app
 
 
+ESTADO_OPENWA = pathlib.Path(__file__).with_name(".openwa_demo.json")
+
+
+def pasarela_simulada(app, entorno):
+    """Pasarela OpenWA de mentira para ver las pantallas del bot sin un teléfono: el estado de la sesión se cambia
+    escribiendo tests/e2e/.openwa_demo.json ({"estado": "ready", "telefono": "58424…"})."""
+    import segno
+    from sqlalchemy import text
+    sid = "8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a"
+    qr = segno.make("contax-demo-vincular-whatsapp", error="m").png_data_uri(scale=6, border=2)
+    ESTADO_OPENWA.write_text(json.dumps({"estado": "created", "telefono": None}))
+
+    def transporte(metodo, url, cuerpo, cab):
+        est = json.loads(ESTADO_OPENWA.read_text())
+        ruta = url.split("/api", 1)[1]
+        if (metodo, ruta) == ("GET", "/sessions"):
+            return 200, json.dumps([{"id": sid, "name": f"contax-e{ACCESOS_EID[0]}-demo", "status": est["estado"], "phone": est["telefono"],
+                                     "pushName": "Comercial Demo", "lastActive": "2026-11-02T10:00:00Z"}]).encode()
+        if (metodo, ruta) == ("POST", "/sessions"): return 201, json.dumps({"id": sid}).encode()
+        if ruta.endswith("/start"):
+            est["estado"] = "qr_ready"; ESTADO_OPENWA.write_text(json.dumps(est)); return 200, b"{}"
+        if ruta.endswith("/qr"): return 200, json.dumps({"qrCode": qr, "status": "qr_ready"}).encode()
+        if (metodo, ruta) == ("GET", f"/sessions/{sid}"):
+            return 200, json.dumps({"status": est["estado"], "phone": est["telefono"], "pushName": "Comercial Demo"}).encode()
+        if ruta.endswith("/logout"):
+            ESTADO_OPENWA.write_text(json.dumps({"estado": "disconnected", "telefono": None})); return 200, b"{}"
+        return (204, b"") if metodo == "DELETE" else (201, b'{"id":"w1","messageId":"m1"}')
+    app.extensions["openwa_transporte"] = transporte
+    cif = entorno["app_owner"].extensions["cifrador"]
+    with entorno["owner"].begin() as c:
+        c.execute(text("INSERT INTO whatsapp_pasarela (id, url, api_key_cifrada) VALUES (1, 'https://wa.gigadevs.test', :k)"), {"k": cif.cifrar("owa_k1_demo")})
+
+
+ACCESOS_EID = [None]
+
+
 if __name__ == "__main__":
     if not T.URL: sys.exit("Defina ERP_TEST_DATABASE_URL (la base se borra)")
     entorno = T.crear_entorno()
     app = sembrar(entorno)
     puerto = int(sys.argv[1]) if len(sys.argv) > 1 else 5055
     app.config.update(SESSION_COOKIE_SECURE=False, WTF_CSRF_ENABLED=True, APP_BASE_URL=f"http://127.0.0.1:{puerto}")
+    ACCESOS_EID[0] = json.loads(ACCESOS.read_text())["eid"]
+    pasarela_simulada(app, entorno)
     print(f"ERP de demostración en http://127.0.0.1:{puerto}", flush=True)
     app.run("127.0.0.1", puerto, debug=False, use_reloader=False)

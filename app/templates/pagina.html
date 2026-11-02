@@ -76,8 +76,10 @@
 {% if s.form %}<form method="{{ s.form.metodo or 'post' }}" action="{{ s.form.action }}" {% if s.form.archivo %}enctype="multipart/form-data"{% endif %} {% if s.form.confirmar %}data-confirmar="{{ s.form.confirmar }}"{% endif %}>{% if (s.form.metodo or 'post') == 'post' %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
 {{ campos(s.form.campos) }}{% if s.form.lineas %}{{ tabla_lineas(s.form.lineas) }}{% endif %}
 {% if s.form.opcionales %}<details class="opcionales"><summary>Más datos (opcional) <span class="peq">· {{ s.form.opcionales|length }} campos</span></summary>{{ campos(s.form.opcionales) }}</details>{% endif %}
-<div class="form-pie"><button>{{ s.form.boton }}</button></div></form>{% endif %}
+<div class="form-pie"><button{% if s.form.boton_clase %} class="{{ s.form.boton_clase }}"{% endif %}>{{ s.form.boton }}</button></div></form>{% endif %}
 {% if s.asiento %}{{ editor_asiento(s.asiento) }}{% endif %}
+{% if s.qr_wa %}<div class="qr-wa" data-qr-estado="{{ s.qr_wa.estado_url }}"><div class="qr-caja">{% if s.qr_wa.src %}<img src="{{ s.qr_wa.src }}" alt="Código QR para vincular el WhatsApp de la empresa" width="264" height="264" data-qr-img>{% else %}<span class="qr-espera" data-qr-img>Generando el código…</span>{% endif %}</div>
+<p class="peq" data-qr-texto role="status">{{ 'Esperando el escaneo…' if s.qr_wa.src else 'Preparando la conexión con WhatsApp…' }}</p></div>{% endif %}
 {% if s.enlace %}<div class="form-pie"><a class="btn" href="{{ s.enlace.url }}" rel="noopener noreferrer">{{ s.enlace.texto }} →</a></div>{% endif %}
 {% if s.pares %}<table class="pares">{% for k, v in s.pares %}<tr><th>{{ k }}</th><td class="n">{{ v }}</td></tr>{% endfor %}</table>{% endif %}
 {% if s.tabla %}<div class="tabla-wrap"><table class="{{ 'ancha' if s.tabla.ancha }}"><thead><tr>{% for c in s.tabla.cols %}<th class="{{ 'n' if loop.index0 in (s.tabla.num or []) }}">{{ c }}</th>{% endfor %}{% if s.tabla.accion %}<th></th>{% endif %}</tr></thead><tbody>

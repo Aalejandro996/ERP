@@ -61,14 +61,14 @@ def crear_entorno():
     with app_owner.app_context():
         db.session.execute(text("CREATE EXTENSION IF NOT EXISTS citext")); db.session.commit()
         db.create_all()
-        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql"):
+        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql", "011_whatsapp_openwa.sql"):
             db.session.execute(text(pathlib.Path("migrations", m).read_text(encoding="utf-8"))); db.session.commit()
     with owner.connect() as c:
         c.execute(text("GRANT USAGE ON SCHEMA public TO erp_app"))
         c.execute(text("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO erp_app"))
         c.execute(text("GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO erp_app"))
         c.execute(text("GRANT EXECUTE ON FUNCTION pg_control_system() TO erp_app"))
-        c.execute(text("GRANT EXECUTE ON FUNCTION maestro_resumen_organizaciones(), maestro_cadenas_bitacora(), whatsapp_destino(text) TO erp_app"))
+        c.execute(text("GRANT EXECUTE ON FUNCTION maestro_resumen_organizaciones(), maestro_cadenas_bitacora(), whatsapp_destino(text), maestro_empresas_whatsapp(integer[]) TO erp_app"))
     app_url = re.sub(r"//[^@]+@", f"//erp_app:{APP_PW}@", URL)
     class CfgApp(CfgOwner):
         SQLALCHEMY_DATABASE_URI = app_url
@@ -94,6 +94,22 @@ def _consulta(motor, *args):
     """SELECT como dueño (sin RLS) cerrando la conexión: dejarla abierta agota el pool en intérpretes que no la liberan al instante."""
     with motor.connect() as c:
         return c.execute(*args).freeze()()
+
+
+def _wa_anterior(entorno, eid, proveedor, token, secreto, **extra):
+    """Empresa conectada por Meta o WasenderAPI antes de OpenWA: la pantalla ya no pide credenciales, así que se crea como
+    quedó en producción (cifrada) y se comprueba que siga funcionando."""
+    import secrets as _s
+    from sqlalchemy import text
+    cif = entorno["app_owner"].extensions["cifrador"]
+    with entorno["owner"].begin() as c:
+        c.execute(text("""INSERT INTO whatsapp_config (empresa_id, proveedor, phone_number_id, api_url, numero_visible, token_cifrado, app_secret_cifrado,
+                                                       verify_token, clave_webhook, activo, factura_automatica, dias_credito, presupuesto_modo)
+                          VALUES (:e, :p, :pn, NULL, :nv, :t, :s, :v, :k, true, false, 0, 'automatico')
+                          ON CONFLICT (empresa_id) DO UPDATE SET proveedor = :p, phone_number_id = :pn, numero_visible = :nv, token_cifrado = :t,
+                                                                app_secret_cifrado = :s"""),
+                  dict(e=eid, p=proveedor, pn=extra.get("phone_number_id"), nv=extra.get("numero_visible"), t=cif.cifrar(token), s=cif.cifrar(secreto),
+                       v=_s.token_urlsafe(18), k=_s.token_urlsafe(24)))
 
 
 def _cliente(app):
@@ -479,8 +495,11 @@ def test_contabilidad_compras_y_bot_de_whatsapp(entorno):
     # --- Bot de WhatsApp: configuración, webhook firmado, pedido de cliente y confirmación del proveedor
     enviados = []
     app.extensions["whatsapp_transporte"] = lambda url, cuerpo, cab: (enviados.append(json.loads(cuerpo)) or (200, b'{"messages":[{"id":"wamid.out%d"}]}' % len(enviados)))
-    r = a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "guardar", "phone_number_id": "1098765", "token": "TOKEN-META", "app_secret": "APPSECRET", "activo": "1"}, follow_redirects=True)
-    assert "Configuración guardada".encode() in r.data, alerta(r)
+    r = a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "guardar", "activo": "1"}, follow_redirects=True)
+    assert "Primero vincule".encode() in r.data                                   # sin WhatsApp vinculado no hay opciones que guardar
+    _wa_anterior(entorno, eid, "meta", "TOKEN-META", "APPSECRET", phone_number_id="1098765")
+    r = a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "guardar", "activo": "1"}, follow_redirects=True)
+    assert "Configuración guardada".encode() in r.data and "configuración anterior".encode() in r.data, alerta(r)
     cfg = _consulta(owner, text("SELECT clave_webhook, verify_token, token_cifrado FROM whatsapp_config WHERE empresa_id=:e"), {"e": eid}).one()
     assert "TOKEN-META" not in cfg[2]                                               # cifrado en reposo
     hook = f"/wa/{cfg[0]}"
@@ -628,7 +647,8 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     enviados, archivos = [], {}
     app.extensions["whatsapp_transporte"] = lambda url, cuerpo, cab: (enviados.append(json.loads(cuerpo)) or (200, b'{"messages":[{"id":"wE%d"}]}' % len(enviados)))
     app.extensions["whatsapp_descarga"] = lambda mid: (archivos[mid], "application/pdf")
-    r = a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "guardar", "phone_number_id": "555", "token": "T", "app_secret": "S2", "activo": "1",
+    _wa_anterior(entorno, eid, "meta", "T", "S2", phone_number_id="555")
+    r = a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "guardar", "activo": "1",
                                                "instrucciones_pago": "Pague en caja: Calle 5, Maracay, de 8 a 5.", "factura_automatica": "0", "serie_id": str(sid)}, follow_redirects=True)
     assert "Configuración guardada".encode() in r.data, alerta(r)
     hook = "/wa/" + uno("SELECT clave_webhook FROM whatsapp_config WHERE empresa_id=:e", e=eid)
@@ -662,10 +682,10 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     def ws_t(metodo, url, cuerpo, cab):
         ws_env.append((url, json.loads(cuerpo) if cuerpo else None, cab)); return 200, b'{"success":true,"data":{"msgId":%d}}' % len(ws_env)
     app.extensions["wasender_transporte"] = ws_t
-    r = a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "guardar", "proveedor": "wasender", "token": "WS-KEY", "app_secret": "WS-SECRET", "activo": "1",
-                                               "numero_visible": "+58 414 0000000", "factura_automatica": "1", "serie_id": str(sid),
+    _wa_anterior(entorno, eid, "wasender", "WS-KEY", "WS-SECRET", numero_visible="584140000000")
+    r = a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "guardar", "activo": "1", "factura_automatica": "1", "serie_id": str(sid),
                                                "instrucciones_pago": "Pague en caja: Calle 5, Maracay, de 8 a 5."}, follow_redirects=True)
-    assert "Configuración guardada".encode() in r.data and "WasenderAPI (WhatsApp por código QR)".encode() in r.data, alerta(r)
+    assert "Configuración guardada".encode() in r.data and "Conectado por WasenderAPI".encode() in r.data, alerta(r)
     assert anon.get(hook).status_code == 200                                                           # WasenderAPI no usa el reto de Meta
     def ws_aviso(m, firma="WS-SECRET"):
         return anon.post(hook, data=json.dumps({"event": "messages.received", "data": {"messages": m}}).encode(), content_type="application/json",
@@ -791,6 +811,65 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
         assert titulo in t and "Gigadevs Corp" in t
     assert "__Host-erp" in _cliente(app).get("/legal/cookies").get_data(as_text=True)
     assert "Términos y condiciones" in _cliente(app).get("/login").get_data(as_text=True)
+
+    # --- Bot por OpenWA: el Maestro configura la pasarela; la empresa solo escanea su QR y el bot responde por su número
+    SID = "8f3c2b1a-9d4e-4c7a-8b2f-1e6d5a4c3b2a"
+    pasarela = {"estado": "created", "telefono": None, "webhook": None, "enviados": [], "borradas": []}
+    def ow_t(metodo, url, cuerpo, cab):
+        assert cab.get("X-API-Key") == "owa_k1_maestro" and "owa_k1" not in url          # la clave solo viaja en la cabecera
+        ruta, d = url.split("/api", 1)[1], (json.loads(cuerpo) if cuerpo else None)
+        if (metodo, ruta) == ("GET", "/sessions"):
+            return 200, json.dumps([{"id": SID, "name": f"contax-e{eid}-abcd", "status": pasarela["estado"], "phone": pasarela["telefono"]}]).encode()
+        if (metodo, ruta) == ("POST", "/sessions"): return 201, json.dumps({"id": SID, "status": "created"}).encode()
+        if ruta == f"/sessions/{SID}/webhooks": pasarela["webhook"] = d; return 201, b'{"id":"w1"}'
+        if ruta == f"/sessions/{SID}/start": pasarela["estado"] = "qr_ready"; return 200, b'{}'
+        if (metodo, ruta) == ("GET", f"/sessions/{SID}"):
+            return 200, json.dumps({"status": pasarela["estado"], "phone": pasarela["telefono"], "pushName": "Epsilon"}).encode()
+        if ruta == f"/sessions/{SID}/qr": return 200, b'{"qrCode":"data:image/png;base64,iVBORw0KGgo=","status":"qr_ready"}'
+        if ruta == f"/sessions/{SID}/messages/send-text": pasarela["enviados"].append(d); return 201, b'{"messageId":"out1","timestamp":1}'
+        if ruta == f"/sessions/{SID}/logout": pasarela["estado"] = "disconnected"; return 200, b'{}'
+        if metodo == "DELETE": pasarela["borradas"].append(ruta); return 204, b""
+        return 404, b'{"message":"no"}'
+    app.extensions["openwa_transporte"] = ow_t
+    t = a.get(f"/e/{eid}/whatsapp/bot").get_data(as_text=True)
+    assert "todavía no está habilitado" in t and "password" not in t and "Phone Number ID" not in t      # el cliente no ve credenciales
+    assert a.get("/plataforma/whatsapp").status_code == 403                                          # la pasarela es solo del Maestro
+    r = root.post("/plataforma/whatsapp", data={"accion": "guardar", "url": "http://wa.publico.com", "api_key": "owa_k1_maestro"}, follow_redirects=True)
+    assert "https://" in r.get_data(as_text=True)                                                     # http solo dentro de la red privada
+    r = root.post("/plataforma/whatsapp", data={"accion": "guardar", "url": "https://wa.gigadevs.test/api", "api_key": "owa_k1_maestro", "activa": "1"}, follow_redirects=True)
+    assert "Pasarela verificada y guardada" in r.get_data(as_text=True), alerta(r)
+    assert "owa_k1_maestro" not in uno("SELECT api_key_cifrada FROM whatsapp_pasarela")                  # cifrada en reposo
+    # la empresa (que venía de WasenderAPI) pasa a OpenWA con un clic y ve el QR
+    r = a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "conectar"}, follow_redirects=True)
+    t = r.get_data(as_text=True)
+    assert "Escanee el código QR" in t and 'src="data:image/png;base64,iVBORw0KGgo="' in t and "Dispositivos vinculados" in t, alerta(r)
+    clave = uno("SELECT clave_webhook FROM whatsapp_config WHERE empresa_id=:e", e=eid)
+    assert pasarela["webhook"]["url"] == f"https://erp.test/wa/{clave}" and "message.received" in pasarela["webhook"]["events"]
+    assert a.get(f"/e/{eid}/whatsapp/estado").get_json()["estado"] == "qr_ready"
+    secreto = pasarela["webhook"]["secret"]
+    def ow_aviso(evento, datos, firma=None):
+        cuerpo = json.dumps({"event": evento, "sessionId": SID, "timestamp": "2026-11-02T10:00:00Z", "data": datos}).encode()
+        f = firma or "sha256=" + hmac.new(secreto.encode(), cuerpo, hashlib.sha256).hexdigest()
+        return anon.post(f"/wa/{clave}", data=cuerpo, content_type="application/json", headers={"X-OpenWA-Signature": f})
+    assert ow_aviso("session.authenticated", {"phone": "584247770000"}, firma="sha256=" + "0" * 64).status_code == 403
+    pasarela["estado"], pasarela["telefono"] = "ready", "584247770000"
+    assert ow_aviso("session.authenticated", {"sessionId": SID, "phone": "584247770000"}).status_code == 200
+    assert a.get(f"/e/{eid}/whatsapp/estado").get_json()["estado"] == "ready"
+    t = a.get(f"/e/{eid}/whatsapp/bot").get_data(as_text=True)
+    assert "Conectado" in t and "+584247770000" in t and "Desvincular WhatsApp" in t
+    # un cliente escribe: el bot responde por la sesión de la empresa
+    ow_aviso("message.received", {"id": "true_584125550000@c.us_A1", "from": "584125550000@c.us", "chatId": "584125550000@c.us", "type": "text",
+                                  "body": "Hola", "fromMe": False, "isGroup": False, "kind": "individual", "contact": {"pushName": "Luis"}})
+    assert pasarela["enviados"][-1]["chatId"] == "584125550000@c.us" and pasarela["enviados"][-1]["text"]
+    n = len(pasarela["enviados"])
+    ow_aviso("message.received", {"id": "true_584125550000@c.us_A1", "from": "584125550000@c.us", "type": "text", "body": "Hola", "kind": "individual"})
+    assert len(pasarela["enviados"]) == n                                                             # aviso repetido: no responde dos veces
+    # el Maestro ve la sesión con el nombre de la empresa; la empresa desvincula y la sesión se borra de la pasarela
+    assert "Epsilon Market CA" in root.get("/plataforma/whatsapp").get_data(as_text=True)
+    r = a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "desconectar"}, follow_redirects=True)
+    assert "WhatsApp desvinculado" in r.get_data(as_text=True) and pasarela["borradas"] == [f"/sessions/{SID}"]
+    assert uno("SELECT sesion_id IS NULL FROM whatsapp_config WHERE empresa_id=:e", e=eid)
+    assert ow_aviso("message.received", {"id": "x2", "from": "584125550000@c.us", "body": "Hola", "kind": "individual"}).get_json()["ignorado"] == "sesion"
 
 
 def test_paginas_publicas_seo_y_errores(entorno):

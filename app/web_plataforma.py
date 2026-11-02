@@ -421,6 +421,59 @@ def maestro_pagos():
                                                                                                            campo("monto", "USD por mes", "number")]))])
 
 
+@ruta("/plataforma/whatsapp", "plataforma", ("GET", "POST"))
+def maestro_whatsapp():
+    """Pasarela OpenWA de toda la plataforma: aquí (y solo aquí) van la URL y la clave de API. Las empresas solo escanean
+    su QR; el ERP usa esta clave en su nombre y únicamente sobre la sesión de cada una."""
+    from . import openwa as OW
+    from .models_compras import WhatsappPasarela
+    from .whatsapp import ErrorWhatsapp
+    p, cif = db.session.get(WhatsappPasarela, 1), current_app.extensions["cifrador"]
+    transporte = current_app.extensions.get("openwa_transporte")
+    if request.method == "POST":
+        try:
+            if F.get("accion") == "guardar":
+                url, clave = OW.validar_url(F["url"]), (F.get("api_key") or "").strip()
+                if p is None and not clave: raise ValueError("Indique la clave de API de la pasarela")
+                n = OW.Pasarela(url, clave or cif.descifrar(p.api_key_cifrada), transporte).salud()      # se verifica ANTES de guardar
+                if p is None:
+                    p = WhatsappPasarela(id=1, url=url, api_key_cifrada=cif.cifrar(clave)); db.session.add(p)
+                p.url, p.activa, p.actualizado_por = url, F.get("activa", "1") == "1", g.usuario.username
+                if clave: p.api_key_cifrada = cif.cifrar(clave)
+                registrar(g.usuario.username, "WHATSAPP_PASARELA", f"url={url} activa={p.activa} clave_nueva={bool(clave)}", org=None)
+                db.session.commit(); flash(f"Pasarela verificada y guardada ({n} sesión(es) en ella).")
+            else: raise ValueError("Acción inválida")
+        except (ErrorWhatsapp, ValueError) as e:
+            db.session.rollback(); flash(str(e))
+        return redirect(request.url)
+    sesiones = []
+    if p is not None:
+        try:
+            sesiones = OW.Pasarela(p.url, cif.descifrar(p.api_key_cifrada), transporte).sesiones()
+        except ErrorWhatsapp as e:
+            flash(f"No se pudo leer la pasarela: {e}")
+    orgs = {}
+    ids = {int(m.group(1)) for x in sesiones if (m := re.match(r"contax-e(\d+)-", str(x.get("name") or "")))}
+    if ids:   # nombre de la empresa de cada sesión (solo el nombre: el Maestro no ve sus datos)
+        orgs = {r[0]: f"{r[1]} ({r[2]})" for r in db.session.execute(db.text("SELECT * FROM maestro_empresas_whatsapp(:ids)"), {"ids": list(ids)})}
+    empresa = lambda n: orgs.get(int(m.group(1)), f"Empresa {m.group(1)}") if (m := re.match(r"contax-e(\d+)-", str(n or ""))) else "— (creada fuera de Contax)"
+    return pagina("WhatsApp (OpenWA)", None, [
+        dict(kpis=[("Pasarela", ("Activa" if p.activa else "Pausada") if p else "Sin configurar"), ("Sesiones", len(sesiones)),
+                   ("Conectadas", sum(x.get("status") == "ready" for x in sesiones)), ("Esperando QR", sum(x.get("status") == "qr_ready" for x in sesiones))]),
+        dict(titulo="Pasarela OpenWA", abierto=True,
+             nota="Una sola pasarela para todos los clientes: cada empresa tiene su sesión y vincula SU número escaneando el QR desde «Bot de WhatsApp». "
+                  "La clave de administrador la genera OpenWA en su primer arranque (aparece en su log y en /app/data/.api-key). Se guarda cifrada; "
+                  "déjela vacía para conservar la actual. La URL es https://… o, dentro de la red privada de Render, http://erp-whatsapp:2785. "
+                  "Antes de guardar se comprueba que la URL y la clave funcionen.",
+             form=dict(action=request.path, boton="Verificar y guardar", campos=[h("guardar"),
+                       campo("url", "URL de la pasarela", valor=p.url if p else None),
+                       campo("api_key", "Clave de API (X-API-Key)", "password", req=p is None),
+                       campo("activa", "Estado", "select", opciones=[("1", "Activa"), ("0", "Pausada: nadie puede vincular ni enviar")], valor="1" if (p is None or p.activa) else "0")])),
+        dict(titulo="Sesiones en la pasarela", tabla=dict(cols=["Empresa", "Estado", "Número", "Nombre en WhatsApp", "Última actividad"], filas=[
+            dict(cells=[empresa(x.get("name")), OW.ESTADOS.get(x.get("status"), x.get("status") or "—"), ("+" + x["phone"]) if x.get("phone") else "—",
+                        x.get("pushName") or "—", str(x.get("lastActive") or "—")[:16].replace("T", " ")]) for x in sesiones]))])
+
+
 @ruta("/plataforma/base-datos", "plataforma", ("GET", "POST"))
 def maestro_bd():
     """Salud de la base de datos y resumen por cliente. El Maestro ve CONTEOS, nunca el contenido de los libros (RLS)."""

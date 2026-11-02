@@ -93,7 +93,10 @@ el libro fiscal (si hay Contabilidad) y crea su CxC (si hay Administración) —
 - **Órdenes de compra:** emitidas por la empresa (emisor) a un proveedor o cliente, con el mismo modelo visual de la factura de Gigadevs;
   IVA por alícuota vigente, divisas con equivalente BCV, envío por correo o WhatsApp, enlace firmado de 60 días para el destinatario,
   confirmación por el proveedor desde el chat y recepción que da entrada al kardex al costo en Bs.
-- **Bot de WhatsApp** (número propio de cada empresa, por la Cloud API de Meta o por WasenderAPI —QR, no oficial; aviso verificado con `X-Webhook-Signature`, adjuntos por `/decrypt-media`—): clientes ven el catálogo y hacen pedidos; proveedores ven,
+- **Bot de WhatsApp** (número propio de cada empresa, vinculado por QR a una sesión de la pasarela **OpenWA** de la plataforma
+  —`app/openwa.py`; URL y clave de API cifradas en `whatsapp_pasarela`, solo el Maestro las edita; cada empresa solo opera SU sesión;
+  avisos firmados `X-OpenWA-Signature` (HMAC-SHA256 con un secreto por empresa) y descartados si no son de la sesión vigente—; las
+  empresas anteriores siguen por la Cloud API de Meta o WasenderAPI): clientes ven el catálogo y hacen pedidos; proveedores ven,
   confirman o rechazan sus órdenes de compra y envían ofertas que se convierten en OC. Webhook con URL secreta por empresa, verificación
   `X-Hub-Signature-256`, deduplicación por id de mensaje, token y App Secret cifrados (Fernet). El webhook llega sin usuario: la función
   `whatsapp_destino()` (SECURITY DEFINER) traduce la clave a su organización y desde ahí todo pasa por RLS. Solo atiende si la licencia

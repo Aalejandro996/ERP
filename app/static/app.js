@@ -15,6 +15,29 @@
   var areaActiva = document.querySelector(".areas .area.activo");
   if (areaActiva) areaActiva.parentNode.scrollLeft = areaActiva.offsetLeft - (areaActiva.parentNode.clientWidth - areaActiva.offsetWidth) / 2;
 
+  // Vincular WhatsApp por QR: consulta el estado cada 3 s, cambia el QR cuando WhatsApp lo renueva y recarga al quedar vinculado
+  var qrWa = document.querySelector("[data-qr-estado]");
+  if (qrWa) {
+    var intentos = 0, textoQr = qrWa.querySelector("[data-qr-texto]");
+    var consultar = function () {
+      if (++intentos > 100) { textoQr.textContent = "El código venció. Recargue la página para generar uno nuevo."; return; }
+      fetch(qrWa.getAttribute("data-qr-estado"), { credentials: "same-origin", headers: { Accept: "application/json" } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (d && d.estado === "ready") { window.location.reload(); return; }
+          if (d && d.qr) {
+            var img = qrWa.querySelector("[data-qr-img]");
+            if (img.tagName !== "IMG") { var n = document.createElement("img"); n.width = n.height = 264; n.alt = "Código QR para vincular el WhatsApp de la empresa"; n.setAttribute("data-qr-img", ""); img.replaceWith(n); img = n; }
+            if (img.getAttribute("src") !== d.qr) img.src = d.qr;
+          }
+          if (d && d.texto) textoQr.textContent = d.estado === "qr_ready" ? "Esperando el escaneo…" : d.texto;
+          setTimeout(consultar, 3000);
+        })
+        .catch(function () { setTimeout(consultar, 5000); });
+    };
+    setTimeout(consultar, 2000);
+  }
+
   // Formularios compactos: «Agregar línea» muestra la siguiente fila oculta de la tabla de líneas
   document.addEventListener("click", function (e) {
     var b = e.target.closest("[data-mas-linea]");

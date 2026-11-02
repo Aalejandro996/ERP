@@ -106,6 +106,33 @@ projects:
                 sync: false
 
           # ------------------------------------------------------------- límites de tasa compartidos entre procesos
+          # ------------------------------------------------------------- pasarela de WhatsApp (OpenWA, open-wa.org)
+          # Servicio PRIVADO: no tiene URL pública; erp-web le habla por la red interna (http://erp-whatsapp:2785).
+          # Una sesión por empresa, vinculada por QR. Motor Baileys (sin navegador: poca memoria). La clave de administrador
+          # sale en su primer log y en /app/data/.api-key: el Maestro la pega en Consola → WhatsApp (OpenWA).
+          # Imagen fijada por digest (la versión probada); para actualizar, cambie el digest a propósito.
+          - type: pserv
+            name: erp-whatsapp
+            runtime: image
+            image:
+              url: ghcr.io/rmyndharis/openwa@sha256:1a2d0c393a7c8a629b0b18cdb5125d9be59192480c02d56a022c249a66af9068
+            plan: starter
+            region: ohio
+            disk:                                # sesiones vinculadas y base SQLite de la pasarela: sobreviven a los despliegues
+              name: openwa-datos
+              mountPath: /app/data
+              sizeGB: 1
+            envVars:
+              - key: NODE_ENV
+                value: production
+              - key: PORT
+                value: "2785"
+              - key: ENGINE_TYPE
+                value: baileys
+              - key: RESOLVE_LID_TO_PHONE         # los remitentes con id de privacidad (@lid) llegan con su número
+                value: "true"
+              - key: SERVE_DASHBOARD              # solo API: el panel web de OpenWA no se expone
+                value: "false"
           - type: keyvalue
             name: erp-cache
             plan: free

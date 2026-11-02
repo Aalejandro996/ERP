@@ -179,14 +179,27 @@ def config_wa(eid) -> WhatsappConfig | None:
     return db.session.get(WhatsappConfig, eid)
 
 
+def pasarela_wa():
+    """Cliente de la pasarela OpenWA de la plataforma (la configura el Maestro), o None si aún no está habilitada."""
+    from . import openwa as OW
+    from .models_compras import WhatsappPasarela
+    p = db.session.get(WhatsappPasarela, 1)
+    if p is None or not p.activa: return None
+    return OW.Pasarela(p.url, current_app.extensions["cifrador"].descifrar(p.api_key_cifrada), current_app.extensions.get("openwa_transporte"))
+
+
 def enviar_wa(eid, destino, texto, contacto=None) -> str:
-    """Envía un texto por el número de la empresa y lo deja en la conversación. Lanza ErrorWhatsapp si Meta lo rechaza."""
+    """Envía un texto por el número de la empresa y lo deja en la conversación. Lanza ErrorWhatsapp si no se pudo enviar."""
     cfg = config_wa(eid)
     if cfg is None or not cfg.activo: raise WA.ErrorWhatsapp("La empresa no tiene el bot de WhatsApp configurado y activo")
     cif = current_app.extensions["cifrador"]
     tel = WA.telefono(destino)
     try:
-        if cfg.proveedor == "wasender":
+        if cfg.proveedor == "openwa":
+            ow = pasarela_wa()
+            if ow is None or not cfg.sesion_id: raise WA.ErrorWhatsapp("El WhatsApp de la empresa no está vinculado")
+            wamid = "ow." + ow.enviar_texto(cfg.sesion_id, tel, texto)
+        elif cfg.proveedor == "wasender":
             from . import wasender as WS
             wamid = WS.enviar_texto(cfg.api_url, cif.descifrar(cfg.token_cifrado), tel, texto, transporte=current_app.extensions.get("wasender_transporte"))
         else:
@@ -354,6 +367,8 @@ def procesar_orden_pdf(eid, c: WhatsappContacto, adjunto, modulos) -> list[str]:
     responder = lambda t: enviar_wa(eid, c.telefono, t, c)
     try:
         if descarga: datos, _ = descarga(adjunto["id"])
+        elif cfg.proveedor == "openwa":                 # pequeño: viene dentro del aviso; grande: se pide a la pasarela
+            datos = adjunto.get("datos") or pasarela_wa().descargar_media(cfg.sesion_id, adjunto["chat"], adjunto["id"])
         elif cfg.proveedor == "wasender":
             from . import wasender as WS
             datos, _ = WS.descargar_media(cfg.api_url, cif.descifrar(cfg.token_cifrado), adjunto["raw"], transporte=current_app.extensions.get("wasender_transporte"))

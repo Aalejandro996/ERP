@@ -81,16 +81,30 @@ class LineaOrdenCompra(db.Model):
     __table_args__ = (CheckConstraint("cantidad > 0 AND precio >= 0 AND alicuota IN ('G','R','A','E')", name="ck_linea_oc"),)
 
 
+class WhatsappPasarela(db.Model):
+    """Pasarela OpenWA de la plataforma (una sola fila, la configura el Maestro). La clave de API va cifrada (Fernet)."""
+    __tablename__ = "whatsapp_pasarela"
+    id = db.Column(db.Integer, primary_key=True, default=1)
+    url = db.Column(db.Text, nullable=False)
+    api_key_cifrada = db.Column(db.Text, nullable=False)
+    activa = db.Column(db.Boolean, nullable=False, default=True, server_default=db.text("true"))
+    actualizado = db.Column(db.DateTime(timezone=True), default=_ahora, onupdate=_ahora, nullable=False, server_default=db.text("now()"))
+    actualizado_por = db.Column(db.Text)
+
+
 class WhatsappConfig(db.Model):
-    """Número de WhatsApp Business (Cloud API de Meta) de una empresa. Token y secreto cifrados en reposo (Fernet)."""
+    """WhatsApp de una empresa: su sesión en la pasarela OpenWA (QR) o, en empresas anteriores, Meta / WasenderAPI."""
     __tablename__ = "whatsapp_config"
     empresa_id = db.Column(db.ForeignKey("empresas.id"), primary_key=True)
-    proveedor = db.Column(db.Text, nullable=False, default="meta", server_default=db.text("'meta'"))   # meta | wasender
+    proveedor = db.Column(db.Text, nullable=False, default="meta", server_default=db.text("'meta'"))   # openwa | meta | wasender (las dos últimas: anteriores)
     api_url = db.Column(db.Text)                    # WasenderAPI: URL base (vacía = la oficial)
     phone_number_id = db.Column(db.Text)            # Meta: Phone Number ID (con WasenderAPI no aplica)
     numero_visible = db.Column(db.Text)
-    token_cifrado = db.Column(db.Text, nullable=False)        # Meta: token permanente · WasenderAPI: clave de API de la sesión
-    app_secret_cifrado = db.Column(db.Text, nullable=False)   # Meta: App Secret · WasenderAPI: secreto de webhook
+    token_cifrado = db.Column(db.Text)                        # Meta: token permanente · WasenderAPI: clave de la sesión · OpenWA: no aplica
+    app_secret_cifrado = db.Column(db.Text, nullable=False)   # secreto con que se firman los avisos (Meta: App Secret)
+    sesion_id = db.Column(db.Text)                            # OpenWA: sesión de la empresa en la pasarela
+    sesion_estado = db.Column(db.Text)                        # OpenWA: qr_ready | ready | disconnected | …
+    sesion_actualizada = db.Column(db.DateTime(timezone=True))
     verify_token = db.Column(db.Text, nullable=False)
     clave_webhook = db.Column(db.Text, nullable=False, unique=True)   # parte secreta de la URL del webhook
     bienvenida = db.Column(db.Text)
