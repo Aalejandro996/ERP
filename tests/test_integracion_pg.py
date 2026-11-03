@@ -1,6 +1,6 @@
 """Integración de punta a punta contra PostgreSQL REAL (se omite si no hay base de pruebas).
 
-  ERP_TEST_DATABASE_URL=postgresql+psycopg://postgres:CLAVE@localhost:5432/erp_pruebas pytest tests/test_integracion_pg.py
+  ERP_TEST_DATABASE_URL=postgresql+psycopg://postgres:CLAVE@localhost:5432/erp_pruebas TEST_ERP_APP_PASSWORD=<clave> pytest tests/test_integracion_pg.py
 ¡La base indicada se BORRA! Úsela solo para pruebas. La app corre con el rol limitado `erp_app` para que RLS aplique.
 Cubre: plataforma → alta de clientes → invitación por correo → MFA → planes de licencia → facturación con inventario,
 contabilidad, CxC, IGTF, notas y anulación → aislamiento entre clientes (app y RLS) → inmutabilidad → recuperación de clave.
@@ -26,7 +26,8 @@ if URL:
                  "APP_BASE_URL": "https://erp.test", "MAIL_BACKEND": "console", "FLASK_ENV": "testing"}.items():
         os.environ.setdefault(k, v)
 
-APP_PW = "AppPruebas#2026x"
+# Clave del rol de prueba erp_app: viene del entorno, nunca del código (no se imprime en ningún mensaje).
+APP_PW = os.environ.get("TEST_ERP_APP_PASSWORD", "")
 CLAVE = "Clave-Segura#2026"
 
 
@@ -50,11 +51,17 @@ def crear_entorno():
     from app import create_app
     from app.extensions import db
     import pathlib
+    if not APP_PW:
+        pytest.fail("Falta la variable de entorno TEST_ERP_APP_PASSWORD: la clave con que la prueba crea el rol erp_app "
+                    "en la base de pruebas. Defínala (cualquier valor) y vuelva a correr la prueba.", pytrace=False)
+    clave_sql = "'" + APP_PW.replace("'", "''") + "'"            # literal SQL escapado (CREATE/ALTER ROLE no acepta parámetros)
     owner = create_engine(URL, isolation_level="AUTOCOMMIT")
     with owner.connect() as c:
         c.execute(text("DROP SCHEMA public CASCADE")); c.execute(text("CREATE SCHEMA public"))
         if not c.execute(text("SELECT 1 FROM pg_roles WHERE rolname='erp_app'")).first():
-            c.execute(text(f"CREATE ROLE erp_app LOGIN PASSWORD '{APP_PW}'"))
+            c.execute(text(f"CREATE ROLE erp_app LOGIN PASSWORD {clave_sql}"))
+        else:                                                   # el rol ya existía (corrida anterior): toma la clave actual
+            c.execute(text(f"ALTER ROLE erp_app LOGIN PASSWORD {clave_sql}"))
     class CfgOwner(Config):
         TESTING = True; TASAS_AUTOMATICAS = False; WTF_CSRF_ENABLED = False; RATELIMIT_ENABLED = False; SESSION_COOKIE_NAME = "s"; PRODUCCION = False
     app_owner = create_app(CfgOwner)
@@ -69,7 +76,8 @@ def crear_entorno():
         c.execute(text("GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO erp_app"))
         c.execute(text("GRANT EXECUTE ON FUNCTION pg_control_system() TO erp_app"))
         c.execute(text("GRANT EXECUTE ON FUNCTION maestro_resumen_organizaciones(), maestro_cadenas_bitacora(), whatsapp_destino(text), maestro_empresas_whatsapp(integer[]) TO erp_app"))
-    app_url = re.sub(r"//[^@]+@", f"//erp_app:{APP_PW}@", URL)
+    from urllib.parse import quote
+    app_url = re.sub(r"//[^@]+@", lambda m: f"//erp_app:{quote(APP_PW, safe='')}@", URL)   # la clave puede traer «@», «:» o «/»
     class CfgApp(CfgOwner):
         SQLALCHEMY_DATABASE_URI = app_url
     app = create_app(CfgApp)

@@ -1,13 +1,13 @@
-Flask>=3.0
-Flask-SQLAlchemy>=3.1
-Flask-WTF>=1.2
-Flask-Limiter[redis]>=3.5
-argon2-cffi>=23.1
-cryptography>=42
-psycopg[binary]>=3.1
-gunicorn>=22
-python-dotenv>=1.0
-segno>=1.6           # código QR del MFA (SVG, sin dependencias)
-pytest>=8
-openpyxl>=3.1         # importar plan de cuentas desde Excel
-pypdf>=4.0            # el bot lee las órdenes de compra en PDF que envían por WhatsApp
+Flask==3.1.3
+Flask-SQLAlchemy==3.1.1
+Flask-WTF==1.3.0
+Flask-Limiter[redis]==4.1.1
+argon2-cffi==25.1.0
+cryptography==50.0.2
+psycopg[binary]==3.3.6
+gunicorn==26.2.0
+python-dotenv==1.2.4
+segno==1.6.6           # código QR del MFA (SVG, sin dependencias)
+pytest==9.2.0
+openpyxl==3.1.5         # importar plan de cuentas desde Excel
+pypdf==6.21.4            # el bot lee las órdenes de compra en PDF que envían por WhatsApp

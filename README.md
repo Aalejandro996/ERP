@@ -126,6 +126,6 @@ LICENSE_PRIVATE_KEY=... gunicorn licensing_server.wsgi:app
 ## Pruebas
 - `pytest` (o `python run_tests.py`): pruebas unitarias.
 - Integración de punta a punta contra PostgreSQL (¡borra la base indicada!):
-  `ERP_TEST_DATABASE_URL=postgresql+psycopg://postgres:CLAVE@localhost:5432/erp_pruebas pytest tests/test_integracion_pg.py`
+  `ERP_TEST_DATABASE_URL=postgresql+psycopg://postgres:CLAVE@localhost:5432/erp_pruebas TEST_ERP_APP_PASSWORD=<clave del rol de prueba> pytest tests/test_integracion_pg.py`
 
 Ver `docs/ARQUITECTURA.md` para seguridad, normativa aplicada y alcance verificado.
