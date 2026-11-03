@@ -466,6 +466,8 @@ def _avila_configurada(e):
 def test_avilapay_configuracion_cifrada_y_monitoreo(e):
     est = e.admin.avilapay()
     assert est["configurada"] is False
+    assert e.http.post("/v1/avilapay/aviso", json={}, headers={"X-AvilaPay-Signature": "ab"}).status_code == 401
+    assert "no hay secreto de avisos cargado" in e.admin.avilapay()["eventos"][0]["detalle"]          # el registro dice por qué
     _avila_configurada(e)
     from licensing_server.server import avila_cfg
     from sqlalchemy import select
@@ -589,7 +591,10 @@ def test_zelle_y_tarjeta_internacional_por_avilapay(e):
         return e.http.post("/v1/avilapay/aviso-usd", data=crudo, headers={"AvilaPay-Signature": hmac.new(secreto.encode(), crudo, hashlib.sha256).hexdigest(),
                                                                          "AvilaPay-Event": "payment.succeeded", "Content-Type": "application/json"})
     evento = {"payment_id": pid, "external_order_id": o["ref"], "amount": 25264, "currency": "USD", "status": "SUCCEEDED"}
-    assert aviso(evento, secreto="whsec_secreto_avisos").status_code == 401                          # el secreto de dólares manda
+    assert aviso(evento, secreto="whsec_otro_cualquiera").status_code == 401                         # firma con otro secreto
+    assert e.http.post("/v1/avilapay/aviso-usd", json=evento).status_code == 401                    # sin cabecera de firma
+    motivos = [x["detalle"] for x in e.admin.avilapay()["eventos"] if x["evento"] == "avilapay_aviso_rechazado"]
+    assert "USD: el aviso no trae la cabecera de firma" in motivos[0] and "USD: la firma no coincide" in motivos[1]
     assert aviso(evento).status_code == 200 and e.correos == []                                     # Ávila Pay aún no lo aprueba
     e.av.pagos_usd[pid]["amount"] = 2400                                                            # aprobado por otro monto: a revisión
     e.av.pagos_usd[pid]["status"] = "SUCCEEDED"

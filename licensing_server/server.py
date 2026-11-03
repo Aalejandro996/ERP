@@ -791,6 +791,18 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         with st.eng.connect() as c:
             return c.execute(select(avila_cfg).where(avila_cfg.c.id == 1)).first()
 
+    def avila_firma(r, crudo, preferir_usd):
+        """None si la firma es válida; si no, el motivo para el registro (sin revelar secretos). Ávila Pay usa
+        «X-AvilaPay-Signature» (bolívares) y «AvilaPay-Signature» (dólares): se acepta cualquiera, con cualquiera de los
+        dos secretos guardados (por si se pegó en la página del otro)."""
+        firma = request.headers.get("AvilaPay-Signature") or request.headers.get("X-AvilaPay-Signature") or ""
+        secretos = [x for x in ((descifrar(r.secreto_usd_cifrado), descifrar(r.secreto_cifrado)) if preferir_usd
+                                else (descifrar(r.secreto_cifrado), descifrar(r.secreto_usd_cifrado))) if x] if r is not None else []
+        if not secretos: return "no hay secreto de avisos cargado en la consola (webhook secret)"
+        if not firma: return "el aviso no trae la cabecera de firma (AvilaPay-Signature)"
+        if any(AV.firma_valida(x, crudo, firma) for x in secretos): return None
+        return "la firma no coincide con el secreto cargado: vuelva a copiar el webhook secret del portal"
+
     def descifrar(v):
         if not v or fernet is None: return ""
         try:
@@ -877,8 +889,9 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         """Aviso de Ávila Pay. Solo se acepta con firma válida, y aun así el pago se confirma consultando a Ávila Pay."""
         r = avila_conf()
         cuerpo_crudo = request.get_data()
-        if r is None or not AV.firma_valida(descifrar(r.secreto_cifrado), cuerpo_crudo, request.headers.get("X-AvilaPay-Signature", "")):
-            with st.eng.begin() as c: st.log(c, None, "avilapay_aviso_rechazado", "firma inválida", request.remote_addr)
+        motivo = avila_firma(r, cuerpo_crudo, preferir_usd=False)
+        if motivo:
+            with st.eng.begin() as c: st.log(c, None, "avilapay_aviso_rechazado", f"Bs: {motivo}", request.remote_addr)
             return jsonify(message="Firma inválida"), 401
         try:
             aviso = json.loads(cuerpo_crudo)
@@ -906,9 +919,9 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         firma en «AvilaPay-Signature» con el secreto de avisos en dólares (o, si no se cargó, el mismo de bolívares)."""
         r = avila_conf()
         crudo = request.get_data()
-        secreto = (descifrar(r.secreto_usd_cifrado) or descifrar(r.secreto_cifrado)) if r is not None else ""
-        if not AV.firma_valida(secreto, crudo, request.headers.get("AvilaPay-Signature", "")):
-            with st.eng.begin() as c: st.log(c, None, "avilapay_aviso_rechazado", "USD: firma inválida", request.remote_addr)
+        motivo = avila_firma(r, crudo, preferir_usd=True)
+        if motivo:
+            with st.eng.begin() as c: st.log(c, None, "avilapay_aviso_rechazado", f"USD: {motivo}", request.remote_addr)
             return jsonify(message="Firma inválida"), 401
         try:
             d = json.loads(crudo)
