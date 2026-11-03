@@ -2,7 +2,8 @@
 
 Variables: LICENSE_PRIVATE_KEY, LICENSE_ADMIN_SECRET, DATABASE_URL (o LICENSE_DB_URL), PUBLIC_URL, ERP_URL, BREVO_API_KEY, MAIL_FROM.
 USDT (opcional): BINANCE_API_KEY / BINANCE_API_SECRET (clave de SOLO LECTURA de la cuenta personal), BINANCE_PAY_ID y, si también
-se aceptan depósitos por red, BINANCE_USDT_RED (p. ej. TRC20) y BINANCE_USDT_DIRECCION. Bs: PAGO_MOVIL_INSTRUCCIONES."""
+se aceptan depósitos por red, BINANCE_USDT_RED (p. ej. TRC20) y BINANCE_USDT_DIRECCION. Bs: Ávila Pay se configura en la consola
+Maestro (Pagos en bolívares); sin él, PAGO_MOVIL_INSTRUCCIONES para el pago móvil manual."""
 import base64
 import os
 
@@ -38,7 +39,8 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)  # IP real del cliente
 
 
 def _revision_periodica(intervalo=int(os.environ.get("BINANCE_REVISION_S", "120"))):
-    """Cada 2 min busca en el historial de Binance los pagos de las órdenes en USDT pendientes (una consulta para todas)."""
+    """Cada 2 min: busca en Binance los pagos de las órdenes en USDT pendientes (una consulta para todas) y consulta en
+    Ávila Pay los cobros en Bs pendientes (respaldo por si un aviso no llegó)."""
     import logging
     import threading
     import time as _t
@@ -50,11 +52,10 @@ def _revision_periodica(intervalo=int(os.environ.get("BINANCE_REVISION_S", "120"
             try:
                 with app.app_context():
                     n = app.extensions["revisar_pendientes"]()
-                if n: log.warning("Órdenes en USDT entregadas automáticamente: %s", n)
+                if n: log.warning("Órdenes entregadas automáticamente: %s", n)
             except Exception:  # noqa: BLE001 — nunca debe morir el hilo
-                log.exception("Revisión de pagos en Binance falló; se reintenta")
-    threading.Thread(target=ciclo, name="revision-binance", daemon=True).start()
+                log.exception("Revisión de pagos falló; se reintenta")
+    threading.Thread(target=ciclo, name="revision-pagos", daemon=True).start()
 
 
-if _binance is not None:
-    _revision_periodica()
+_revision_periodica()

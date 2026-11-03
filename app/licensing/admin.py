@@ -94,6 +94,10 @@ class ClienteAdmin:
     def confirmar(self, ref, autor): return self._req("POST", f"/admin/v1/ordenes/{ref}/confirmar", {"autor": autor})
     def rechazar(self, ref, motivo): return self._req("POST", f"/admin/v1/ordenes/{ref}/rechazar", {"motivo": motivo})
     def verificar(self, ref): return self._req("POST", f"/admin/v1/ordenes/{ref}/verificar", {})
+    # Ávila Pay (cobro en bolívares): configuración y monitoreo desde la consola Maestro
+    def avilapay(self): return self._req("GET", "/admin/v1/avilapay")
+    def guardar_avilapay(self, **d): return self._req("PUT", "/admin/v1/avilapay", d)
+    def probar_avilapay(self): return self._req("POST", "/admin/v1/avilapay/probar", {})
     # facturación de Gigadevs
     def fx_config(self): return self._req("GET", "/admin/v1/facturacion/config")
     def fx_guardar(self, **d): return self._req("PUT", "/admin/v1/facturacion/config", d)

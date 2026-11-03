@@ -43,6 +43,27 @@ class BinanceFalso:
                            "payerInfo": {"binanceId": "777"}})
 
 
+class AvilaFalsa:
+    """Simula la API de Ávila Pay: crea sesiones de checkout y responde su estado; exige la clave en la cabecera."""
+    def __init__(self):
+        self.sesiones, self.llamadas, self.caida = {}, [], False
+
+    def transporte(self, metodo, url, cuerpo, cab):
+        from licensing_server.avilapay import ErrorAvila
+        if self.caida: raise ErrorAvila("No se pudo contactar a Ávila Pay (timeout)")
+        assert url.startswith("https://comercio.avilapay.com/api/v1/checkout/sessions")
+        ruta = url.split("/sessions", 1)[1]
+        self.llamadas.append((metodo, ruta, json.loads(cuerpo) if cuerpo else None))
+        if cab.get("Authorization") != "Bearer sk_test_clave12345": return 401, b'{"message":"Unauthorized"}'
+        if metodo == "POST":
+            d = json.loads(cuerpo); sk = f"cs_{len(self.sesiones) + 1:040d}"
+            self.sesiones[sk] = {"session_key": sk, "status": "PENDING", "amount": d["amount"], "currency": d["currency"], "reference": d.get("reference")}
+            return 201, json.dumps({"id": "u1", "session_key": sk, "url": f"https://comercio.avilapay.com/pay/{sk}", "status": "PENDING"}).encode()
+        if ruta.startswith("?"): return 200, json.dumps({"data": list(self.sesiones.values())[:1]}).encode()
+        s = self.sesiones.get(ruta.lstrip("/"))
+        return (200, json.dumps(s).encode()) if s else (404, b'{"message":"not found"}')
+
+
 class Entorno:
     def __init__(self):
         self.t = [1_000_000.0]
@@ -50,10 +71,12 @@ class Entorno:
         self.correos = []
         self.bf = BinanceFalso()
         self.binance = BinanceCuenta("KEY", "SECRET", transporte=self.bf.transporte, reloj=lambda: self.t[0])
+        self.av = AvilaFalsa()
         url = "sqlite:///" + os.path.join(tempfile.mkdtemp(), "lic.db")
         self.app = create_app(url, self.priv, reloj=lambda: self.t[0], secreto_admin=SECRETO, binance=self.binance,
                               correo=lambda d, a, x, **k: self.correos.append((d, a, x)), config={"url_erp": "https://erp.test", "pago_movil": "Banco X 0414", "binance_pay_id": "123456789",
-                                      "usdt_red": "TRC20", "usdt_direccion": "TXyz"})
+                                      "usdt_red": "TRC20", "usdt_direccion": "TXyz",
+                                      "url_publica": "https://lic.test"}, avilapay_transporte=self.av.transporte)
         self.st = self.app.extensions["almacen"]
         self.http = self.app.test_client()
         self.admin = ClienteAdmin("https://lic.test", SECRETO, transporte=self._admin_http, reloj=lambda: self.t[0])
@@ -412,3 +435,100 @@ def test_demo_de_72_horas_una_sola_vez(e):
     lid, _ = e.clave(plan="DEMO", dias=365)                                      # emitida por el Maestro: igual dura 72 h
     l = next(x for x in e.admin.licencias() if x["id"] == lid)
     assert l["vence_en"] - l["creada_en"] == 72 * 3600
+
+
+# ------------------------------------------------------------------ Ávila Pay (bolívares, confirmación automática)
+def _aviso_avila(e, cuerpo: dict, secreto="whsec_secreto_avisos"):
+    import hashlib, hmac
+    crudo = json.dumps(cuerpo).encode()
+    return e.http.post("/v1/avilapay/aviso", data=crudo, headers={"X-AvilaPay-Signature": hmac.new(secreto.encode(), crudo, hashlib.sha256).hexdigest(),
+                                                                "Content-Type": "application/json"})
+
+
+def _avila_configurada(e):
+    e.admin.fijar_precio(plan="ALL_IN_ONE", meses=12, monto_usd="240", max_usuarios=10, max_empresas=5, max_equipos=10)
+    with pytest.raises(ErrorAdmin, match="clave"): e.admin.guardar_avilapay(api_key="sk_live_otraclave999", autor="m")   # se prueba antes de guardar
+    r = e.admin.guardar_avilapay(api_key="sk_test_clave12345", webhook_secret="whsec_secreto_avisos", metodos=["pago_movil", "debito"], autor="maestro")
+    assert r["modo"].startswith("Pruebas")
+
+
+def test_avilapay_configuracion_cifrada_y_monitoreo(e):
+    est = e.admin.avilapay()
+    assert est["configurada"] is False
+    _avila_configurada(e)
+    from licensing_server.server import avila_cfg
+    from sqlalchemy import select
+    with e.st.eng.connect() as c:
+        fila = c.execute(select(avila_cfg)).first()
+    assert "sk_test_clave12345" not in str(fila) and "whsec_secreto_avisos" not in str(fila)       # nunca legible en la base
+    est = e.admin.avilapay()
+    assert est["activa"] and est["secreto"] and est["metodos"] == ["pago_movil", "debito"] and est["webhook_url"] == "https://lic.test/v1/avilapay/aviso"
+    assert "clave12345" not in json.dumps(est) and est["clave"].endswith("2345")                    # solo se muestra enmascarada
+    e.admin.guardar_avilapay(activa=False, metodos=["pago_movil"], autor="m")                       # vacío = conserva la clave
+    assert e.admin.avilapay()["activa"] is False and e.admin.probar_avilapay()["ok"]
+    assert any(x["evento"] == "avilapay_configurada" for x in e.admin.avilapay()["eventos"])
+
+
+def test_avilapay_cobro_aviso_y_entrega_una_sola_vez(e):
+    _avila_configurada(e)
+    o = e.admin.crear_orden(organizacion_ref="9", cliente="Alfa", correo="adm@alfa.test", plan="ALL_IN_ONE", meses=12, moneda="VES", tasa_bcv="36.5")
+    assert o["proveedor"] == "avilapay" and o["checkout_url"].startswith("https://comercio.avilapay.com/pay/cs_")
+    metodo, _, enviado = e.av.llamadas[-1]
+    assert enviado["amount"] == 8760.0 and enviado["currency"] == "VES" and enviado["reference"] == o["ref"] and enviado["methods"] == ["pago_movil", "debito"]
+    assert enviado["webhook_url"] == "https://lic.test/v1/avilapay/aviso" and enviado["return_url"] == f"https://erp.test/admin/licencia?orden={o['ref']}"
+    sk = o["checkout_url"].rsplit("/", 1)[1]
+    pago = {"event": "payment.completed", "data": {"session_key": sk, "reference": o["ref"], "amount": 8760.0, "payment_reference": "PM-0001"}}
+    # aviso sin firma o con firma de otro secreto: rechazado
+    assert e.http.post("/v1/avilapay/aviso", json=pago).status_code == 401
+    assert _aviso_avila(e, pago, secreto="otro_secreto_cualquiera").status_code == 401
+    # aviso firmado pero Ávila Pay aún no lo da por pagado: no se entrega (el aviso solo dispara la consulta)
+    assert _aviso_avila(e, pago).status_code == 200 and e.correos == []
+    e.av.sesiones[sk]["status"] = "PAID"
+    for _ in range(3): assert _aviso_avila(e, pago).status_code == 200                              # reintentos del aviso
+    e.app.extensions["revisar_pendientes"](); e.admin.verificar(o["ref"])
+    assert len(e.correos) == 1 and e.admin.ordenes(org="9")[0]["estado"] == "entregada"
+    est = e.admin.avilapay()
+    assert est["ultimo_aviso"].startswith("payment.completed") and "PM-0001" in est["ordenes"][0]["detalle_pago"]
+    assert any(x["evento"] == "avilapay_aviso_rechazado" for x in est["eventos"])
+    clave = _clave_de_correo(e.correos[0][2])
+    assert e.gestor("srvA").activar(clave).claims["plan"] == "ALL_IN_ONE"
+
+
+def test_avilapay_no_entrega_con_otro_monto_otra_sesion_o_vencida(e):
+    _avila_configurada(e)
+    pedir = lambda org: e.admin.crear_orden(organizacion_ref=org, cliente="A", correo="a@a.test", plan="ALL_IN_ONE", meses=12, moneda="VES", tasa_bcv="36.5")
+    o1, o2 = pedir("1"), pedir("2")
+    sk1, sk2 = (x["checkout_url"].rsplit("/", 1)[1] for x in (o1, o2))
+    e.av.sesiones[sk1].update(status="PAID", amount=100.0)                                          # pagó otro monto
+    assert e.admin.verificar(o1["ref"])["estado"] == "por_verificar" and e.correos == []
+    # aviso de una orden con la sesión de OTRA orden: ignorado
+    e.av.sesiones[sk2]["status"] = "PAID"
+    r = _aviso_avila(e, {"event": "payment.completed", "data": {"session_key": sk2, "reference": o1["ref"]}})
+    assert r.get_json()["ignorado"] and e.correos == []
+    o3 = pedir("3")
+    e.t[0] += 3600
+    e.av.sesiones[o3["checkout_url"].rsplit("/", 1)[1]]["status"] = "EXPIRED"
+    assert e.admin.verificar(o3["ref"])["estado"] == "vencida"
+
+
+def test_avilapay_caido_o_pausado_cae_al_pago_movil(e):
+    _avila_configurada(e)
+    e.av.caida = True
+    o = e.admin.crear_orden(organizacion_ref="9", cliente="Alfa", correo="adm@alfa.test", plan="ALL_IN_ONE", meses=12, moneda="VES", tasa_bcv="36.5")
+    assert "checkout_url" not in o and "Banco X" in o["instrucciones"]
+    assert "timeout" in e.admin.avilapay()["ultimo_error"]
+    e.av.caida = False
+    e.admin.guardar_avilapay(activa=False, autor="m")
+    o = e.admin.crear_orden(organizacion_ref="9", cliente="Alfa", correo="adm@alfa.test", plan="ALL_IN_ONE", meses=12, moneda="VES", tasa_bcv="36.5")
+    assert "checkout_url" not in o
+
+
+def test_avilapay_firma_y_clave():
+    from licensing_server import avilapay as AV
+    import hashlib, hmac
+    f = hmac.new(b"whsec_x", b"{}", hashlib.sha256).hexdigest()
+    assert AV.firma_valida("whsec_x", b"{}", f) and AV.firma_valida("whsec_x", b"{}", "sha256=" + f)
+    assert not AV.firma_valida("whsec_x", b"{ }", f) and not AV.firma_valida("", b"{}", f) and not AV.firma_valida("whsec_x", b"{}", "")
+    for mala in ("", "pk_live_123456789", "sk_live_corta", "sk_prod_1234567890"):
+        with pytest.raises(AV.ErrorAvila): AV.AvilaPay(mala)
+    with pytest.raises(AV.ErrorAvila): AV.AvilaPay("sk_test_clave12345", lambda *a: (200, b"{}")).sesion("../admin")

@@ -91,7 +91,14 @@ El Administrador de un cliente, en Organización → Licencia, elige plan y per�
   clave de **solo lectura** (`/sapi/v1/pay/transactions`, opcional `/sapi/v1/capital/deposit/hisrec`), empareja monto exacto
   + ventana de tiempo y entrega la licencia sola. Una transacción de Binance paga como máximo una orden; las órdenes vencen
   a las 24 h. Si el cliente envía otro monto, el Maestro lo confirma a mano.
-- **Bolívares por pago móvil** a la tasa BCV del día: informa la referencia y el Maestro la confirma.
+- **Bolívares por Ávila Pay** (Pago Móvil, débito, crédito inmediato o tarjeta nacional) a la tasa BCV del día: el servidor
+  crea un checkout alojado por Ávila Pay (vence a los 30 min) y el cliente paga allí. El pago se confirma **consultando a Ávila
+  Pay** —disparado por su aviso firmado (`X-AvilaPay-Signature`, HMAC-SHA256) en `/v1/avilapay/aviso`, al volver el cliente a
+  Contax o por la revisión cada 2 minutos— y solo si es en Bs por el monto exacto; si no coincide queda «por verificar». La clave
+  `sk_live_…`/`sk_test_…` y el secreto de avisos se cargan en **Consola Maestro → Pagos en bolívares** (se prueban antes de
+  guardar y se guardan cifrados en `erp-licencias`); ahí mismo se monitorean cobros, avisos y errores.
+- **Bolívares por pago móvil manual** (si Ávila Pay no está configurado, está pausado o no responde): el cliente informa la
+  referencia y el Maestro la confirma.
 En ambos casos la clave llega una sola vez a su correo.
 
 ## Flujo de alta de un cliente

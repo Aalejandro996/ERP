@@ -5,11 +5,13 @@ Responsabilidades:
   * /admin/v1/...             — API del usuario Maestro (la consume el ERP por la red privada). Cada petición va firmada
                                 con HMAC-SHA256 (LICENSE_ADMIN_SECRET) + marca de tiempo + nonce de un solo uso.
   * Órdenes de pago           — USDT con cuenta personal de Binance (monto único, validado leyendo el historial con una clave
-                                de SOLO LECTURA) y bolívares por pago móvil (verificación del Maestro).
+                                de SOLO LECTURA) y bolívares por Ávila Pay (checkout alojado, confirmación automática) o, si
+                                Ávila Pay no está configurado, por pago móvil (verificación del Maestro).
   * Entrega única por correo  — la clave se genera al entregar, se envía UNA vez por Brevo y solo se guarda su SHA-256.
 
 Persistencia: PostgreSQL (o SQLite en pruebas) con SQLAlchemy Core; todo SQL va parametrizado (sin inyecciones).
 """
+import base64
 import hashlib
 import hmac
 import json
@@ -26,7 +28,10 @@ from sqlalchemy.exc import IntegrityError
 
 from app.licensing.token import firmar
 
+from . import avilapay as AV
+
 VIGENCIA_ORDEN_USDT_S = 24 * 3600    # una orden en USDT espera su pago 24 h
+VIGENCIA_ORDEN_AVILA_S = 30 * 60     # la sesión de Ávila Pay vence a los 30 min
 VIGENCIA_TOKEN_S = 7 * 24 * 3600   # ventana offline máxima: 7 días
 LIMITE_PETICIONES = (20, 60)        # 20 peticiones por 60 s y por IP (endpoints públicos)
 TOLERANCIA_FIRMA_S = 300
@@ -105,6 +110,13 @@ combos = Table(
 precios_modulo = Table(
     "lic_precios_modulo", md,
     Column("modulo", String(20), primary_key=True), Column("mensual_usd", Numeric(12, 2), nullable=False))
+# Ávila Pay: una sola fila (id=1) que el Maestro configura desde su consola. Clave y secreto van cifrados (Fernet con una
+# clave derivada de LICENSE_ADMIN_SECRET): la base nunca los guarda legibles. Lo demás sirve para monitorear la pasarela.
+avila_cfg = Table(
+    "lic_avilapay", md,
+    Column("id", Integer, primary_key=True), Column("api_key_cifrada", Text), Column("secreto_cifrado", Text),
+    Column("activa", Integer, nullable=False, default=1), Column("metodos", Text), Column("actualizado_en", Float), Column("actualizado_por", Text),
+    Column("ultimo_aviso_en", Float), Column("ultimo_aviso", Text), Column("ultimo_error_en", Float), Column("ultimo_error", Text))
 meta = Table("lic_meta", md, Column("clave", String(40), primary_key=True), Column("valor", Text))
 # Cada transacción de Binance paga como máximo UNA orden (la clave primaria lo impone en la base de datos)
 pagos_usados = Table(
@@ -331,7 +343,8 @@ class Almacen:
 
 
 # ======================================================================================================================
-def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str | None = None, binance=None, correo=None, config=None) -> Flask:
+def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str | None = None, binance=None, correo=None, config=None,
+               avilapay_transporte=None) -> Flask:
     """`binance`: instancia de BinanceCuenta (o None si no se cobra en USDT). `correo(destino, asunto, texto)`: envío (Brevo).
     `config`: {"url_publica", "url_erp", "pago_movil"} para enlaces e instrucciones de pago."""
     app = Flask(__name__)
@@ -645,7 +658,22 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
             fila.update(monto_esperado=exacto, expira_en=expira, instrucciones=instr)
             resp.update(monto_esperado=str(exacto), instrucciones=instr, expira_en=expira)
         else:
-            resp["instrucciones"] = cfg.get("pago_movil") or "Solicite los datos de pago móvil al soporte."
+            av, conf = avila_cliente(solo_activa=True)
+            if av is not None:   # Ávila Pay: checkout alojado y confirmación automática; si falla, queda el pago móvil manual
+                url_erp, url_pub = cfg.get("url_erp") or "", cfg.get("url_publica") or ""
+                retorno = f"{url_erp}/admin/licencia?orden={ref}" if url_erp else None
+                try:
+                    s = av.crear_sesion(monto, ref, f"Licencia Contax · orden {ref}", correo=d["correo"], nombre=fila["cliente"], return_url=retorno,
+                                        cancel_url=retorno, webhook_url=f"{url_pub}/v1/avilapay/aviso" if url_pub else None,
+                                        metodos=[m for m in (conf.metodos or "").split(",") if m] or None)
+                    instr = (f"Pague Bs {monto} en la página segura de Ávila Pay (Pago Móvil, débito, crédito inmediato o tarjeta nacional). "
+                             "La confirmación es automática y la clave llega a su correo en cuanto el banco confirme. El enlace vence en 30 minutos.")
+                    fila.update(proveedor="avilapay", checkout_url=s["url"], prepay_id=s["session_key"], expira_en=reloj() + VIGENCIA_ORDEN_AVILA_S, instrucciones=instr)
+                    resp.update(checkout_url=s["url"], instrucciones=instr, expira_en=fila["expira_en"], proveedor="avilapay")
+                except AV.ErrorAvila as e:
+                    avila_error(f"crear cobro {ref}: {e}")
+            if fila["proveedor"] == "pago_movil":
+                resp["instrucciones"] = cfg.get("pago_movil") or "Solicite los datos de pago móvil al soporte."
         with st.eng.begin() as c: c.execute(insert(ordenes).values(**fila))
         return jsonify(resp), 201
 
@@ -691,8 +719,187 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
 
     @app.post("/admin/v1/ordenes/<ref>/verificar")
     def a_verificar(ref):
-        """Busca el pago de la orden en el historial de Binance (no se espera a la revisión periódica)."""
-        return jsonify(verificar_binance(ref))
+        """Busca el pago de la orden en Binance o consulta su cobro en Ávila Pay (no se espera a la revisión periódica)."""
+        if not RE_REF.match(ref): raise ValueError("Referencia inválida")
+        with st.eng.connect() as c:
+            prov = c.execute(select(ordenes.c.proveedor).where(ordenes.c.ref == ref)).scalar()
+        if prov is None: raise LookupError("Orden inexistente")
+        return jsonify(verificar_avilapay(ref) if prov == "avilapay" else verificar_binance(ref))
+
+    # ------------------------------------------------------------------ Ávila Pay (bolívares)
+    from cryptography.fernet import Fernet, InvalidToken
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    fernet = Fernet(base64.urlsafe_b64encode(HKDF(hashes.SHA256(), 32, b"contax-avilapay", b"configuracion-pasarela").derive(secreto_admin.encode()))) \
+        if secreto_admin else None
+
+    def avila_conf():
+        with st.eng.connect() as c:
+            return c.execute(select(avila_cfg).where(avila_cfg.c.id == 1)).first()
+
+    def descifrar(v):
+        if not v or fernet is None: return ""
+        try:
+            return fernet.decrypt(v.encode()).decode()
+        except InvalidToken:
+            return ""   # cambió LICENSE_ADMIN_SECRET: el Maestro debe volver a cargar la clave
+
+    def avila_cliente(solo_activa=True):
+        """(cliente, fila de configuración). Pausada: no se crean cobros nuevos, pero los ya creados se siguen verificando."""
+        r = avila_conf()
+        if r is None or (solo_activa and not r.activa): return None, r
+        try:
+            return AV.AvilaPay(descifrar(r.api_key_cifrada), avilapay_transporte), r
+        except AV.ErrorAvila:
+            return None, r
+
+    def avila_marcar(**valores):
+        with st.eng.begin() as c:
+            if not c.execute(update(avila_cfg).where(avila_cfg.c.id == 1).values(**valores)).rowcount:
+                c.execute(insert(avila_cfg).values(**{"id": 1, "activa": 0, **valores}))
+
+    def avila_error(texto):
+        avila_marcar(ultimo_error_en=reloj(), ultimo_error=str(texto)[:300])
+        with st.eng.begin() as c: st.log(c, None, "avilapay_error", texto)
+
+    def verificar_avilapay(ref, referencia_bancaria=None):
+        """Confirma el cobro LEYENDO a Ávila Pay (el aviso solo dispara la consulta): estado PAID, en Bs y por el monto EXACTO
+        de la orden. Cada sesión de Ávila Pay paga como máximo una orden (lic_pagos_usados)."""
+        if not RE_REF.match(ref): raise ValueError("Referencia inválida")
+        with st.eng.connect() as c:
+            o = c.execute(select(ordenes).where(ordenes.c.ref == ref)).first()
+        if o is None: raise LookupError("Orden inexistente")
+        if o.proveedor != "avilapay": raise ValueError("No es una orden de Ávila Pay")
+        if o.estado == "entregada": return {"estado": "entregada"}
+        if o.estado not in ("pendiente", "pagada"): return {"estado": o.estado}
+        av, _ = avila_cliente(solo_activa=False)
+        if av is None: raise ValueError("Ávila Pay no está configurado en la consola Maestro")
+        s = av.sesion(o.prepay_id)
+        if s["estado"] == "PAID":
+            if s["moneda"] != "VES" or s["monto"] != Decimal(o.monto).quantize(Decimal("0.01")):
+                with st.eng.begin() as c:
+                    c.execute(update(ordenes).where(ordenes.c.ref == ref, ordenes.c.estado == "pendiente")
+                              .values(estado="por_verificar", motivo=f"Ávila Pay informó {s['moneda']} {s['monto']}; la orden es Bs {o.monto}"))
+                    st.log(c, None, "avilapay_monto_distinto", f"orden={ref} {s['moneda']} {s['monto']} esperado={o.monto}")
+                return {"estado": "por_verificar", "avilapay": "monto distinto: revíselo y confirme a mano"}
+            try:
+                with st.eng.begin() as c:
+                    c.execute(insert(pagos_usados).values(pago_id=f"avilapay:{o.prepay_id}", orden_ref=ref, monto=s["monto"], registrado_en=reloj()))
+                    st.log(c, None, "avilapay_pago_confirmado", f"orden={ref} método={s['metodo'] or '—'} ref. bancaria={referencia_bancaria or '—'}")
+            except IntegrityError:
+                with st.eng.connect() as c:
+                    if c.execute(select(pagos_usados.c.orden_ref).where(pagos_usados.c.pago_id == f"avilapay:{o.prepay_id}")).scalar() != ref:
+                        return {"estado": o.estado, "avilapay": "esa sesión ya pagó otra orden"}
+            return entregar_orden(ref, json.dumps({"avilapay": o.prepay_id, "metodo": s["metodo"], "referencia_bancaria": referencia_bancaria,
+                                                   "pagado_en": s["pagado_en"]}))
+        if s["estado"] == "EXPIRED" or (s["estado"] in ("PENDING", "FAILED") and o.expira_en and reloj() > o.expira_en + 600):
+            with st.eng.begin() as c:
+                c.execute(update(ordenes).where(ordenes.c.ref == ref, ordenes.c.estado == "pendiente").values(estado="vencida"))
+            return {"estado": "vencida"}
+        return {"estado": o.estado, "avilapay": AV.ESTADOS.get(s["estado"], s["estado"])}
+
+    def revisar_avilapay():
+        """Respaldo de los avisos: consulta las órdenes de Ávila Pay pendientes de las últimas 2 horas."""
+        with st.eng.connect() as c:
+            pend = c.execute(select(ordenes.c.ref).where(ordenes.c.proveedor == "avilapay", ordenes.c.estado.in_(("pendiente", "pagada")),
+                                                         ordenes.c.creada_en > reloj() - 2 * 3600)).scalars().all()
+        n = 0
+        for ref in pend:
+            try:
+                if verificar_avilapay(ref).get("estado") == "entregada": n += 1
+            except Exception as e:  # noqa: BLE001 — Ávila Pay caído o correo caído: se reintenta en la próxima vuelta
+                avila_error(f"revisión {ref}: {e}")
+        return n
+
+    @app.post("/v1/avilapay/aviso")
+    def avila_aviso():
+        """Aviso de Ávila Pay. Solo se acepta con firma válida, y aun así el pago se confirma consultando a Ávila Pay."""
+        r = avila_conf()
+        cuerpo_crudo = request.get_data()
+        if r is None or not AV.firma_valida(descifrar(r.secreto_cifrado), cuerpo_crudo, request.headers.get("X-AvilaPay-Signature", "")):
+            with st.eng.begin() as c: st.log(c, None, "avilapay_aviso_rechazado", "firma inválida", request.remote_addr)
+            return jsonify(message="Firma inválida"), 401
+        try:
+            aviso = json.loads(cuerpo_crudo)
+            ev, d = str(aviso.get("event") or "")[:40], aviso.get("data") or {}
+            ref, sk = str(d.get("reference") or ""), str(d.get("session_key") or "")
+        except (ValueError, AttributeError):
+            return jsonify(message="JSON inválido"), 400
+        avila_marcar(ultimo_aviso_en=reloj(), ultimo_aviso=f"{ev} {ref}"[:200])
+        with st.eng.connect() as c:
+            o = c.execute(select(ordenes).where(ordenes.c.ref == ref)).first() if RE_REF.match(ref) else None
+        if o is None or o.proveedor != "avilapay" or not hmac.compare_digest(sk, o.prepay_id or ""):
+            with st.eng.begin() as c: st.log(c, None, "avilapay_aviso_ignorado", f"{ev} orden={ref[:40]} (no corresponde a una orden de Contax)")
+            return jsonify(ok=True, ignorado=True)
+        with st.eng.begin() as c: st.log(c, o.licencia_id, "avilapay_aviso", f"{ev} orden={ref} ref_banco={str(d.get('payment_reference') or '—')[:60]}")
+        try:
+            res = verificar_avilapay(ref, str(d.get("payment_reference") or "")[:60] or None)
+        except Exception as e:  # noqa: BLE001 — 503: Ávila Pay reintenta el aviso (5 veces con espera creciente)
+            avila_error(f"aviso {ref}: {e}")
+            return jsonify(message="Reintente"), 503
+        return jsonify(ok=True, estado=res.get("estado"))
+
+    @app.errorhandler(AV.ErrorAvila)
+    def _eav(e): return jsonify(message=str(e)[:250]), 502
+
+    def avila_estado():
+        r = avila_conf()
+        clave = descifrar(r.api_key_cifrada) if r is not None else ""
+        with st.eng.connect() as c:
+            ords = [dict(x._mapping) for x in c.execute(select(ordenes).where(ordenes.c.proveedor == "avilapay").order_by(ordenes.c.id.desc()).limit(100))]
+            evs = [dict(x._mapping) for x in c.execute(select(eventos).where(eventos.c.evento.like("avilapay%")).order_by(eventos.c.id.desc()).limit(60))]
+        url_pub = cfg.get("url_publica") or ""
+        return {"configurada": bool(clave), "activa": bool(r is not None and r.activa and clave), "modo": AV.modo(clave) if clave else None,
+                "clave": f"{clave[:8]}…{clave[-4:]}" if clave else None, "secreto": bool(r is not None and descifrar(r.secreto_cifrado)),
+                "clave_ilegible": bool(r is not None and r.api_key_cifrada and not clave),
+                "metodos": [m for m in ((r.metodos if r is not None else "") or "").split(",") if m] or list(AV.METODOS),
+                "actualizado_en": r.actualizado_en if r is not None else None, "actualizado_por": r.actualizado_por if r is not None else None,
+                "ultimo_aviso_en": r.ultimo_aviso_en if r is not None else None, "ultimo_aviso": r.ultimo_aviso if r is not None else None,
+                "ultimo_error_en": r.ultimo_error_en if r is not None else None, "ultimo_error": r.ultimo_error if r is not None else None,
+                "webhook_url": f"{url_pub}/v1/avilapay/aviso" if url_pub else None, "retorno_url": bool(cfg.get("url_erp")),
+                "ordenes": [{k: (str(v) if isinstance(v, Decimal) else v) for k, v in o.items() if k in (
+                    "ref", "organizacion_ref", "cliente", "monto", "estado", "creada_en", "pagada_en", "entregada_en", "prepay_id", "detalle_pago", "motivo")} for o in ords],
+                "eventos": [{"ts": e["ts"], "evento": e["evento"], "detalle": e["detalle"], "ip": e["ip"]} for e in evs]}
+
+    @app.get("/admin/v1/avilapay")
+    def a_avila():
+        return jsonify(avila_estado())
+
+    @app.put("/admin/v1/avilapay")
+    def a_avila_guardar():
+        """El Maestro carga la clave (sk_live_/sk_test_) y el secreto de avisos. La clave se PRUEBA antes de guardarla."""
+        if fernet is None: raise ValueError("El servidor no tiene LICENSE_ADMIN_SECRET para cifrar la clave")
+        d, r = cuerpo(), avila_conf()
+        clave, secreto = str(d.get("api_key") or "").strip(), str(d.get("webhook_secret") or "").strip()
+        actual = descifrar(r.api_key_cifrada) if r is not None else ""
+        if not (clave or actual): raise ValueError("Indique la clave de API de Ávila Pay")
+        if secreto and len(secreto) < 12: raise ValueError("El secreto de avisos (webhook secret) parece incompleto")
+        metodos = [m for m in (d.get("metodos") or list(AV.METODOS)) if m in AV.METODOS]
+        if not metodos: raise ValueError("Elija al menos un método de pago")
+        try:
+            n = AV.AvilaPay(clave or actual, avilapay_transporte).probar()   # se verifica ANTES de guardar
+        except AV.ErrorAvila as e:
+            raise ValueError(str(e)) from e
+        valores = dict(activa=1 if d.get("activa", True) else 0, metodos=",".join(metodos), actualizado_en=reloj(),
+                       actualizado_por=str(d.get("autor") or "")[:60], ultimo_error=None, ultimo_error_en=None)
+        if clave: valores["api_key_cifrada"] = fernet.encrypt(clave.encode()).decode()
+        if secreto: valores["secreto_cifrado"] = fernet.encrypt(secreto.encode()).decode()
+        avila_marcar(**valores)
+        with st.eng.begin() as c:
+            st.log(c, None, "avilapay_configurada", f"modo={AV.modo(clave or actual)} activa={valores['activa']} clave_nueva={bool(clave)} "
+                                                    f"secreto_nuevo={bool(secreto)} metodos={valores['metodos']} por={valores['actualizado_por']}")
+        return jsonify(ok=True, sesiones=n, modo=AV.modo(clave or actual))
+
+    @app.post("/admin/v1/avilapay/probar")
+    def a_avila_probar():
+        av, _ = avila_cliente(solo_activa=False)
+        if av is None: raise ValueError("Ávila Pay no está configurado")
+        try:
+            n = av.probar()
+        except AV.ErrorAvila as e:
+            avila_error(f"prueba de conexión: {e}"); raise ValueError(str(e)) from e
+        avila_marcar(ultimo_error=None, ultimo_error_en=None)
+        return jsonify(ok=True, sesiones=n)
 
     def monto_unico(base) -> Decimal:
         """Precio del catálogo + 0,0001…0,0999 USDT, distinto de toda orden en USDT aún pendiente: identifica el pago."""
@@ -745,7 +952,11 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         return entregar_orden(ref, json.dumps({"binance": pid, "monto": str(o.monto_esperado)}))
 
     def revisar_pendientes():
-        """Revisión periódica: una sola consulta a Binance para todas las órdenes en USDT pendientes."""
+        """Revisión periódica: Ávila Pay (respaldo de los avisos) y una sola consulta a Binance para todas las órdenes en USDT."""
+        entregadas = revisar_avilapay()
+        return entregadas + revisar_binance()
+
+    def revisar_binance():
         if binance is None: return 0
         with st.eng.connect() as c:
             pend = c.execute(select(ordenes).where(ordenes.c.proveedor == "binance", ordenes.c.estado.in_(("pendiente", "pagada")))).all()
@@ -794,7 +1005,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
             usdt = o.moneda == "USDT"
             f = fx.emitir(con, cliente_nombre=o.cliente, cliente_rif=o.cliente_rif, cliente_direccion=o.cliente_direccion, cliente_correo=o.correo,
                           moneda="USDT" if usdt else "VES", tasa_bcv=o.tasa_bcv, monto_con_iva=(o.monto_esperado or o.monto) if usdt else o.monto,
-                          concepto=_concepto(o.plan, o.modulos, meses=o.meses), forma_pago="USDT por Binance" if usdt else "Pago móvil (Bs)",
+                          concepto=_concepto(o.plan, o.modulos, meses=o.meses), forma_pago="USDT por Binance" if usdt else ("Bolívares por Ávila Pay" if o.proveedor == "avilapay" else "Pago móvil (Bs)"),
                           orden_ref=ref, licencia_id=o.licencia_id, reloj=reloj)
             st.log(con, o.licencia_id, "factura_emitida", f"orden={ref} factura={f['serie']}{f['numero']} control={f['numero_control']}")
         enviar_factura(f["id"])
@@ -1042,4 +1253,5 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
     app.extensions["verificar_binance"] = verificar_binance
     app.extensions["revisar_pendientes"] = revisar_pendientes
     app.extensions["entregar_orden"] = entregar_orden
+    app.extensions["verificar_avilapay"] = verificar_avilapay
     return app

@@ -88,14 +88,17 @@ def crear_entorno():
     from app.licensing.admin import ClienteAdmin
     from licensing_server.server import create_app as crear_srv
     correos_lic = []
+    from tests.test_licencias import AvilaFalsa
+    avila = AvilaFalsa(); avila.caida = True        # sin configurar en la consola, Ávila Pay no se usa
     srv = crear_srv("sqlite:///" + os.path.join(tempfile.mkdtemp(), "lic.db"), Ed25519PrivateKey.generate(), secreto_admin="z" * 40,
-                    correo=lambda d, a, t, **k: correos_lic.append((d, t)), config={"pago_movil": "Banco Prueba 0414-0000000"})
+                    correo=lambda d, a, t, **k: correos_lic.append((d, t)), config={"pago_movil": "Banco Prueba 0414-0000000", "url_publica": "https://lic.test"},
+                    avilapay_transporte=avila.transporte)
     cli_srv = srv.test_client()
     def transporte(metodo, url, cuerpo, cab):
         r = cli_srv.open(url.split("lic.test", 1)[1], method=metodo, data=cuerpo, headers=cab); return r.status_code, r.data
     app.config["PAGO_MOVIL_INSTRUCCIONES"] = "Banco Prueba 0414-0000000, RIF J-00000000-0."
     app.extensions["admin_licencias"] = lambda: ClienteAdmin("https://lic.test", "z" * 40, transporte=transporte)
-    return dict(app=app, owner=owner, planes=planes, app_owner=app_owner, correos_lic=correos_lic)
+    return dict(app=app, owner=owner, planes=planes, app_owner=app_owner, correos_lic=correos_lic, avila=avila)
 
 
 def _consulta(motor, *args):
@@ -382,7 +385,28 @@ def test_flujo_completo(entorno):
     r = root.post("/plataforma/licencias", data={"accion": "demo", "org": org_b}, follow_redirects=True)
     assert "Demo de 72 h emitida".encode() in r.data and "Demo 72 h" in entorno["correos_lic"][-1][1], re.findall(r'role="alert">([^<]+)', r.get_data(as_text=True))
     r = b.post("/admin/licencia", data={"accion": "demo"}, follow_redirects=True)
-    assert "ya utilizó su demo".encode() in r.data                                                      # una sola demo por organización
+    assert "ya utilizó su demo".encode() in r.data
+    # Ávila Pay: el Maestro lo configura en su consola (la clave se prueba y se guarda cifrada) y el cliente paga en Bs solo
+    avila = entorno["avila"]; avila.caida = False
+    assert a.get("/plataforma/avilapay").status_code == 403 and "Sin configurar" in root.get("/plataforma/avilapay").get_data(as_text=True)
+    r = root.post("/plataforma/avilapay", data={"accion": "guardar", "api_key": "sk_live_malaclave99", "metodos": ["pago_movil"]}, follow_redirects=True)
+    assert "clave de API no es válida" in r.get_data(as_text=True)
+    r = root.post("/plataforma/avilapay", data={"accion": "guardar", "api_key": "sk_test_clave12345", "webhook_secret": "whsec_secreto_avisos",
+                                               "metodos": ["pago_movil", "tdc"], "activa": "1"}, follow_redirects=True)
+    pag = r.get_data(as_text=True)
+    assert "verificado y guardado" in pag and "sk_test_clave12345" not in pag and "https://lic.test/v1/avilapay/aviso" in pag and "modo de PRUEBAS" in pag
+    r = b.post("/admin/licencia", data={"accion": "comprar", "oferta": "CASH:1", "moneda": "VES"})
+    ref_av = r.headers["Location"].split("orden=")[1]
+    pag = b.get(r.headers["Location"]).get_data(as_text=True)
+    assert "con Ávila Pay" in pag and "Verificar mi pago" in pag and 'href="https://comercio.avilapay.com/pay/cs_' in pag and "Banco Prueba" not in pag
+    sk = re.search(r"/pay/(cs_[0-9a-zA-Z]+)", pag).group(1)
+    assert avila.sesiones[sk]["amount"] == 730.0 and [x for x in avila.llamadas if x[0] == "POST"][-1][2]["methods"] == ["pago_movil", "tdc"]
+    n = len(entorno["correos_lic"])
+    avila.sesiones[sk]["status"] = "PAID"
+    pag = b.get(f"/admin/licencia?orden={ref_av}").get_data(as_text=True)                            # vuelve de Ávila Pay: se confirma al instante
+    assert "pagada" in pag and len(entorno["correos_lic"]) == n + 1 and entorno["correos_lic"][-1][0] == "b@beta.test"
+    mon = root.get("/plataforma/avilapay").get_data(as_text=True)
+    assert ref_av in mon and "Pagada y entregada" in mon and "pago confirmado" in mon                                                      # una sola demo por organización
     planes[org_b] = ("DEMO", 2, 1)
     assert "DEMO · quedan".encode() in b.get("/").data
     planes[org_b] = ("CASH", 10, 5, 1)
@@ -394,7 +418,8 @@ def test_flujo_completo(entorno):
     root.post("/plataforma/facturas", data={"accion": "rango", "desde": "1", "hasta": "50", "fecha": "2026-10-01"})
     n = len(entorno["correos_lic"])
     r = root.post("/plataforma/facturas", data={"accion": "cliente", "org": org_b}, follow_redirects=True)   # solo se elige el cliente
-    assert "construida".encode() in r.data and len(entorno["correos_lic"]) == n + 1 and entorno["correos_lic"][-1][0] == "b@beta.test"
+    # dos órdenes de B sin factura (pago móvil y Ávila Pay): una factura y un correo por cada una
+    assert "construida".encode() in r.data and len(entorno["correos_lic"]) == n + 2 and entorno["correos_lic"][-1][0] == "b@beta.test"
     r = root.get("/plataforma/facturas/ejemplo")
     assert r.status_code == 200 and "EJEMPLO".encode() in r.data and b"gigadevs.png" in r.data
     r = root.get("/plataforma/facturas/1")
