@@ -46,15 +46,25 @@ class BinanceFalso:
 class AvilaFalsa:
     """Simula la API de Ávila Pay: crea sesiones de checkout y responde su estado; exige la clave en la cabecera."""
     def __init__(self):
-        self.sesiones, self.llamadas, self.caida = {}, [], False
+        self.sesiones, self.llamadas, self.caida, self.pagos_usd = {}, [], False, {}
 
     def transporte(self, metodo, url, cuerpo, cab):
         from licensing_server.avilapay import ErrorAvila
         if self.caida: raise ErrorAvila("No se pudo contactar a Ávila Pay (timeout)")
+        if cab.get("Authorization") != "Bearer sk_test_clave12345": return 401, b'{"message":"Unauthorized"}'
+        if url.startswith("https://api.avilapay.com/api/v1/gateway/payments"):      # dólares: Zelle / tarjeta internacional
+            ruta = url.split("/payments", 1)[1]
+            self.llamadas.append((metodo, "usd" + ruta, json.loads(cuerpo) if cuerpo else None))
+            if metodo == "POST":
+                d = json.loads(cuerpo); pid = f"5d38f849-066b-455f-b1cb-{len(self.pagos_usd) + 1:012d}"
+                self.pagos_usd[pid] = {"id": pid, "externalOrderId": d["orderId"], "amount": d["amount"], "currency": d["currency"], "status": "PENDING",
+                                       "paymentMethod": d["paymentMethods"][0]}
+                return 200, json.dumps({"id": pid, "checkoutUrl": f"https://comercio.avilapay.com/checkout/{pid}", "status": "PENDING"}).encode()
+            pg = self.pagos_usd.get(ruta.lstrip("/"))
+            return (200, json.dumps(pg).encode()) if pg else (404, b'{"message":"not found"}')
         assert url.startswith("https://comercio.avilapay.com/api/v1/checkout/sessions")
         ruta = url.split("/sessions", 1)[1]
         self.llamadas.append((metodo, ruta, json.loads(cuerpo) if cuerpo else None))
-        if cab.get("Authorization") != "Bearer sk_test_clave12345": return 401, b'{"message":"Unauthorized"}'
         if metodo == "POST":
             d = json.loads(cuerpo); sk = f"cs_{len(self.sesiones) + 1:040d}"
             self.sesiones[sk] = {"session_key": sk, "status": "PENDING", "amount": d["amount"], "currency": d["currency"], "reference": d.get("reference")}
@@ -76,7 +86,8 @@ class Entorno:
         self.app = create_app(url, self.priv, reloj=lambda: self.t[0], secreto_admin=SECRETO, binance=self.binance,
                               correo=lambda d, a, x, **k: self.correos.append((d, a, x)), config={"url_erp": "https://erp.test", "pago_movil": "Banco X 0414", "binance_pay_id": "123456789",
                                       "usdt_red": "TRC20", "usdt_direccion": "TXyz",
-                                      "url_publica": "https://lic.test"}, avilapay_transporte=self.av.transporte)
+                                      "url_publica": "https://lic.test"}, avilapay_transporte=self.av.transporte,
+                              binance_transporte=self.bf.transporte)
         self.st = self.app.extensions["almacen"]
         self.http = self.app.test_client()
         self.admin = ClienteAdmin("https://lic.test", SECRETO, transporte=self._admin_http, reloj=lambda: self.t[0])
@@ -474,10 +485,12 @@ def test_avilapay_cobro_aviso_y_entrega_una_sola_vez(e):
     o = e.admin.crear_orden(organizacion_ref="9", cliente="Alfa", correo="adm@alfa.test", plan="ALL_IN_ONE", meses=12, moneda="VES", tasa_bcv="36.5")
     assert o["proveedor"] == "avilapay" and o["checkout_url"].startswith("https://comercio.avilapay.com/pay/cs_")
     metodo, _, enviado = e.av.llamadas[-1]
-    assert enviado["amount"] == 8760.0 and enviado["currency"] == "VES" and enviado["reference"] == o["ref"] and enviado["methods"] == ["pago_movil", "debito"]
+    # sin método elegido: ajuste del más caro habilitado (débito 1,5 % + IGTF 3 %) → 8760 / 0,955, redondeado hacia arriba
+    assert o["monto"] == "9172.78" and o["precio"] == "8760.00" and o["ajuste"] == "412.78"
+    assert enviado["amount"] == 9172.78 and enviado["currency"] == "VES" and enviado["reference"] == o["ref"] and enviado["methods"] == ["pago_movil", "debito"]
     assert enviado["webhook_url"] == "https://lic.test/v1/avilapay/aviso" and enviado["return_url"] == f"https://erp.test/admin/licencia?orden={o['ref']}"
     sk = o["checkout_url"].rsplit("/", 1)[1]
-    pago = {"event": "payment.completed", "data": {"session_key": sk, "reference": o["ref"], "amount": 8760.0, "payment_reference": "PM-0001"}}
+    pago = {"event": "payment.completed", "data": {"session_key": sk, "reference": o["ref"], "amount": 9172.78, "payment_reference": "PM-0001"}}
     # aviso sin firma o con firma de otro secreto: rechazado
     assert e.http.post("/v1/avilapay/aviso", json=pago).status_code == 401
     assert _aviso_avila(e, pago, secreto="otro_secreto_cualquiera").status_code == 401
@@ -532,3 +545,82 @@ def test_avilapay_firma_y_clave():
     for mala in ("", "pk_live_123456789", "sk_live_corta", "sk_prod_1234567890"):
         with pytest.raises(AV.ErrorAvila): AV.AvilaPay(mala)
     with pytest.raises(AV.ErrorAvila): AV.AvilaPay("sk_test_clave12345", lambda *a: (200, b"{}")).sesion("../admin")
+
+
+# ------------------------------------------------------------------ dólares: Binance desde la consola, Zelle y tarjeta internacional
+def test_binance_configurado_desde_la_consola_reemplaza_las_variables(e):
+    e.admin.fijar_precio(plan="CASH", meses=1, monto_usd="25", max_usuarios=3, max_empresas=1, max_equipos=2)
+    est = e.admin.cobros_dolares()["binance"]
+    assert est["origen"] == "variables de entorno" and est["pay_id"] == "123456789"
+    with pytest.raises(ErrorAdmin, match="Pay ID"): e.admin.guardar_binance(api_key="KEY", api_secret="SECRET", pay_id="abc", autor="m")
+    e.admin.guardar_binance(api_key="KEY", api_secret="SECRET", pay_id="987654321", red="TRC20", direccion="T" + "x" * 33, autor="maestro")
+    from licensing_server.server import binance_cfg
+    from sqlalchemy import select
+    with e.st.eng.connect() as c:
+        assert "SECRET" not in str(c.execute(select(binance_cfg)).first())                          # cifrado en la base
+    est = e.admin.cobros_dolares()["binance"]
+    assert est["origen"] == "consola" and est["pay_id"] == "987654321" and est["clave"] == "KEY…KEY" and est["activa"]
+    o = _orden_usdt(e)
+    assert "987654321" in o["instrucciones"] and "TRC20" in o["instrucciones"]                     # usa lo de la consola
+    e.t[0] += 60; e.bf.pago(o["monto_esperado"], e.t[0], "T9")
+    e.app.extensions["revisar_pendientes"]()
+    assert len(e.correos) == 1 and e.admin.cobros_dolares()["binance"]["ultima_revision_en"]
+    assert e.admin.probar_binance()["ok"]
+    e.admin.guardar_binance(activa=False, autor="m")                                                # vacío = conserva clave y Pay ID
+    assert {"codigo": "USDT", "nombre": "USDT (Binance)"} not in e.admin.metodos_pago()
+    with pytest.raises(ErrorAdmin, match="USDT"): _orden_usdt(e)
+
+
+def test_zelle_y_tarjeta_internacional_por_avilapay(e):
+    _avila_configurada(e)
+    assert [m["codigo"] for m in e.admin.metodos_pago()] == ["USDT", "VES:pago_movil", "VES:debito"]
+    with pytest.raises(ErrorAdmin, match="Zelle"):
+        e.admin.crear_orden(organizacion_ref="9", cliente="Alfa", correo="adm@alfa.test", plan="ALL_IN_ONE", meses=12, moneda="zelle")
+    e.admin.guardar_avilapay_usd(metodos=["zelle", "tarjeta"], webhook_secret="whsec_avisos_dolares", autor="maestro")
+    assert [m["codigo"] for m in e.admin.metodos_pago()] == ["USDT", "zelle", "tarjeta", "VES:pago_movil", "VES:debito"]
+    o = e.admin.crear_orden(organizacion_ref="9", cliente="Alfa", correo="adm@alfa.test", plan="ALL_IN_ONE", meses=12, moneda="zelle", tasa_bcv="36.5")
+    assert o["moneda"] == "USD" and o["monto"] == "252.64" and o["ajuste"] == "12.64" and o["checkout_url"].startswith("https://comercio.avilapay.com/checkout/")
+    _, _, enviado = e.av.llamadas[-1]
+    assert enviado["amount"] == 25264 and enviado["currency"] == "USD" and enviado["paymentMethods"] == ["ZELLE"] and enviado["orderId"] == o["ref"]
+    pid = o["checkout_url"].rsplit("/", 1)[1]
+    import hashlib, hmac
+    def aviso(cuerpo, secreto="whsec_avisos_dolares"):
+        crudo = json.dumps(cuerpo).encode()
+        return e.http.post("/v1/avilapay/aviso-usd", data=crudo, headers={"AvilaPay-Signature": hmac.new(secreto.encode(), crudo, hashlib.sha256).hexdigest(),
+                                                                         "AvilaPay-Event": "payment.succeeded", "Content-Type": "application/json"})
+    evento = {"payment_id": pid, "external_order_id": o["ref"], "amount": 25264, "currency": "USD", "status": "SUCCEEDED"}
+    assert aviso(evento, secreto="whsec_secreto_avisos").status_code == 401                          # el secreto de dólares manda
+    assert aviso(evento).status_code == 200 and e.correos == []                                     # Ávila Pay aún no lo aprueba
+    e.av.pagos_usd[pid]["amount"] = 2400                                                            # aprobado por otro monto: a revisión
+    e.av.pagos_usd[pid]["status"] = "SUCCEEDED"
+    assert e.admin.verificar(o["ref"])["estado"] == "por_verificar" and e.correos == []
+    o2 = e.admin.crear_orden(organizacion_ref="9", cliente="Alfa", correo="adm@alfa.test", plan="ALL_IN_ONE", meses=12, moneda="tarjeta", tasa_bcv="36.5")
+    pid2 = o2["checkout_url"].rsplit("/", 1)[1]
+    assert e.av.pagos_usd[pid2]["paymentMethod"] == "TARJETA_INTERNACIONAL"
+    e.av.pagos_usd[pid2]["status"] = "SUCCEEDED"
+    for _ in range(2): assert aviso({**evento, "payment_id": pid2, "external_order_id": o2["ref"]}).status_code == 200
+    assert len(e.correos) == 1 and e.admin.ordenes(org="9")[0]["estado"] == "entregada"
+    mon = e.admin.cobros_dolares()
+    assert mon["avilapay"]["activa"] and mon["avilapay"]["secreto_propio"] and mon["avilapay"]["webhook_url"] == "https://lic.test/v1/avilapay/aviso-usd"
+    assert {x["ref"] for x in mon["ordenes"]} >= {o["ref"], o2["ref"]}
+    e.admin.guardar_avilapay_usd(activa=False, autor="m")
+    assert [m["codigo"] for m in e.admin.metodos_pago()] == ["USDT", "VES:pago_movil", "VES:debito"]
+
+
+def test_ajuste_por_forma_de_pago_cubre_la_comision(e):
+    _avila_configurada(e)
+    cm = e.admin.comisiones()
+    assert cm["metodos"]["tarjeta"] == "4.20" and cm["metodos"]["pago_movil"] == "1.00" and cm["impuesto"] == "3.00"   # tarifario de lista
+    metodos = [m["codigo"] for m in e.admin.metodos_pago()]
+    assert "VES:pago_movil" in metodos and "VES:debito" in metodos and "VES" not in metodos
+    pedir = lambda moneda: e.admin.crear_orden(organizacion_ref="9", cliente="Alfa", correo="a@a.test", plan="ALL_IN_ONE", meses=12, moneda=moneda, tasa_bcv="36.5")
+    o = pedir("VES:pago_movil")                                                                     # 8760 / (1 − 1 % − 3 %)
+    assert o["monto"] == "9125.00" and e.av.llamadas[-1][2]["methods"] == ["pago_movil"]
+    with pytest.raises(ErrorAdmin, match="habilitado"): pedir("VES:tdc")                            # no está entre los habilitados
+    e.admin.fijar_comisiones(metodos={"pago_movil": "0"}, impuesto="0", autor="m")                  # tarifa negociada
+    assert pedir("VES:pago_movil")["monto"] == "8760.00"
+    with pytest.raises(ErrorAdmin, match="entre 0 y 25"): e.admin.fijar_comisiones(impuesto="40")
+    # el monto cobrado es el total: un pago por solo el precio (sin el ajuste) no se entrega solo
+    sk = o["checkout_url"].rsplit("/", 1)[1]
+    e.av.sesiones[sk].update(status="PAID", amount=8760.0)
+    assert e.admin.verificar(o["ref"])["estado"] == "por_verificar"

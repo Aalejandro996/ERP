@@ -323,6 +323,21 @@ def maestro_licencias():
 
 @ruta("/plataforma/pagos", "plataforma", ("GET", "POST"))
 def maestro_pagos():
+    """Cobros y precios → Órdenes: todas las órdenes de licencia, con confirmación y rechazo manual."""
+    return _pagos("ordenes")
+
+
+@ruta("/plataforma/precios", "plataforma", ("GET", "POST"))
+def maestro_precios():
+    """Cobros y precios → Precios y planes: catálogo, precios de referencia, combos y precio por módulo."""
+    return _pagos("precios")
+
+
+COMISION_NOMBRES = {"pago_movil": "Bs · Pago Móvil", "debito": "Bs · Débito inmediato", "credito": "Bs · Crédito inmediato", "tdc": "Bs · Tarjeta nacional",
+                    "zelle": "USD · Zelle", "tarjeta": "USD · Tarjeta internacional", "billetera": "USD · Apple Pay / Google Pay"}
+
+
+def _pagos(vista):
     from .licensing.admin import ErrorAdmin
     from .planes import PLANES
     if request.method == "POST":
@@ -337,6 +352,9 @@ def maestro_pagos():
                                 max_usuarios=int(F["usuarios"]), max_empresas=int(F["empresas"]), max_equipos=int(F["equipos"]))
             elif a == "combo_estado": adm.activar_combo(int(F["cid"]), F.get("activo") == "1")
             elif a == "precio_modulo": adm.fijar_precio_modulo(F["modulo"], F["monto"])
+            elif a == "comisiones":
+                adm.fijar_comisiones(metodos={m: F[f"c_{m}"] for m in COMISION_NOMBRES if F.get(f"c_{m}") not in (None, "")},
+                                     impuesto=F.get("impuesto") or None, autor=g.usuario.username)
             elif a == "referencia": flash(f"Precios de referencia agregados: {adm.sembrar_precios()['agregados']} (los existentes no se modificaron)")
             elif a == "confirmar": adm.confirmar(F["ref"], g.usuario.username)
             elif a == "rechazar": adm.rechazar(F["ref"], F.get("motivo") or "Pago no verificado")
@@ -350,14 +368,15 @@ def maestro_pagos():
         return redirect(request.url)
     try:
         adm = _admin(); ords, precs, cmb = adm.ordenes(), adm.precios(), adm.combos()
+        cms = adm.comisiones() if vista == "precios" else None
     except (ErrorAdmin, ValueError, OSError) as e:
-        flash(str(e)); ords, precs, cmb = [], [], {"combos": [], "precios_modulo": {}, "descuento_anual_pct": "16.67"}
+        flash(str(e)); ords, precs, cmb, cms = [], [], {"combos": [], "precios_modulo": {}, "descuento_anual_pct": "16.67"}, None
     orgs = {str(o.id): o.nombre for o in db.session.execute(select(Organizacion)).scalars()}
     import json as _json
     def acciones(o):
         if o["estado"] == "por_verificar":
             return dict(action=request.path, boton="Confirmar pago", campos=[h("confirmar"), campo("ref", "", "hidden", valor=o["ref"])])
-        if o["proveedor"] in ("binance", "avilapay") and o["estado"] in ("pendiente", "pagada"):
+        if o["proveedor"] in ("binance", "avilapay", "avilapay_usd") and o["estado"] in ("pendiente", "pagada"):
             return dict(action=request.path, boton="Buscar pago en Binance" if o["proveedor"] == "binance" else "Consultar en Ávila Pay",
                         campos=[h("verificar"), campo("ref", "", "hidden", valor=o["ref"])])
         return None
@@ -369,19 +388,33 @@ def maestro_pagos():
     plan_orden = lambda o: (f"Combo «{nombre_combo.get(o.get('combo_id'), o.get('combo_id'))}»" if o.get("combo_id") else PLANES.get(o["plan"], {}).get("nombre", o["plan"]))
     mods_txt = lambda v: ", ".join(MODULOS.get(m, m) for m in (v or "").split(",") if m)
     pm = cmb["precios_modulo"]
-    return pagina("Pagos y precios", None, [
-        dict(kpis=[("Órdenes", len(ords)), ("Por verificar (Bs)", sum(o["estado"] == "por_verificar" for o in ords)),
+    proveedor = {"binance": "USDT · Binance", "avilapay": "Bs · Ávila Pay", "avilapay_usd": "USD · Ávila Pay", "pago_movil": "Bs · pago móvil"}
+    secs = [
+        dict(kpis=[("Órdenes", len(ords)), ("Por verificar", sum(o["estado"] == "por_verificar" for o in ords)),
                    ("Entregadas", sum(o["estado"] == "entregada" for o in ords)), ("Cobrado USD", f"{sum(float(o['monto_usd']) for o in ords if o['estado'] == 'entregada'):,.2f}")]),
-        dict(titulo="Órdenes", nota="USDT: cada orden tiene un monto único; el sistema revisa su historial de Binance cada 2 min y entrega la licencia sola. "
-                  "Si un cliente pagó un monto distinto, verifíquelo en Binance y use «Confirmar». Bs con Ávila Pay: se confirma solo (ver «Pagos en bolívares»); "
-                  "Bs por pago móvil manual: verifique en su banco y confirme aquí.",
-             tabla=dict(cols=["Orden", "Cliente", "Plan", "Meses", "Moneda", "Monto", "Estado", "Pago informado", "Fecha (UTC)"], num=[5], accion=True,
-                        filas=[dict(cells=[o["ref"], orgs.get(o["organizacion_ref"], o["cliente"]), plan_orden(o), o["meses"], o["moneda"], o.get("monto_esperado") or o["monto"], o["estado"], ref_pago(o),
+        dict(titulo="Órdenes", nota="USDT (Binance), Zelle, tarjeta internacional y Bs con Ávila Pay se confirman solos (ver «Pagos en dólares» y «Pagos en bolívares»). "
+                  "Si un cliente pagó un monto distinto, la orden queda «por verificar»: revísela y use «Confirmar». Bs por pago móvil manual: verifique en su banco y confirme aquí.",
+             tabla=dict(cols=["Orden", "Cliente", "Plan", "Meses", "Forma de pago", "Monto", "Estado", "Pago informado", "Fecha (UTC)"], num=[5], accion=True,
+                        filas=[dict(cells=[o["ref"], orgs.get(o["organizacion_ref"], o["cliente"]), plan_orden(o), o["meses"], proveedor.get(o["proveedor"], o["moneda"]),
+                                           o.get("monto_esperado") or o["monto"], o["estado"].replace("_", " "), ref_pago(o),
                                            _fecha(o["creada_en"])], form=acciones(o)) for o in ords])),
         dict(titulo="Confirmar un pago manualmente", nota="Para pagos que no se emparejaron solos (p. ej. el cliente envió otro monto). Verifique primero en su Binance o banco: al confirmar se emite la licencia y se envía la clave.",
              form=dict(action=request.path, boton="Confirmar y entregar", campos=[h("confirmar"), campo("ref", "Orden", "select", opciones=[(o["ref"], f"{o['ref']} · {orgs.get(o['organizacion_ref'], o['cliente'])} · {o['moneda']} {o.get('monto_esperado') or o['monto']}") for o in ords if o["estado"] in ("pendiente", "por_verificar", "pagada")])])),
         dict(titulo="Rechazar orden", form=dict(action=request.path, boton="Rechazar", campos=[h("rechazar"), campo("ref", "Orden", "select", opciones=[(o["ref"], o["ref"]) for o in ords if o["estado"] in ("pendiente", "por_verificar")]),
                                                                                            campo("motivo", "Motivo")])),
+        "precios",
+        *([dict(titulo="Ajuste por forma de pago (comisiones de Ávila Pay)",
+                nota="Para que le llegue completo el precio del catálogo, cada orden pagada con Ávila Pay sube lo justo para cubrir la comisión del método "
+                     "y el impuesto: total = precio ÷ (1 − (comisión + impuesto)). El cliente solo ve «ajuste por forma de pago», nunca los porcentajes. "
+                     "Valores de lista del tarifario de Ávila Pay; si negoció otras tarifas (las ve en su Estado de Cuenta), cámbielas aquí. "
+                     "Binance y el pago móvil manual no llevan ajuste.",
+                tabla=dict(cols=["Forma de pago", "Comisión", "Impuesto (IGTF)", "Ajuste sobre 100 (ejemplo)", "Tarifa de lista"], num=[1, 2, 3, 4], filas=[
+                    dict(cells=[nombre, f"{cms['metodos'][m]} %", f"{cms['impuesto']} %",
+                                f"{100 / (1 - (float(cms['metodos'][m]) + float(cms['impuesto'])) / 100) - 100:,.2f}", f"{cms['lista'][m]} %"])
+                    for m, nombre in COMISION_NOMBRES.items()]))] if cms else []),
+        *([dict(titulo="Cambiar comisiones", form=dict(action=request.path, boton="Guardar comisiones", campos=[h("comisiones"),
+                campo("impuesto", "Impuesto (IGTF) %", "number", valor=cms["impuesto"])]
+                + [campo(f"c_{m}", f"{nombre} %", "number", valor=cms["metodos"][m]) for m, nombre in COMISION_NOMBRES.items()]))] if cms else []),
         dict(titulo="Catálogo de precios (USD / USDT)", nota="El monto de cada orden lo fija SIEMPRE este catálogo en el servidor; el cliente no puede alterarlo. En Bs se convierte a la tasa BCV del día.",
              tabla=dict(cols=["Plan", "Meses", "Precio USD", "Usuarios", "Empresas", "Equipos"], num=[2, 3, 4, 5], filas=[dict(cells=[PLANES[p["plan"]]["nombre"], p["meses"], p["monto_usd"], p["max_usuarios"], p["max_empresas"], p["max_equipos"]]) for p in precs])),
         dict(asistente=dict(action=request.path, boton="Guardar precio", titulo="Fijar precio de un plan", ocultos=[("accion", "precio")],
@@ -421,7 +454,110 @@ def maestro_pagos():
         dict(titulo="Precio mensual por módulo (base del cálculo de combos)", tabla=dict(cols=["Módulo", "USD / mes", "USD / año (sugerido)"], num=[1, 2], filas=[
                  dict(cells=[MODULOS[m], pm.get(m, "—"), f"{float(pm[m]) * 12 * (100 - float(cmb['descuento_anual_pct'])) / 100:,.0f}" if m in pm else "—"]) for m in MODULOS])),
         dict(titulo="Cambiar precio de un módulo", form=dict(action=request.path, boton="Guardar", campos=[h("precio_modulo"), campo("modulo", "Módulo", "select", opciones=list(MODULOS.items())),
-                                                                                                           campo("monto", "USD por mes", "number")]))])
+                                                                                                           campo("monto", "USD por mes", "number")]))]
+    corte = secs.index("precios")
+    return pagina("Órdenes y cobros", None, secs[:corte]) if vista == "ordenes" else pagina("Precios y planes", None, secs[corte + 1:])
+
+
+@ruta("/plataforma/dolares", "plataforma", ("GET", "POST"))
+def maestro_dolares():
+    """Cobros y precios → Pagos en dólares: Binance (USDT, cuenta personal con clave de SOLO LECTURA) y, por Ávila Pay,
+    Zelle y tarjeta de crédito/débito internacional. Las claves se cargan aquí; viajan firmadas al servidor de licencias,
+    que las guarda cifradas. Desde aquí se monitorean los cobros, avisos y errores."""
+    from .licensing.admin import ErrorAdmin
+    metodos_usd = {"zelle": "Zelle", "tarjeta": "Tarjeta internacional (TDC/TDD)", "billetera": "Apple Pay / Google Pay"}
+    if request.method == "POST":
+        a = F.get("accion")
+        try:
+            adm = _admin()
+            if a == "binance":
+                adm.guardar_binance(api_key=(F.get("api_key") or "").strip() or None, api_secret=(F.get("api_secret") or "").strip() or None,
+                                    pay_id=(F.get("pay_id") or "").strip() or None, red=F.get("red") or None, direccion=(F.get("direccion") or "").strip() or None,
+                                    activa=F.get("activa", "1") == "1", autor=g.usuario.username)
+                registrar(g.usuario.username, "BINANCE_CONFIG", f"activa={F.get('activa', '1')} clave_nueva={bool(F.get('api_key'))}", org=None)
+                db.session.commit(); flash("Binance verificado y guardado.")
+            elif a == "binance_probar":
+                adm.probar_binance(); flash("Conexión con Binance correcta: la clave puede leer el historial.")
+            elif a == "avila_usd":
+                r = adm.guardar_avilapay_usd(api_key=(F.get("api_key") or "").strip() or None, webhook_secret=(F.get("webhook_secret") or "").strip() or None,
+                                             metodos=F.getlist("metodos"), activa=F.get("activa", "1") == "1", autor=g.usuario.username)
+                registrar(g.usuario.username, "AVILAPAY_USD_CONFIG", f"activa={F.get('activa', '1')} metodos={','.join(F.getlist('metodos'))}", org=None)
+                db.session.commit(); flash(f"Pagos en dólares con Ávila Pay guardados ({r.get('modo')}).")
+            elif a == "verificar":
+                r = adm.verificar(F["ref"])
+                flash(f"Orden {F['ref']}: {r.get('estado')}" + "".join(f" · {k}: {r[k]}" for k in ("binance", "avilapay") if r.get(k)))
+            else: raise ValueError("Acción inválida")
+        except (ErrorAdmin, ValueError, OSError) as e:
+            db.session.rollback(); flash(str(e))
+        return redirect(request.url)
+    try:
+        est = _admin().cobros_dolares()
+    except (ErrorAdmin, ValueError, OSError) as e:
+        flash(str(e)); est = {"binance": {}, "avilapay": {}, "ordenes": [], "eventos": []}
+    b, av = est["binance"], est["avilapay"]
+    from datetime import datetime, timezone
+    hora = lambda ts: datetime.fromtimestamp(float(ts), timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if ts else "—"
+    orgs = {str(o.id): o.nombre for o in db.session.execute(select(Organizacion)).scalars()}
+    ords = est.get("ordenes") or []
+    forma = lambda o: "USDT · Binance" if o["proveedor"] == "binance" else metodos_usd.get(o.get("metodo"), "Ávila Pay")
+    estado_txt = {"pendiente": "Esperando pago", "por_verificar": "Revisar: monto distinto", "pagada": "Pagada (enviando clave)", "entregada": "Pagada y entregada",
+                  "vencida": "Vencida sin pago", "rechazada": "Rechazada"}
+    cobrado = sum(float(o["monto"]) for o in ords if o["estado"] == "entregada")
+    avisos = []
+    if b.get("origen") == "variables de entorno": avisos.append("Binance se está leyendo de las variables de entorno de erp-licencias: cárguelo aquí para administrarlo desde la consola.")
+    if b.get("ultimo_error"): avisos.append(f"Binance: {b['ultimo_error']}")
+    if av.get("activa") and not av.get("webhook_url"): avisos.append("Falta PUBLIC_URL en erp-licencias: Ávila Pay no puede avisar los pagos en dólares (se confirman con la revisión cada 2 minutos).")
+    if av.get("activa") and not av.get("secreto"): avisos.append("Sin secreto de avisos de Ávila Pay: los avisos en dólares se rechazan y los pagos se confirman con la revisión cada 2 minutos.")
+    if av.get("modo") and "Pruebas" in av["modo"] and av.get("activa"): avisos.append("Ávila Pay está en modo de PRUEBAS (sk_test): Zelle y tarjeta no mueven dinero real.")
+    return pagina("Pagos en dólares", None, [
+        dict(kpis=[("Binance (USDT)", ("Activo" if b.get("activa") else "Pausado") if b.get("configurada") else "Sin configurar"),
+                   ("Ávila Pay (USD)", f"Activo · {len(av.get('metodos') or [])} método(s)" if av.get("activa") else ("Pausado" if av.get("configurada") else "Sin configurar")),
+                   ("Cobros en curso", sum(o["estado"] in ("pendiente", "pagada", "por_verificar") for o in ords)), ("Cobrado (últimos 100) US$", f"{cobrado:,.2f}")]),
+        *([dict(titulo="Atención", nota=" ".join(avisos))] if avisos else []),
+        dict(titulo="Binance (USDT)", pares=[("Origen de la configuración", b.get("origen") or "Sin configurar"), ("Clave en uso", b.get("clave") or ("variables de entorno" if b.get("origen") == "variables de entorno" else "—")),
+                                             ("Pay ID que ve el cliente", b.get("pay_id") or "—"), ("Depósito por red", f"{b.get('red')} · {b.get('direccion')}" if b.get("direccion") else "No (solo Binance Pay)"),
+                                             ("Última revisión del historial", hora(b.get("ultima_revision_en"))), ("Último error", f"{hora(b.get('ultimo_error_en'))} · {b['ultimo_error']}" if b.get("ultimo_error") else "Ninguno"),
+                                             ("Configurado", f"{hora(b.get('actualizado_en'))} por {b.get('actualizado_por') or '—'}" if b.get("actualizado_en") else "—")]),
+        *([dict(nota="Comprueba ahora que la clave de Binance puede leer el historial de pagos.",
+                form=dict(action=request.path, boton="Probar Binance", boton_clase="sec", campos=[h("binance_probar")]))] if b.get("configurada") else []),
+        dict(titulo="Configurar Binance", abierto=b.get("origen") != "consola",
+             nota="Cuenta PERSONAL de Binance con una clave de API de SOLO LECTURA (Binance → Gestión de API → «Permitir lectura»; sin trading, retiros ni "
+                  "transferencias). Cada orden tiene un monto único en USDT y el sistema revisa el historial cada 2 minutos. Clave y secreto se guardan cifrados "
+                  "y no se vuelven a mostrar: deje vacío para conservar el actual. Se prueban antes de guardar.",
+             form=dict(action=request.path, boton="Verificar y guardar", campos=[h("binance"),
+                       campo("api_key", "API Key (solo lectura)", "password", req=b.get("origen") != "consola"),
+                       campo("api_secret", "Secret Key", "password", req=b.get("origen") != "consola"),
+                       campo("pay_id", "Binance Pay ID", valor=b.get("pay_id") or None, ph="123456789"),
+                       campo("activa", "Estado", "select", opciones=[("1", "Activo: cobrar en USDT"), ("0", "Pausado")], valor="1" if (b.get("activa") or not b.get("configurada")) else "0")],
+                       opcionales=[campo("red", "Red para depósitos (opcional)", "select", req=False, opciones=[("", "Solo Binance Pay"), ("TRC20", "TRC20 (Tron)"), ("BSC", "BEP20 (BSC)"),
+                                                                                                          ("ETH", "ERC20 (Ethereum)"), ("SOL", "Solana")], valor=b.get("red") or ""),
+                                   campo("direccion", "Dirección de depósito USDT (opcional)", req=False, valor=b.get("direccion") or None)])),
+        dict(titulo="Zelle, tarjeta internacional y billeteras (Ávila Pay)", pares=[
+            ("Clave de Ávila Pay", av.get("clave") or "— (la misma de «Pagos en bolívares»)"), ("Modo", av.get("modo") or "—"),
+            ("Métodos ofrecidos", ", ".join(metodos_usd.get(m, m) for m in av.get("metodos") or []) or "Ninguno"),
+            ("Secreto de avisos en dólares", "Propio" if av.get("secreto_propio") else ("El mismo de bolívares" if av.get("secreto") else "No cargado")),
+            ("URL de avisos para el portal", av.get("webhook_url") or "— falta PUBLIC_URL")]),
+        dict(titulo="Configurar Zelle, tarjeta internacional, Apple Pay y Google Pay", abierto=not av.get("activa"),
+             nota="Usa la MISMA clave de Ávila Pay que bolívares (si ya la cargó, deje el campo vacío). En el portal de Ávila Pay → Centro de Integración → "
+                  "Webhooks, registre la «URL de avisos para el portal» de arriba con sus 4 eventos y pegue aquí el webhook secret que le muestra (si lo deja "
+                  "vacío se usa el de bolívares). El cliente paga en la página de Ávila Pay; el pago se confirma consultando a Ávila Pay y solo si es por el monto exacto en USD. "
+                  "Apple Pay / Google Pay abre el checkout de tarjeta internacional, donde el cliente paga con la billetera de su teléfono: confirme con Ávila Pay "
+                  "(integraciones@avilapay.com) que estén activas en su cuenta antes de ofrecerlas.",
+             form=dict(action=request.path, boton="Verificar y guardar", campos=[h("avila_usd"),
+                       campo("metodos", "Métodos que verá el cliente", "checks", opciones=list(metodos_usd.items()), valor=av.get("metodos") or list(metodos_usd), req=False),
+                       campo("activa", "Estado", "select", opciones=[("1", "Activo: cobrar en dólares con Ávila Pay"), ("0", "Pausado")], valor="1" if (av.get("activa") or not av.get("metodos")) else "0"),
+                       campo("api_key", "Clave de API de Ávila Pay (vacío = la actual)", "password", req=not av.get("configurada")),
+                       campo("webhook_secret", "Secreto de avisos en dólares (webhook secret)", "password", req=False)])),
+        dict(titulo="Cobros en dólares", nota="Binance: monto único por orden, válido 24 h. Zelle, tarjeta, Apple Pay y Google Pay: enlace de pago de Ávila Pay, válido 24 h. "
+                  "Si el monto no coincide, la orden queda «Revisar» para confirmarla a mano en «Órdenes».",
+             tabla=dict(cols=["Orden", "Cliente", "Forma de pago", "Monto", "Estado", "Creada", "Pagada"], num=[3], accion=True, filas=[
+                 dict(cells=[o["ref"], orgs.get(o["organizacion_ref"], o["cliente"]), forma(o), f"{o.get('monto_esperado') or o['monto']} {'USDT' if o['proveedor'] == 'binance' else 'USD'}",
+                             estado_txt.get(o["estado"], o["estado"]) + (f" — {o['motivo']}" if o.get("motivo") else ""), hora(o["creada_en"]), hora(o.get("pagada_en"))],
+                      form=dict(action=request.path, boton="Consultar", campos=[h("verificar"), campo("ref", "", "hidden", valor=o["ref"])]) if o["estado"] in ("pendiente", "pagada") else None)
+                 for o in ords])),
+        dict(titulo="Actividad", tabla=dict(cols=["Fecha", "Evento", "Detalle", "IP"], filas=[
+            dict(cells=[hora(e["ts"]), e["evento"].replace("avilapay_", "Ávila Pay: ").replace("binance_", "Binance: ").replace("_", " "), e.get("detalle") or "", e.get("ip") or ""])
+            for e in est.get("eventos") or []]))])
 
 
 @ruta("/plataforma/avilapay", "plataforma", ("GET", "POST"))
@@ -473,7 +609,7 @@ def maestro_avilapay():
     if est.get("configurada") and not est.get("retorno_url"): avisos.append("Falta ERP_URL en erp-licencias: tras pagar, el cliente no vuelve solo a Contax.")
     if est.get("modo", "") and "Pruebas" in (est.get("modo") or ""): avisos.append("Está en modo de PRUEBAS (sk_test): los cobros no mueven dinero real.")
     pendientes = [o for o in ords if o["estado"] in ("pendiente", "pagada", "por_verificar")]
-    return pagina("Pagos en bolívares (Ávila Pay)", None, [
+    return pagina("Pagos en bolívares", None, [
         dict(kpis=[("Pasarela", ("Activa" if est.get("activa") else "Pausada") if est.get("configurada") else "Sin configurar"), ("Modo", est.get("modo") or "—"),
                    ("Cobros en curso", len(pendientes)), ("Cobrado (últimos 100) Bs", f"{cobrado:,.2f}")]),
         *([dict(titulo="Atención", nota=" ".join(avisos))] if avisos else []),

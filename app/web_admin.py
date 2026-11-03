@@ -2,6 +2,7 @@
 políticas propias (provisión de incobrables) y licencia. Nada aquí ve ni toca datos de otra organización."""
 import secrets
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from flask import current_app, flash, g, redirect, request, url_for
 from sqlalchemy import func, select
@@ -181,8 +182,9 @@ def admin_licencia():
             adm = adm_f()
             if a == "comprar":
                 moneda = F["moneda"]
-                tasa = SFT.tasa_vigente(hoy_ve(), "USD") if moneda == "VES" else None
-                if moneda == "VES" and not tasa: raise ValueError("No hay tasa BCV cargada; intente más tarde.")
+                bs = moneda == "VES" or moneda.startswith("VES:")
+                tasa = SFT.tasa_vigente(hoy_ve(), "USD") if bs else None
+                if bs and not tasa: raise ValueError("No hay tasa BCV cargada; intente más tarde.")
                 plan, meses = F["oferta"].split(":", 1)
                 tasa = tasa or SFT.tasa_vigente(hoy_ve(), "USD")  # también en USDT: la factura lleva el equivalente en Bs
                 pedido = dict(combo_id=int(meses)) if plan == "COMBO" else dict(plan=plan, meses=int(meses))
@@ -225,11 +227,12 @@ def admin_licencia():
     if adm_f is not None:
         try:
             adm = adm_f(); precios, ordenes, combos = adm.precios(), adm.ordenes(org=str(org.id)), adm.combos(activos=True)["combos"]
+            formas = [(m["codigo"], m["nombre"]) for m in adm.metodos_pago()]
         except (ErrorAdmin, ValueError, OSError) as e:
-            precios, ordenes, combos = [], [], []; flash(f"Tienda de licencias no disponible: {e}")
+            precios, ordenes, combos, formas = [], [], [], []; flash(f"Tienda de licencias no disponible: {e}")
         ref = request.args.get("orden", "")
         o = next((x for x in ordenes if x["ref"] == ref), None)
-        if o and o["proveedor"] == "avilapay" and o["estado"] in ("pendiente", "pagada"):
+        if o and o["proveedor"] in ("avilapay", "avilapay_usd") and o["estado"] in ("pendiente", "pagada"):
             try:   # al volver de Ávila Pay se consulta el cobro en el acto (no se espera al aviso)
                 if adm.verificar(o["ref"]).get("estado") != o["estado"]:
                     o = next((x for x in adm.ordenes(org=str(org.id)) if x["ref"] == ref), o)
@@ -238,8 +241,12 @@ def admin_licencia():
         if o:
             if o["estado"] == "entregada":
                 secs.append(dict(titulo=f"Orden {o['ref']}: pagada", nota=f"La clave de licencia se envió a {g.usuario.email}. Péguela abajo en «Activar licencia»."))
-            elif o["proveedor"] == "avilapay":
+            elif o["proveedor"] in ("avilapay", "avilapay_usd"):
                 url_pago = str(o.get("checkout_url") or "")
+                sim = "US$" if o["proveedor"] == "avilapay_usd" else "Bs"
+                aj = Decimal(str(o.get("ajuste") or 0))
+                desglose = (f" Precio {sim} {Decimal(str(o['monto'])) - aj:,.2f} + ajuste por forma de pago {sim} {aj:,.2f} = total {sim} {Decimal(str(o['monto'])):,.2f}."
+                            if aj > 0 else "")
                 if o["estado"] == "vencida":
                     secs.append(dict(titulo=f"Orden {o['ref']}: vencida", nota="El enlace de pago venció sin que se recibiera el pago. Cree una orden nueva abajo; "
                                                                               "si ya pagó, contacte a soporte con la referencia bancaria."))
@@ -247,9 +254,9 @@ def admin_licencia():
                     secs.append(dict(titulo=f"Orden {o['ref']}: pago en revisión", nota="Recibimos un pago cuyo monto no coincide con la orden. Un operador lo revisará "
                                                                                        f"y, al confirmarlo, la clave llegará a {g.usuario.email}."))
                 else:
-                    secs.append(dict(titulo=f"Orden {o['ref']}: pagar Bs {o['monto']}",
-                                     nota=(o.get("instrucciones") or "") + f" Al confirmarse, la clave llega a {g.usuario.email} una sola vez.",
-                                     enlace=dict(url=url_pago, texto=f"Pagar Bs {o['monto']} con Ávila Pay") if url_pago.startswith("https://comercio.avilapay.com/") else None))
+                    secs.append(dict(titulo=f"Orden {o['ref']}: pagar {sim} {o['monto']}",
+                                     nota=(o.get("instrucciones") or "") + desglose + f" Al confirmarse, la clave llega a {g.usuario.email} una sola vez.",
+                                     enlace=dict(url=url_pago, texto=f"Pagar {sim} {o['monto']} con Ávila Pay") if url_pago.startswith("https://comercio.avilapay.com/") else None))
                     secs.append(dict(titulo="¿Ya pagó?", abierto=True, nota="Si ya completó el pago y la orden sigue esperando, consulte su estado ahora mismo.",
                                      form=dict(action=request.path, boton="Verificar mi pago", boton_clase="sec",
                                                campos=[campo("accion", "", "hidden", valor="verificar"), campo("ref", "", "hidden", valor=o["ref"])])))
@@ -274,9 +281,10 @@ def admin_licencia():
                                                     f"{p['max_empresas']} empresas, {p['max_equipos']} equipos") for p in precios if p["plan"] in PLANES]
             ofertas += [(f"COMBO:{c['id']}", f"Combo {c['nombre']} ({', '.join(MODULOS.get(m, m) for m in c['modulos'].split(','))}) · {periodo(c['meses'])} · "
                                              f"{c['monto_usd']} USD · {c['max_usuarios']} usuarios, {c['max_empresas']} empresas") for c in combos]
-            secs.append(dict(titulo="Comprar o renovar licencia", nota="USDT por Binance o bolívares a la tasa BCV del día (Pago Móvil, débito o tarjeta nacional), ambos con verificación automática. La clave llega por correo una sola vez.",
+            secs.append(dict(titulo="Comprar o renovar licencia", nota="Dólares (Binance, Zelle, tarjeta internacional, Apple Pay o Google Pay) o bolívares a la tasa BCV del día. Según la forma de pago puede aplicarse un ajuste, "
+                                  "que verá antes de pagar. La verificación es automática y la clave llega por correo una sola vez.",
                              form=dict(action=request.path, boton="Continuar al pago", campos=[campo("accion", "", "hidden", valor="comprar"), campo("oferta", "Plan", "select", opciones=ofertas),
-                                       campo("moneda", "Pagar en", "select", opciones=[("USDT", "USDT (Binance)"), ("VES", "Bolívares (Pago Móvil, débito o tarjeta)")])])))
+                                       campo("moneda", "Forma de pago", "select", opciones=formas or [("USDT", "USDT (Binance)"), ("VES", "Bolívares (pago móvil)")])])))
         if not (est.claims or {}).get("plan") or (est.claims or {}).get("plan") == "DEMO" or not est.valida:
             secs.append(dict(titulo="Probar gratis 72 horas", nota="Demo de los módulos de Facturación e Inventario (2 usuarios, 1 empresa). Una sola vez por organización; "
                                                                    "la clave llega a su correo y vence 72 horas después de emitida.",

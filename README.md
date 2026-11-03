@@ -97,6 +97,14 @@ El Administrador de un cliente, en Organización → Licencia, elige plan y per�
   Contax o por la revisión cada 2 minutos— y solo si es en Bs por el monto exacto; si no coincide queda «por verificar». La clave
   `sk_live_…`/`sk_test_…` y el secreto de avisos se cargan en **Consola Maestro → Pagos en bolívares** (se prueban antes de
   guardar y se guardan cifrados en `erp-licencias`); ahí mismo se monitorean cobros, avisos y errores.
+- **Dólares por Ávila Pay — Zelle, tarjeta internacional (TDC/TDD), Apple Pay y Google Pay:** misma clave de Ávila Pay, API
+  de pagos en dólares (montos en centavos). El aviso llega a `/v1/avilapay/aviso-usd` (URL que se registra en el portal de
+  Ávila Pay, firma `AvilaPay-Signature`) y se confirma consultando el pago. Apple Pay / Google Pay usan el checkout de tarjeta
+  internacional. Se configura en **Consola Maestro → Cobros y precios → Pagos en dólares**, junto con **Binance** (clave de
+  solo lectura y Pay ID, cifrados; sin configurar ahí, se usan las variables `BINANCE_*`).
+- **Ajuste por forma de pago:** las órdenes con Ávila Pay suben lo justo para cubrir la comisión del método y el IGTF del
+  tarifario (total = precio ÷ (1 − (comisión + impuesto))), editable en **Precios y planes**. El cliente ve solo «precio +
+  ajuste por forma de pago = total»; en bolívares elige el método en Contax para que el ajuste sea exacto.
 - **Bolívares por pago móvil manual** (si Ávila Pay no está configurado, está pausado o no responde): el cliente informa la
   referencia y el Maestro la confirma.
 En ambos casos la clave llega una sola vez a su correo.

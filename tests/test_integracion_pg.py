@@ -372,9 +372,10 @@ def test_flujo_completo(entorno):
     assert len(entorno["correos_lic"]) == n + 1 and entorno["correos_lic"][-1][0] == "b@beta.test"
     assert a.post("/admin/licencia", data={"accion": "informar", "ref": ref, "referencia": "1234"}).status_code == 302   # otra organización: rechazado
     # Precios de referencia del mercado VE, combos personalizados (mensual/anual según módulos) y demo de 72 h
-    pagos = root.get("/plataforma/pagos").get_data(as_text=True)
+    pagos = root.get("/plataforma/precios").get_data(as_text=True)
+    assert "Cobros y precios" in pagos and "Ajuste por forma de pago" in pagos and "4.20 %" in pagos   # comisiones del tarifario de Ávila Pay
     assert "Combos personalizados" in pagos and "All in One" in pagos and "69.00" in pagos               # precio de referencia sembrado
-    r = root.post("/plataforma/pagos", data={"accion": "combo", "nombre": "Tienda + Contable", "modulos": ["facturacion", "contabilidad"], "meses": "12",
+    r = root.post("/plataforma/precios", data={"accion": "combo", "nombre": "Tienda + Contable", "modulos": ["facturacion", "contabilidad"], "meses": "12",
                                             "usuarios": "3", "empresas": "1", "equipos": "3"}, follow_redirects=True)
     assert "Tienda + Contable" in r.get_data(as_text=True) and "430.00" in r.get_data(as_text=True), re.findall(r'role="alert">([^<]+)', r.get_data(as_text=True))
     tienda = b.get("/admin/licencia").get_data(as_text=True)
@@ -395,18 +396,34 @@ def test_flujo_completo(entorno):
                                                "metodos": ["pago_movil", "tdc"], "activa": "1"}, follow_redirects=True)
     pag = r.get_data(as_text=True)
     assert "verificado y guardado" in pag and "sk_test_clave12345" not in pag and "https://lic.test/v1/avilapay/aviso" in pag and "modo de PRUEBAS" in pag
-    r = b.post("/admin/licencia", data={"accion": "comprar", "oferta": "CASH:1", "moneda": "VES"})
+    tienda = b.get("/admin/licencia").get_data(as_text=True)
+    assert 'value="VES:pago_movil"' in tienda and 'value="VES:tdc"' in tienda and 'value="VES"' not in tienda   # el cliente elige el método
+    r = b.post("/admin/licencia", data={"accion": "comprar", "oferta": "CASH:1", "moneda": "VES:pago_movil"})
     ref_av = r.headers["Location"].split("orden=")[1]
     pag = b.get(r.headers["Location"]).get_data(as_text=True)
     assert "con Ávila Pay" in pag and "Verificar mi pago" in pag and 'href="https://comercio.avilapay.com/pay/cs_' in pag and "Banco Prueba" not in pag
+    # ajuste por forma de pago: 730 / (1 − 1 % − 3 %) = 760,42; el cliente ve el ajuste, nunca los porcentajes
+    assert "Precio Bs 730.00 + ajuste por forma de pago Bs 30.42 = total Bs 760.42" in pag and "%" not in pag.split("Orden ERP")[1].split("</section>")[0]
     sk = re.search(r"/pay/(cs_[0-9a-zA-Z]+)", pag).group(1)
-    assert avila.sesiones[sk]["amount"] == 730.0 and [x for x in avila.llamadas if x[0] == "POST"][-1][2]["methods"] == ["pago_movil", "tdc"]
+    assert avila.sesiones[sk]["amount"] == 760.42 and [x for x in avila.llamadas if x[0] == "POST"][-1][2]["methods"] == ["pago_movil"]
     n = len(entorno["correos_lic"])
     avila.sesiones[sk]["status"] = "PAID"
     pag = b.get(f"/admin/licencia?orden={ref_av}").get_data(as_text=True)                            # vuelve de Ávila Pay: se confirma al instante
     assert "pagada" in pag and len(entorno["correos_lic"]) == n + 1 and entorno["correos_lic"][-1][0] == "b@beta.test"
     mon = root.get("/plataforma/avilapay").get_data(as_text=True)
-    assert ref_av in mon and "Pagada y entregada" in mon and "pago confirmado" in mon                                                      # una sola demo por organización
+    assert ref_av in mon and "Pagada y entregada" in mon and "pago confirmado" in mon
+    # Dólares: Binance se administra desde la consola; Zelle y Apple Pay / Google Pay usan la misma clave de Ávila Pay
+    dol = root.get("/plataforma/dolares").get_data(as_text=True)
+    assert "Pagos en dólares" in dol and "Sin configurar" in dol and a.get("/plataforma/dolares").status_code == 403
+    r = root.post("/plataforma/dolares", data={"accion": "avila_usd", "metodos": ["zelle", "billetera"], "activa": "1"}, follow_redirects=True)
+    dol = r.get_data(as_text=True)
+    assert "Pagos en dólares con Ávila Pay guardados" in dol and "https://lic.test/v1/avilapay/aviso-usd" in dol and "sk_test_clave12345" not in dol
+    tienda = b.get("/admin/licencia").get_data(as_text=True)
+    assert "Dólares · Zelle" in tienda and "Dólares · Apple Pay / Google Pay" in tienda and "Tarjeta internacional" not in tienda
+    r = b.post("/admin/licencia", data={"accion": "comprar", "oferta": "CASH:1", "moneda": "billetera"})
+    pag = b.get(r.headers["Location"]).get_data(as_text=True)
+    assert "Pagar US$ 21.26 con Ávila Pay" in pag and 'href="https://comercio.avilapay.com/checkout/' in pag   # 20 / (1 − 2,9 % − 3 %) = 21,254 → 21,26
+    assert [x for x in avila.llamadas if x[0] == "POST"][-1][2]["paymentMethods"] == ["TARJETA_INTERNACIONAL"]                                                      # una sola demo por organización
     planes[org_b] = ("DEMO", 2, 1)
     assert "DEMO · quedan".encode() in b.get("/").data
     planes[org_b] = ("CASH", 10, 5, 1)
@@ -803,7 +820,7 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
 
     # --- Nuevo presupuesto (formulario por secciones), contrato desde el presupuesto aceptado y firma electrónica del cliente
     nuevo = root.get("/plataforma/presupuestos/nuevo").get_data(as_text=True)
-    for ruta_m, texto in (("/plataforma", "Nuevo cliente"), ("/plataforma/licencias", "Emitir licencia"), ("/plataforma/pagos", "Nuevo combo personalizado")):
+    for ruta_m, texto in (("/plataforma", "Nuevo cliente"), ("/plataforma/licencias", "Emitir licencia"), ("/plataforma/precios", "Nuevo combo personalizado")):
         t = root.get(ruta_m).get_data(as_text=True)
         assert 'class="px px-asistente"' in t and texto in t, ruta_m
     assert "Del catálogo" in nuevo and 'id="datos-presupuesto"' in nuevo and "plan:ALL_IN_ONE" in nuevo

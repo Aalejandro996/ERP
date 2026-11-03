@@ -11,7 +11,15 @@ API (Portal Comercios → Gateway → Documentación, v1.0):
   Aviso: POST con {event payment.completed|failed|expired, data{session_key, reference, amount, payment_reference…}};
          cabecera X-AvilaPay-Signature = HMAC-SHA256 hexadecimal del cuerpo crudo con el webhook_secret.
 
-La clave (sk_live_… / sk_test_…) y el secreto de avisos los carga el Maestro en su consola; se guardan cifrados.
+DÓLARES (Gateway PaaS, guía v2.0) — misma clave sk_…, otra base y montos en CENTAVOS:
+  POST https://api.avilapay.com/api/v1/gateway/payments {amount (centavos), currency "USD", orderId (idempotencia),
+       customerEmail, description, returnUrl, cancelUrl, paymentMethods ["ZELLE"|"TARJETA_INTERNACIONAL"]}
+       → {id (UUID), checkoutUrl, status PENDING}
+  GET  …/gateway/payments/{id} → {status PENDING|SUCCEEDED|FAILED|REFUNDED, amount (centavos), currency, paymentMethod}
+  Aviso: la URL se registra en el portal (Centro de Integración → Webhooks); cuerpo {payment_id, external_order_id, amount,
+         status…}; cabecera «AvilaPay-Signature» = HMAC-SHA256 hexadecimal del cuerpo crudo con su webhook_secret.
+
+La clave (sk_live_… / sk_test_…) y los secretos de avisos los carga el Maestro en su consola; se guardan cifrados.
 """
 import hashlib
 import hmac
@@ -23,6 +31,13 @@ import urllib.request
 from decimal import Decimal, InvalidOperation
 
 BASE = "https://comercio.avilapay.com"
+BASE_API = "https://api.avilapay.com"
+# Apple Pay / Google Pay no tienen código propio en la API: son billeteras sobre la red de tarjetas y el checkout de
+# tarjeta internacional de Ávila Pay las ofrece en el teléfono del cliente (si Ávila Pay las tiene activas para el comercio).
+METODOS_USD = {"zelle": ("ZELLE", "Zelle"), "tarjeta": ("TARJETA_INTERNACIONAL", "Tarjeta internacional (TDC/TDD)"),
+               "billetera": ("TARJETA_INTERNACIONAL", "Apple Pay / Google Pay")}
+ESTADOS_USD = {"PENDING": "Esperando pago", "SUCCEEDED": "Pagado", "FAILED": "Falló o fue abandonado", "REFUNDED": "Reembolsado"}
+RE_UUID = re.compile(r"^[0-9a-fA-F-]{32,40}$")
 METODOS = {"pago_movil": "Pago Móvil", "debito": "Débito inmediato", "credito": "Crédito inmediato", "tdc": "Tarjeta nacional (TDC/TDD)"}
 ESTADOS = {"PENDING": "Esperando pago", "PROCESSING": "Verificando pago", "PAID": "Pagado", "FAILED": "Falló", "EXPIRED": "Vencido"}
 RE_CLAVE = re.compile(r"^sk_(live|test)_[A-Za-z0-9_\-]{8,200}$")
@@ -63,10 +78,10 @@ class AvilaPay:
         if not RE_CLAVE.match(self.key): raise ErrorAvila("La clave de Ávila Pay debe empezar por sk_live_ o sk_test_")
         self.t = transporte or _http
 
-    def _req(self, metodo, ruta, datos=None):
+    def _req(self, metodo, ruta, datos=None, base=BASE):
         cab = {"Authorization": f"Bearer {self.key}", "Accept": "application/json"}
         if datos is not None: cab["Content-Type"] = "application/json"
-        estado, resp = self.t(metodo, BASE + ruta, None if datos is None else json.dumps(datos).encode(), cab)
+        estado, resp = self.t(metodo, base + ruta, None if datos is None else json.dumps(datos).encode(), cab)
         try:
             r = json.loads(resp or b"null")
         except ValueError:
@@ -106,6 +121,31 @@ class AvilaPay:
         if not isinstance(r, dict): raise ErrorAvila("Respuesta inválida de Ávila Pay")
         return {"estado": str(r.get("status") or "").upper(), "monto": monto(r.get("amount")), "moneda": str(r.get("currency") or "VES").upper(),
                 "metodo": r.get("payment_method"), "pagado_en": r.get("paid_at"), "session_key": r.get("session_key") or session_key}
+
+
+    # -------------------------------------------------------------- dólares: Zelle y tarjeta internacional
+    def crear_pago_usd(self, importe_usd, referencia, descripcion, metodos, correo=None, return_url=None, cancel_url=None) -> dict:
+        centavos = int((Decimal(str(importe_usd)) * 100).quantize(Decimal("1")))
+        datos = {"amount": centavos, "currency": "USD", "orderId": referencia, "description": str(descripcion)[:140],
+                 "paymentMethods": [METODOS_USD[m][0] for m in metodos if m in METODOS_USD], "metadata": {"orden": referencia}}
+        for k, v in (("customerEmail", correo), ("returnUrl", return_url), ("cancelUrl", cancel_url)):
+            if v: datos[k] = v
+        r = self._req("POST", "/api/v1/gateway/payments", datos, base=BASE_API)
+        pid, url = str((r or {}).get("id") or ""), str((r or {}).get("checkoutUrl") or "")
+        if not RE_UUID.match(pid) or not url.startswith(BASE + "/"): raise ErrorAvila("Ávila Pay devolvió un pago inválido")
+        return {"id": pid, "url": url}
+
+    def pago_usd(self, pago_id) -> dict:
+        if not RE_UUID.match(str(pago_id or "")): raise ErrorAvila("Pago de Ávila Pay inválido")
+        r = self._req("GET", f"/api/v1/gateway/payments/{pago_id}", base=BASE_API)
+        if not isinstance(r, dict): raise ErrorAvila("Respuesta inválida de Ávila Pay")
+        try:
+            centavos = int(r.get("amount"))
+        except (TypeError, ValueError) as e:
+            raise ErrorAvila("Monto inválido en la respuesta de Ávila Pay") from e
+        return {"estado": str(r.get("status") or "").upper(), "monto": (Decimal(centavos) / 100).quantize(Decimal("0.01")),
+                "moneda": str(r.get("currency") or "").upper(), "metodo": r.get("paymentMethod"), "pagado_en": r.get("succeededAt"),
+                "orden": r.get("externalOrderId")}
 
 
 def firma_valida(secreto: str, cuerpo: bytes, cabecera: str) -> bool:

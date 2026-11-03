@@ -28,8 +28,12 @@
   <nav class="nav-grupo"><span>Plataforma</span>
     <a href="{{ url_for('web.plataforma') }}" class="{{ 'activo' if ep == 'web.plataforma' }}">Clientes</a>
     <a href="{{ url_for('web.maestro_licencias') }}" class="{{ 'activo' if ep == 'web.maestro_licencias' }}">Licencias y equipos</a>
-    <a href="{{ url_for('web.maestro_pagos') }}" class="{{ 'activo' if ep == 'web.maestro_pagos' }}">Pagos y precios</a>
-    <a href="{{ url_for('web.maestro_avilapay') }}" class="{{ 'activo' if ep == 'web.maestro_avilapay' }}">Pagos en bolívares</a>
+    {% set cobros = ('web.maestro_precios', 'web.maestro_pagos', 'web.maestro_dolares', 'web.maestro_avilapay') %}
+    <details class="nav-desplegable" {{ 'open' if ep in cobros }}><summary class="{{ 'activo' if ep in cobros }}">Cobros y precios</summary>
+      <a href="{{ url_for('web.maestro_precios') }}" class="{{ 'activo' if ep == 'web.maestro_precios' }}">Precios y planes</a>
+      <a href="{{ url_for('web.maestro_pagos') }}" class="{{ 'activo' if ep == 'web.maestro_pagos' }}">Órdenes</a>
+      <a href="{{ url_for('web.maestro_dolares') }}" class="{{ 'activo' if ep == 'web.maestro_dolares' }}">Pagos en dólares</a>
+      <a href="{{ url_for('web.maestro_avilapay') }}" class="{{ 'activo' if ep == 'web.maestro_avilapay' }}">Pagos en bolívares</a></details>
     <a href="{{ url_for('web.maestro_presupuestos') }}" class="{{ 'activo' if ep in ('web.maestro_presupuestos', 'web.maestro_presupuesto_ver') }}">Presupuestos</a>
     <a href="{{ url_for('web.maestro_contratos') }}" class="{{ 'activo' if ep in ('web.maestro_contratos', 'web.maestro_contrato_ver') }}">Contratos</a>
     <a href="{{ url_for('web.maestro_facturas') }}" class="{{ 'activo' if ep in ('web.maestro_facturas', 'web.maestro_factura_ver') }}">Facturación Gigadevs</a>

@@ -98,6 +98,14 @@ class ClienteAdmin:
     def avilapay(self): return self._req("GET", "/admin/v1/avilapay")
     def guardar_avilapay(self, **d): return self._req("PUT", "/admin/v1/avilapay", d)
     def probar_avilapay(self): return self._req("POST", "/admin/v1/avilapay/probar", {})
+    def guardar_avilapay_usd(self, **d): return self._req("PUT", "/admin/v1/avilapay/dolares", d)
+    # dólares: Binance (USDT) configurable desde la consola, y el monitoreo de Binance + Zelle / tarjeta internacional
+    def cobros_dolares(self): return self._req("GET", "/admin/v1/cobros/dolares")
+    def guardar_binance(self, **d): return self._req("PUT", "/admin/v1/binance", d)
+    def probar_binance(self): return self._req("POST", "/admin/v1/binance/probar", {})
+    def metodos_pago(self): return self._req("GET", "/admin/v1/cobros/metodos")["metodos"]
+    def comisiones(self): return self._req("GET", "/admin/v1/comisiones")
+    def fijar_comisiones(self, **d): return self._req("PUT", "/admin/v1/comisiones", d)
     # facturación de Gigadevs
     def fx_config(self): return self._req("GET", "/admin/v1/facturacion/config")
     def fx_guardar(self, **d): return self._req("PUT", "/admin/v1/facturacion/config", d)

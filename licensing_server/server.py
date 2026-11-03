@@ -32,6 +32,14 @@ from . import avilapay as AV
 
 VIGENCIA_ORDEN_USDT_S = 24 * 3600    # una orden en USDT espera su pago 24 h
 VIGENCIA_ORDEN_AVILA_S = 30 * 60     # la sesión de Ávila Pay vence a los 30 min
+VIGENCIA_ORDEN_AVILA_USD_S = 24 * 3600   # Zelle o tarjeta internacional: el pago espera 24 h
+PROVEEDORES_AVILA = ("avilapay", "avilapay_usd")
+# Tarifario de lista de Ávila Pay (Portal → Gateway → Tarifas): comisión por método + IGTF 3 %. El Maestro las ajusta si negocia otras.
+# El precio se sube lo justo para que, descontadas comisión e impuesto, llegue completo el precio del catálogo:
+#   total = precio / (1 − (comisión + impuesto)),  ajuste = total − precio.  El cliente ve solo «ajuste por forma de pago».
+COMISIONES_LISTA = {"pago_movil": "1.00", "debito": "1.50", "credito": "1.00", "tdc": "3.90",
+                    "zelle": "2.00", "tarjeta": "4.20", "billetera": "2.90"}
+IMPUESTO_LISTA = "3.00"   # IGTF
 VIGENCIA_TOKEN_S = 7 * 24 * 3600   # ventana offline máxima: 7 días
 LIMITE_PETICIONES = (20, 60)        # 20 peticiones por 60 s y por IP (endpoints públicos)
 TOLERANCIA_FIRMA_S = 300
@@ -98,7 +106,9 @@ ordenes = Table(
     Column("referencia_pago", Text), Column("detalle_pago", Text), Column("licencia_id", Integer),
     Column("creada_en", Float, nullable=False), Column("pagada_en", Float), Column("entregada_en", Float), Column("motivo", Text),
     Column("monto_esperado", Numeric(18, 4)), Column("expira_en", Float), Column("instrucciones", Text),
-    Column("cliente_rif", Text), Column("cliente_direccion", Text), Column("combo_id", Integer), Column("modulos", Text))
+    Column("cliente_rif", Text), Column("cliente_direccion", Text), Column("combo_id", Integer), Column("modulos", Text),
+    Column("metodo", Text),   # Ávila Pay: el método que eligió el cliente (pago_movil, zelle, tarjeta…)
+    Column("ajuste", Numeric(18, 2)))   # ajuste por forma de pago (comisión de la pasarela) incluido en «monto»
 # Combos personalizados: el Maestro arma un paquete de módulos con su período (mensual o anual), precio y topes.
 combos = Table(
     "lic_combos", md,
@@ -116,7 +126,15 @@ avila_cfg = Table(
     "lic_avilapay", md,
     Column("id", Integer, primary_key=True), Column("api_key_cifrada", Text), Column("secreto_cifrado", Text),
     Column("activa", Integer, nullable=False, default=1), Column("metodos", Text), Column("actualizado_en", Float), Column("actualizado_por", Text),
-    Column("ultimo_aviso_en", Float), Column("ultimo_aviso", Text), Column("ultimo_error_en", Float), Column("ultimo_error", Text))
+    Column("ultimo_aviso_en", Float), Column("ultimo_aviso", Text), Column("ultimo_error_en", Float), Column("ultimo_error", Text),
+    # dólares por Ávila Pay (Zelle y tarjeta internacional): misma clave, aviso con su propio secreto
+    Column("activa_usd", Integer), Column("metodos_usd", Text), Column("secreto_usd_cifrado", Text))
+# Binance (USDT): la clave de SOLO LECTURA y el Pay ID se cargan en la consola Maestro (cifrados). Sin fila: variables de entorno.
+binance_cfg = Table(
+    "lic_binance", md,
+    Column("id", Integer, primary_key=True), Column("api_key_cifrada", Text), Column("secreto_cifrado", Text), Column("pay_id", Text),
+    Column("red", Text), Column("direccion", Text), Column("activa", Integer, nullable=False, default=1), Column("actualizado_en", Float),
+    Column("actualizado_por", Text), Column("ultima_revision_en", Float), Column("ultimo_error_en", Float), Column("ultimo_error", Text))
 meta = Table("lic_meta", md, Column("clave", String(40), primary_key=True), Column("valor", Text))
 # Cada transacción de Binance paga como máximo UNA orden (la clave primaria lo impone en la base de datos)
 pagos_usados = Table(
@@ -125,7 +143,9 @@ pagos_usados = Table(
     Column("monto", Numeric(18, 8), nullable=False), Column("registrado_en", Float, nullable=False))
 COLUMNAS_NUEVAS = {"lic_licencias": [("modulos", "TEXT"), ("venta_monto", "NUMERIC(18,4)"), ("venta_moneda", "VARCHAR(4)"), ("venta_tasa", "NUMERIC(18,6)"),
                                      ("venta_forma_pago", "TEXT"), ("cliente_rif", "TEXT"), ("dias", "INTEGER")], "lic_ordenes": [("monto_esperado", "NUMERIC(18,4)"), ("expira_en", "FLOAT"), ("instrucciones", "TEXT"),
-                                   ("cliente_rif", "TEXT"), ("cliente_direccion", "TEXT"), ("combo_id", "INTEGER"), ("modulos", "TEXT")]}
+                                   ("cliente_rif", "TEXT"), ("cliente_direccion", "TEXT"), ("combo_id", "INTEGER"), ("modulos", "TEXT"),
+                                   ("metodo", "TEXT"), ("ajuste", "NUMERIC(18,2)")],
+                 "lic_avilapay": [("activa_usd", "INTEGER"), ("metodos_usd", "TEXT"), ("secreto_usd_cifrado", "TEXT")]}
 
 
 def _h(clave: str) -> str:
@@ -344,7 +364,7 @@ class Almacen:
 
 # ======================================================================================================================
 def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str | None = None, binance=None, correo=None, config=None,
-               avilapay_transporte=None) -> Flask:
+               avilapay_transporte=None, binance_transporte=None) -> Flask:
     """`binance`: instancia de BinanceCuenta (o None si no se cobra en USDT). `correo(destino, asunto, texto)`: envío (Brevo).
     `config`: {"url_publica", "url_erp", "pago_movil"} para enlaces e instrucciones de pago."""
     app = Flask(__name__)
@@ -627,7 +647,16 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         else:
             plan, meses = d.get("plan"), _entero(d.get("meses"), "meses", 1, 60)
             if plan not in PLANES_TIENDA: raise ValueError("Plan o moneda inválidos")
-        if moneda not in ("USDT", "VES"): raise ValueError("Plan o moneda inválidos")
+        metodo_usd = metodo_ves = None
+        if isinstance(moneda, str) and moneda.startswith("VES:"):   # bolívares con el método elegido en Contax
+            moneda, metodo_ves = "VES", moneda[4:]
+            if metodo_ves not in AV.METODOS: raise ValueError("Método de pago inválido")
+        if moneda in AV.METODOS_USD:          # «zelle» / «tarjeta»: dólares por Ávila Pay
+            moneda, metodo_usd = "USD", moneda
+        elif moneda == "USD":
+            metodo_usd = str(d.get("metodo") or "")
+            if metodo_usd not in AV.METODOS_USD: raise ValueError("Elija Zelle o tarjeta internacional")
+        if moneda not in ("USDT", "VES", "USD"): raise ValueError("Plan o moneda inválidos")
         if not RE_CORREO.match(str(d.get("correo", ""))): raise ValueError("Correo inválido")
         org = str(d.get("organizacion_ref") or "")[:40]
         if not re.fullmatch(r"[0-9]{1,12}", org): raise ValueError("Organización inválida")
@@ -640,7 +669,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         tasa = _tasa(d.get("tasa_bcv")) if moneda == "VES" else (_tasa(d["tasa_bcv"]) if d.get("tasa_bcv") else None)
         cliente_rif = str(d.get("cliente_rif") or "").strip().upper()[:15]
         if cliente_rif and not re.fullmatch(r"[VEJPGC]-\d{8}-\d", cliente_rif): raise ValueError("RIF del cliente inválido")
-        monto = p.monto_usd if moneda == "USDT" else (p.monto_usd * tasa).quantize(Decimal("0.01"), ROUND_HALF_UP)
+        monto = p.monto_usd if moneda in ("USDT", "USD") else (p.monto_usd * tasa).quantize(Decimal("0.01"), ROUND_HALF_UP)
         ref = "ERP" + secrets.token_hex(8).upper()
         fila = dict(ref=ref, organizacion_ref=org, cliente=str(d.get("cliente") or "Cliente")[:200], correo=d["correo"], plan=plan, meses=meses,
                     max_usuarios=p.max_usuarios, max_empresas=p.max_empresas, max_equipos=p.max_equipos, moneda=moneda, monto=monto,
@@ -648,12 +677,31 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
                     cliente_rif=cliente_rif or None, cliente_direccion=str(d.get("cliente_direccion") or "")[:300] or None,
                     combo_id=combo.id if combo is not None else None, modulos=combo.modulos if combo is not None else None)
         resp = {"ref": ref, "monto": str(monto), "moneda": moneda}
-        if moneda == "USDT":
-            if binance is None or not cfg.get("binance_pay_id"): raise ValueError("El cobro en USDT no está habilitado")
+        if moneda == "USD":
+            av, conf = avila_cliente(solo_activa=False)
+            habilitados = [m for m in ((conf.metodos_usd if conf is not None else "") or "").split(",") if m]
+            if av is None or conf is None or not conf.activa_usd or metodo_usd not in habilitados:
+                raise ValueError(f"El cobro con {AV.METODOS_USD[metodo_usd][1]} no está habilitado")
+            retorno = f"{cfg['url_erp']}/admin/licencia?orden={ref}" if cfg.get("url_erp") else None
+            total, ajuste = ajustar(monto, [metodo_usd])
+            try:
+                pg = av.crear_pago_usd(total, ref, f"Licencia Contax · orden {ref}", [metodo_usd], correo=d["correo"], return_url=retorno, cancel_url=retorno)
+            except AV.ErrorAvila as e:
+                avila_error(f"crear cobro USD {ref}: {e}"); raise ValueError(f"Ávila Pay no respondió; intente de nuevo en unos minutos ({e})") from e
+            nombre = AV.METODOS_USD[metodo_usd][1]
+            instr = (f"Pague US$ {total} con {nombre} en la página segura de Ávila Pay. La confirmación es automática y la clave llega a su "
+                     "correo en cuanto se apruebe el pago.")
+            fila.update(proveedor="avilapay_usd", metodo=metodo_usd, checkout_url=pg["url"], prepay_id=pg["id"], expira_en=reloj() + VIGENCIA_ORDEN_AVILA_USD_S,
+                        instrucciones=instr, monto=total, ajuste=ajuste)
+            resp.update(checkout_url=pg["url"], instrucciones=instr, proveedor="avilapay_usd", metodo=metodo_usd, monto=str(total), ajuste=str(ajuste),
+                        precio=str(monto))
+        elif moneda == "USDT":
+            b = bn()
+            if b["cuenta"] is None or not b["activa"] or not b["pay_id"]: raise ValueError("El cobro en USDT no está habilitado")
             exacto = monto_unico(p.monto_usd)
             expira = reloj() + VIGENCIA_ORDEN_USDT_S
-            instr = (f"Envíe EXACTAMENTE {exacto} USDT por Binance Pay al Pay ID {cfg['binance_pay_id']}"
-                     + (f", o deposítelos por la red {cfg['usdt_red']} a la dirección {cfg['usdt_direccion']}" if cfg.get("usdt_direccion") else "")
+            instr = (f"Envíe EXACTAMENTE {exacto} USDT por Binance Pay al Pay ID {b['pay_id']}"
+                     + (f", o deposítelos por la red {b['red']} a la dirección {b['direccion']}" if b["direccion"] else "")
                      + f". El monto exacto identifica su orden: no lo redondee. Válido hasta {time.strftime('%d/%m/%Y %H:%M', time.gmtime(expira))} UTC.")
             fila.update(monto_esperado=exacto, expira_en=expira, instrucciones=instr)
             resp.update(monto_esperado=str(exacto), instrucciones=instr, expira_en=expira)
@@ -662,14 +710,20 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
             if av is not None:   # Ávila Pay: checkout alojado y confirmación automática; si falla, queda el pago móvil manual
                 url_erp, url_pub = cfg.get("url_erp") or "", cfg.get("url_publica") or ""
                 retorno = f"{url_erp}/admin/licencia?orden={ref}" if url_erp else None
+                habilitados = [m for m in (conf.metodos or "").split(",") if m in AV.METODOS] or list(AV.METODOS)
+                if metodo_ves and metodo_ves not in habilitados: raise ValueError("Ese método de pago no está habilitado")
+                elegidos = [metodo_ves] if metodo_ves else habilitados
+                total, ajuste = ajustar(monto, elegidos)   # sin método elegido: el ajuste del método más caro habilitado
                 try:
-                    s = av.crear_sesion(monto, ref, f"Licencia Contax · orden {ref}", correo=d["correo"], nombre=fila["cliente"], return_url=retorno,
-                                        cancel_url=retorno, webhook_url=f"{url_pub}/v1/avilapay/aviso" if url_pub else None,
-                                        metodos=[m for m in (conf.metodos or "").split(",") if m] or None)
-                    instr = (f"Pague Bs {monto} en la página segura de Ávila Pay (Pago Móvil, débito, crédito inmediato o tarjeta nacional). "
+                    s = av.crear_sesion(total, ref, f"Licencia Contax · orden {ref}", correo=d["correo"], nombre=fila["cliente"], return_url=retorno,
+                                        cancel_url=retorno, webhook_url=f"{url_pub}/v1/avilapay/aviso" if url_pub else None, metodos=elegidos)
+                    como = AV.METODOS[metodo_ves] if metodo_ves else "Pago Móvil, débito, crédito inmediato o tarjeta nacional"
+                    instr = (f"Pague Bs {total} con {como} en la página segura de Ávila Pay. "
                              "La confirmación es automática y la clave llega a su correo en cuanto el banco confirme. El enlace vence en 30 minutos.")
-                    fila.update(proveedor="avilapay", checkout_url=s["url"], prepay_id=s["session_key"], expira_en=reloj() + VIGENCIA_ORDEN_AVILA_S, instrucciones=instr)
-                    resp.update(checkout_url=s["url"], instrucciones=instr, expira_en=fila["expira_en"], proveedor="avilapay")
+                    fila.update(proveedor="avilapay", metodo=metodo_ves, checkout_url=s["url"], prepay_id=s["session_key"], expira_en=reloj() + VIGENCIA_ORDEN_AVILA_S,
+                                instrucciones=instr, monto=total, ajuste=ajuste)
+                    resp.update(checkout_url=s["url"], instrucciones=instr, expira_en=fila["expira_en"], proveedor="avilapay", monto=str(total), ajuste=str(ajuste),
+                                precio=str(monto))
                 except AV.ErrorAvila as e:
                     avila_error(f"crear cobro {ref}: {e}")
             if fila["proveedor"] == "pago_movil":
@@ -724,7 +778,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         with st.eng.connect() as c:
             prov = c.execute(select(ordenes.c.proveedor).where(ordenes.c.ref == ref)).scalar()
         if prov is None: raise LookupError("Orden inexistente")
-        return jsonify(verificar_avilapay(ref) if prov == "avilapay" else verificar_binance(ref))
+        return jsonify(verificar_avilapay(ref) if prov in PROVEEDORES_AVILA else verificar_binance(ref))
 
     # ------------------------------------------------------------------ Ávila Pay (bolívares)
     from cryptography.fernet import Fernet, InvalidToken
@@ -763,46 +817,53 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         with st.eng.begin() as c: st.log(c, None, "avilapay_error", texto)
 
     def verificar_avilapay(ref, referencia_bancaria=None):
-        """Confirma el cobro LEYENDO a Ávila Pay (el aviso solo dispara la consulta): estado PAID, en Bs y por el monto EXACTO
-        de la orden. Cada sesión de Ávila Pay paga como máximo una orden (lic_pagos_usados)."""
+        """Confirma el cobro LEYENDO a Ávila Pay (el aviso solo dispara la consulta): pagado, en la moneda de la orden (Bs, o USD
+        para Zelle y tarjeta internacional) y por el monto EXACTO. Cada cobro de Ávila Pay paga como máximo una orden."""
         if not RE_REF.match(ref): raise ValueError("Referencia inválida")
         with st.eng.connect() as c:
             o = c.execute(select(ordenes).where(ordenes.c.ref == ref)).first()
         if o is None: raise LookupError("Orden inexistente")
-        if o.proveedor != "avilapay": raise ValueError("No es una orden de Ávila Pay")
+        if o.proveedor not in PROVEEDORES_AVILA: raise ValueError("No es una orden de Ávila Pay")
         if o.estado == "entregada": return {"estado": "entregada"}
         if o.estado not in ("pendiente", "pagada"): return {"estado": o.estado}
         av, _ = avila_cliente(solo_activa=False)
         if av is None: raise ValueError("Ávila Pay no está configurado en la consola Maestro")
-        s = av.sesion(o.prepay_id)
-        if s["estado"] == "PAID":
-            if s["moneda"] != "VES" or s["monto"] != Decimal(o.monto).quantize(Decimal("0.01")):
+        usd = o.proveedor == "avilapay_usd"
+        s = av.pago_usd(o.prepay_id) if usd else av.sesion(o.prepay_id)
+        if s["estado"] == "REFUNDED":
+            with st.eng.begin() as c: st.log(c, o.licencia_id, "avilapay_reembolsado", f"orden={ref}")
+            return {"estado": o.estado, "avilapay": "reembolsado"}
+        if s["estado"] == ("SUCCEEDED" if usd else "PAID"):
+            if s["moneda"] != ("USD" if usd else "VES") or s["monto"] != Decimal(o.monto).quantize(Decimal("0.01")):
                 with st.eng.begin() as c:
                     c.execute(update(ordenes).where(ordenes.c.ref == ref, ordenes.c.estado == "pendiente")
                               .values(estado="por_verificar", motivo=f"Ávila Pay informó {s['moneda']} {s['monto']}; la orden es Bs {o.monto}"))
                     st.log(c, None, "avilapay_monto_distinto", f"orden={ref} {s['moneda']} {s['monto']} esperado={o.monto}")
                 return {"estado": "por_verificar", "avilapay": "monto distinto: revíselo y confirme a mano"}
+            clave_pago = f"{o.proveedor}:{o.prepay_id}"
             try:
                 with st.eng.begin() as c:
-                    c.execute(insert(pagos_usados).values(pago_id=f"avilapay:{o.prepay_id}", orden_ref=ref, monto=s["monto"], registrado_en=reloj()))
+                    c.execute(insert(pagos_usados).values(pago_id=clave_pago, orden_ref=ref, monto=s["monto"], registrado_en=reloj()))
                     st.log(c, None, "avilapay_pago_confirmado", f"orden={ref} método={s['metodo'] or '—'} ref. bancaria={referencia_bancaria or '—'}")
             except IntegrityError:
                 with st.eng.connect() as c:
-                    if c.execute(select(pagos_usados.c.orden_ref).where(pagos_usados.c.pago_id == f"avilapay:{o.prepay_id}")).scalar() != ref:
+                    if c.execute(select(pagos_usados.c.orden_ref).where(pagos_usados.c.pago_id == clave_pago)).scalar() != ref:
                         return {"estado": o.estado, "avilapay": "esa sesión ya pagó otra orden"}
             return entregar_orden(ref, json.dumps({"avilapay": o.prepay_id, "metodo": s["metodo"], "referencia_bancaria": referencia_bancaria,
                                                    "pagado_en": s["pagado_en"]}))
-        if s["estado"] == "EXPIRED" or (s["estado"] in ("PENDING", "FAILED") and o.expira_en and reloj() > o.expira_en + 600):
+        if s["estado"] == "EXPIRED" or (s["estado"] in ("PENDING", "FAILED", "PROCESSING") and o.expira_en and reloj() > o.expira_en + 600 and
+                                        (usd or s["estado"] != "PROCESSING")):
             with st.eng.begin() as c:
                 c.execute(update(ordenes).where(ordenes.c.ref == ref, ordenes.c.estado == "pendiente").values(estado="vencida"))
             return {"estado": "vencida"}
-        return {"estado": o.estado, "avilapay": AV.ESTADOS.get(s["estado"], s["estado"])}
+        return {"estado": o.estado, "avilapay": (AV.ESTADOS_USD if usd else AV.ESTADOS).get(s["estado"], s["estado"])}
 
     def revisar_avilapay():
-        """Respaldo de los avisos: consulta las órdenes de Ávila Pay pendientes de las últimas 2 horas."""
+        """Respaldo de los avisos: consulta las órdenes de Ávila Pay pendientes (Bs y USD) que aún pueden pagarse."""
         with st.eng.connect() as c:
-            pend = c.execute(select(ordenes.c.ref).where(ordenes.c.proveedor == "avilapay", ordenes.c.estado.in_(("pendiente", "pagada")),
-                                                         ordenes.c.creada_en > reloj() - 2 * 3600)).scalars().all()
+            pend = c.execute(select(ordenes.c.ref).where(or_(ordenes.c.proveedor == "avilapay", ordenes.c.proveedor == "avilapay_usd"),
+                                                         ordenes.c.estado.in_(("pendiente", "pagada")),
+                                                         ordenes.c.creada_en > reloj() - VIGENCIA_ORDEN_AVILA_USD_S - 3600)).scalars().all()
         n = 0
         for ref in pend:
             try:
@@ -838,6 +899,225 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
             avila_error(f"aviso {ref}: {e}")
             return jsonify(message="Reintente"), 503
         return jsonify(ok=True, estado=res.get("estado"))
+
+    @app.post("/v1/avilapay/aviso-usd")
+    def avila_aviso_usd():
+        """Aviso de los pagos en dólares (Zelle / tarjeta internacional). La URL se registra en el portal de Ávila Pay;
+        firma en «AvilaPay-Signature» con el secreto de avisos en dólares (o, si no se cargó, el mismo de bolívares)."""
+        r = avila_conf()
+        crudo = request.get_data()
+        secreto = (descifrar(r.secreto_usd_cifrado) or descifrar(r.secreto_cifrado)) if r is not None else ""
+        if not AV.firma_valida(secreto, crudo, request.headers.get("AvilaPay-Signature", "")):
+            with st.eng.begin() as c: st.log(c, None, "avilapay_aviso_rechazado", "USD: firma inválida", request.remote_addr)
+            return jsonify(message="Firma inválida"), 401
+        try:
+            d = json.loads(crudo)
+            ev = str(request.headers.get("AvilaPay-Event") or d.get("event_type") or "")[:40]
+            ref, pid = str(d.get("external_order_id") or ""), str(d.get("payment_id") or "")
+        except (ValueError, AttributeError):
+            return jsonify(message="JSON inválido"), 400
+        avila_marcar(ultimo_aviso_en=reloj(), ultimo_aviso=f"USD {ev} {ref}"[:200])
+        with st.eng.connect() as c:
+            o = c.execute(select(ordenes).where(ordenes.c.ref == ref)).first() if RE_REF.match(ref) else None
+        if o is None or o.proveedor != "avilapay_usd" or not hmac.compare_digest(pid, o.prepay_id or ""):
+            with st.eng.begin() as c: st.log(c, None, "avilapay_aviso_ignorado", f"USD {ev} orden={ref[:40]} (no corresponde a una orden de Contax)")
+            return jsonify(ok=True, ignorado=True)
+        with st.eng.begin() as c: st.log(c, o.licencia_id, "avilapay_aviso", f"USD {ev} orden={ref}")
+        try:
+            res = verificar_avilapay(ref)
+        except Exception as e:  # noqa: BLE001 — Ávila Pay reintenta el aviso
+            avila_error(f"aviso USD {ref}: {e}")
+            return jsonify(message="Reintente"), 503
+        return jsonify(ok=True, estado=res.get("estado"))
+
+    # ------------------------------------------------------------------ Binance configurable desde la consola
+    from .binance import BinanceCuenta, ErrorBinance
+
+    def binance_conf():
+        with st.eng.connect() as c:
+            return c.execute(select(binance_cfg).where(binance_cfg.c.id == 1)).first()
+
+    def bn():
+        """Binance vigente: la configuración de la consola Maestro si existe; si no, la de las variables de entorno."""
+        r = binance_conf()
+        if r is not None and r.api_key_cifrada:
+            try:
+                cuenta = BinanceCuenta(descifrar(r.api_key_cifrada), descifrar(r.secreto_cifrado),
+                                       **({"transporte": binance_transporte} if binance_transporte else {}), reloj=reloj)
+            except ErrorBinance:
+                cuenta = None
+            return {"cuenta": cuenta, "pay_id": r.pay_id or "", "red": r.red or "", "direccion": r.direccion or "", "activa": bool(r.activa), "origen": "consola"}
+        return {"cuenta": binance, "pay_id": cfg.get("binance_pay_id") or "", "red": cfg.get("usdt_red") or "", "direccion": cfg.get("usdt_direccion") or "",
+                "activa": binance is not None, "origen": "variables de entorno" if binance is not None else None}
+
+    def binance_marcar(**valores):
+        with st.eng.begin() as c:
+            c.execute(update(binance_cfg).where(binance_cfg.c.id == 1).values(**valores))   # sin fila (variables de entorno): no se guarda
+
+    def binance_probar(cuenta, ahora=None):
+        ahora = ahora or reloj()
+        try:
+            cuenta.pagos_recibidos(int((ahora - 3600) * 1000), int(ahora * 1000))
+        except ErrorBinance as e:
+            raise ValueError(f"Binance: {e}") from e
+
+    @app.put("/admin/v1/binance")
+    def a_binance_guardar():
+        """El Maestro carga la clave de SOLO LECTURA de Binance, su secreto y el Pay ID. Se prueban antes de guardar."""
+        if fernet is None: raise ValueError("El servidor no tiene LICENSE_ADMIN_SECRET para cifrar la clave")
+        d, r = cuerpo(), binance_conf()
+        clave, secreto = str(d.get("api_key") or "").strip(), str(d.get("api_secret") or "").strip()
+        actual_k = descifrar(r.api_key_cifrada) if r is not None else ""
+        actual_s = descifrar(r.secreto_cifrado) if r is not None else ""
+        if bool(clave) != bool(secreto) and not (actual_k and actual_s): raise ValueError("Indique la clave y el secreto de la API de Binance")
+        k, sec = clave or actual_k, secreto or actual_s
+        if not (k and sec): raise ValueError("Indique la clave y el secreto de la API de Binance (solo lectura)")
+        pay_id = str(d.get("pay_id") or (r.pay_id if r is not None else "") or "").strip()
+        if not re.fullmatch(r"[0-9]{5,20}", pay_id): raise ValueError("El Binance Pay ID son solo números (5 a 20 dígitos)")
+        red, direccion = str(d.get("red") or "").strip().upper()[:20], str(d.get("direccion") or "").strip()[:120]
+        if direccion and not re.fullmatch(r"[0-9A-Za-z]{20,120}", direccion): raise ValueError("Dirección de depósito inválida")
+        if direccion and not red: raise ValueError("Indique la red de la dirección de depósito (p. ej. TRC20 o BSC)")
+        try:
+            cuenta = BinanceCuenta(k, sec, **({"transporte": binance_transporte} if binance_transporte else {}), reloj=reloj)
+        except ErrorBinance as e:
+            raise ValueError(str(e)) from e
+        binance_probar(cuenta)                         # se verifica ANTES de guardar
+        valores = dict(pay_id=pay_id, red=red or None, direccion=direccion or None, activa=1 if d.get("activa", True) else 0,
+                       actualizado_en=reloj(), actualizado_por=str(d.get("autor") or "")[:60], ultimo_error=None, ultimo_error_en=None)
+        if clave: valores["api_key_cifrada"] = fernet.encrypt(clave.encode()).decode()
+        if secreto: valores["secreto_cifrado"] = fernet.encrypt(secreto.encode()).decode()
+        with st.eng.begin() as c:
+            if not c.execute(update(binance_cfg).where(binance_cfg.c.id == 1).values(**valores)).rowcount:
+                c.execute(insert(binance_cfg).values(id=1, **valores))
+            st.log(c, None, "binance_configurada", f"activa={valores['activa']} clave_nueva={bool(clave)} pay_id=…{pay_id[-4:]} red={red or '—'} "
+                                                   f"por={valores['actualizado_por']}")
+        return jsonify(ok=True)
+
+    @app.post("/admin/v1/binance/probar")
+    def a_binance_probar():
+        b = bn()
+        if b["cuenta"] is None: raise ValueError("Binance no está configurado")
+        try:
+            binance_probar(b["cuenta"])
+        except ValueError as e:
+            binance_marcar(ultimo_error_en=reloj(), ultimo_error=str(e)[:300]); raise
+        binance_marcar(ultimo_error=None, ultimo_error_en=None, ultima_revision_en=reloj())
+        return jsonify(ok=True)
+
+    @app.get("/admin/v1/cobros/metodos")
+    def a_metodos():
+        """Formas de pago que ve el cliente en su tienda, según lo que el Maestro tiene activo."""
+        out = []
+        b = bn()
+        if b["cuenta"] is not None and b["activa"] and b["pay_id"]: out.append({"codigo": "USDT", "nombre": "USDT (Binance)"})
+        av, r = avila_cliente(solo_activa=False)
+        if av is not None and r is not None and r.activa_usd:
+            for m in [x for x in (r.metodos_usd or "").split(",") if x in AV.METODOS_USD]:
+                out.append({"codigo": m, "nombre": f"Dólares · {AV.METODOS_USD[m][1]}"})
+        if av is not None and r is not None and r.activa:
+            for m in [x for x in (r.metodos or "").split(",") if x in AV.METODOS] or list(AV.METODOS):
+                out.append({"codigo": f"VES:{m}", "nombre": f"Bolívares · {AV.METODOS[m]}"})
+        else:
+            out.append({"codigo": "VES", "nombre": "Bolívares (pago móvil)"})
+        return jsonify(metodos=out)
+
+    # ------------------------------------------------------------------ ajuste por forma de pago (comisiones)
+    def comisiones() -> dict:
+        with st.eng.connect() as c:
+            v = c.execute(select(meta.c.valor).where(meta.c.clave == "comisiones")).scalar()
+        try:
+            guardado = json.loads(v) if v else {}
+        except ValueError:
+            guardado = {}
+        mets = {**COMISIONES_LISTA, **{k: str(x) for k, x in (guardado.get("metodos") or {}).items() if k in COMISIONES_LISTA}}
+        return {"metodos": mets, "impuesto": str(guardado.get("impuesto", IMPUESTO_LISTA)), "lista": COMISIONES_LISTA, "impuesto_lista": IMPUESTO_LISTA}
+
+    def ajustar(precio, metodos):
+        """(total, ajuste): el total que, descontadas la comisión del método (el más caro si son varios) y el impuesto, deja el precio completo."""
+        cm = comisiones()
+        pct = (max(Decimal(cm["metodos"].get(m, "0")) for m in metodos) if metodos else Decimal(0)) + Decimal(cm["impuesto"])
+        if pct <= 0: return Decimal(precio).quantize(Decimal("0.01")), Decimal("0.00")
+        total = (Decimal(precio) / (1 - pct / 100)).quantize(Decimal("0.01"), rounding="ROUND_CEILING")
+        return total, total - Decimal(precio).quantize(Decimal("0.01"))
+
+    @app.get("/admin/v1/comisiones")
+    def a_comisiones():
+        return jsonify(comisiones())
+
+    @app.put("/admin/v1/comisiones")
+    def a_fijar_comisiones():
+        d = cuerpo()
+        def pct(v, nombre):
+            try:
+                x = Decimal(str(v).replace(",", ".")).quantize(Decimal("0.01"))
+            except (InvalidOperation, ValueError) as e:
+                raise ValueError(f"Porcentaje inválido en {nombre}") from e
+            if not Decimal(0) <= x <= Decimal(25): raise ValueError(f"{nombre}: el porcentaje debe estar entre 0 y 25")
+            return str(x)
+        actual = comisiones()
+        mets = {m: pct(d.get("metodos", {}).get(m, actual["metodos"][m]), m) for m in COMISIONES_LISTA}
+        valor = json.dumps({"metodos": mets, "impuesto": pct(d.get("impuesto", actual["impuesto"]), "impuesto")})
+        with st.eng.begin() as c:
+            if not c.execute(update(meta).where(meta.c.clave == "comisiones").values(valor=valor)).rowcount:
+                c.execute(insert(meta).values(clave="comisiones", valor=valor))
+            st.log(c, None, "comisiones_actualizadas", f"{valor[:300]} por={str(d.get('autor') or '')[:60]}")
+        return jsonify(comisiones())
+
+    @app.get("/admin/v1/cobros/dolares")
+    def a_dolares():
+        """Monitoreo de los cobros en dólares: Binance (USDT) y Ávila Pay (Zelle / tarjeta internacional)."""
+        b, rb, ra = bn(), binance_conf(), avila_conf()
+        with st.eng.connect() as c:
+            ords = [dict(x._mapping) for x in c.execute(select(ordenes).where(ordenes.c.proveedor.in_(("binance", "avilapay_usd")))
+                                                         .order_by(ordenes.c.id.desc()).limit(100))]
+            evs = [dict(x._mapping) for x in c.execute(select(eventos).where(or_(eventos.c.evento.like("binance%"), eventos.c.evento.like("pago_usdt%"),
+                                                                                 eventos.c.detalle.like("USD %"), eventos.c.detalle.like("crear cobro USD%")))
+                                                       .order_by(eventos.c.id.desc()).limit(60))]
+        clave_av = descifrar(ra.api_key_cifrada) if ra is not None else ""
+        url_pub = cfg.get("url_publica") or ""
+        return jsonify(
+            binance={"configurada": b["cuenta"] is not None, "activa": bool(b["activa"] and b["cuenta"] is not None), "origen": b["origen"],
+                     "pay_id": b["pay_id"], "red": b["red"], "direccion": b["direccion"],
+                     "clave": (lambda k: f"{k[:4]}…{k[-4:]}" if k else None)(descifrar(rb.api_key_cifrada) if rb is not None else ""),
+                     "actualizado_en": rb.actualizado_en if rb is not None else None, "actualizado_por": rb.actualizado_por if rb is not None else None,
+                     "ultima_revision_en": rb.ultima_revision_en if rb is not None else None,
+                     "ultimo_error_en": rb.ultimo_error_en if rb is not None else None, "ultimo_error": rb.ultimo_error if rb is not None else None},
+            avilapay={"configurada": bool(clave_av), "modo": AV.modo(clave_av) if clave_av else None, "clave": f"{clave_av[:8]}…{clave_av[-4:]}" if clave_av else None,
+                      "activa": bool(ra is not None and ra.activa_usd and clave_av),
+                      "metodos": [m for m in ((ra.metodos_usd if ra is not None else "") or "").split(",") if m in AV.METODOS_USD],
+                      "secreto": bool(ra is not None and (descifrar(ra.secreto_usd_cifrado) or descifrar(ra.secreto_cifrado))),
+                      "secreto_propio": bool(ra is not None and descifrar(ra.secreto_usd_cifrado)),
+                      "webhook_url": f"{url_pub}/v1/avilapay/aviso-usd" if url_pub else None},
+            ordenes=[{k: (str(v) if isinstance(v, Decimal) else v) for k, v in o.items() if k in (
+                "ref", "organizacion_ref", "cliente", "monto", "monto_esperado", "moneda", "proveedor", "metodo", "estado", "creada_en", "pagada_en", "motivo",
+                "detalle_pago")} for o in ords],
+            eventos=[{"ts": e["ts"], "evento": e["evento"], "detalle": e["detalle"], "ip": e["ip"]} for e in evs])
+
+    @app.put("/admin/v1/avilapay/dolares")
+    def a_avila_usd():
+        """Activa Zelle / tarjeta internacional con la MISMA clave de Ávila Pay (configurada en bolívares o aquí mismo)."""
+        if fernet is None: raise ValueError("El servidor no tiene LICENSE_ADMIN_SECRET para cifrar la clave")
+        d, r = cuerpo(), avila_conf()
+        clave, secreto = str(d.get("api_key") or "").strip(), str(d.get("webhook_secret") or "").strip()
+        actual = descifrar(r.api_key_cifrada) if r is not None else ""
+        if not (clave or actual): raise ValueError("Indique la clave de API de Ávila Pay")
+        if secreto and len(secreto) < 12: raise ValueError("El secreto de avisos (webhook secret) parece incompleto")
+        metodos = [m for m in (d.get("metodos") or []) if m in AV.METODOS_USD]
+        activa = bool(d.get("activa", True))
+        if activa and not metodos: raise ValueError("Elija al menos un método: Zelle, tarjeta internacional o Apple Pay / Google Pay")
+        try:
+            AV.AvilaPay(clave or actual, avilapay_transporte).probar()
+        except AV.ErrorAvila as e:
+            raise ValueError(str(e)) from e
+        valores = dict(activa_usd=1 if activa else 0, metodos_usd=",".join(metodos), actualizado_en=reloj(), actualizado_por=str(d.get("autor") or "")[:60])
+        if clave: valores["api_key_cifrada"] = fernet.encrypt(clave.encode()).decode()
+        if secreto: valores["secreto_usd_cifrado"] = fernet.encrypt(secreto.encode()).decode()
+        if r is None: valores["activa"] = 0          # primera vez desde dólares: bolívares queda pausado hasta configurarlo
+        avila_marcar(**valores)
+        with st.eng.begin() as c:
+            st.log(c, None, "avilapay_configurada", f"USD activa={valores['activa_usd']} metodos={valores['metodos_usd'] or '—'} clave_nueva={bool(clave)} "
+                                                    f"secreto_nuevo={bool(secreto)} por={valores['actualizado_por']}")
+        return jsonify(ok=True, modo=AV.modo(clave or actual))
 
     @app.errorhandler(AV.ErrorAvila)
     def _eav(e): return jsonify(message=str(e)[:250]), 502
@@ -913,15 +1193,17 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
 
     def leer_pagos(desde_s, hasta_s):
         desde_ms, hasta_ms = int(desde_s * 1000), int(hasta_s * 1000)
-        pagos = binance.pagos_recibidos(desde_ms, hasta_ms)
-        if cfg.get("usdt_direccion"):
-            pagos += binance.depositos_recibidos(desde_ms, hasta_ms, cfg.get("usdt_red"))
+        b = bn()
+        if b["cuenta"] is None: raise ValueError("Binance no está configurado")
+        pagos = b["cuenta"].pagos_recibidos(desde_ms, hasta_ms)
+        if b["direccion"]:
+            pagos += b["cuenta"].depositos_recibidos(desde_ms, hasta_ms, b["red"])
         return pagos
 
     def verificar_binance(ref, pagos=None):
         """Empareja la orden con un ingreso en USDT de monto EXACTO, posterior a la orden y antes de su vencimiento.
         Cada transacción de Binance solo puede pagar una orden (clave primaria en lic_pagos_usados)."""
-        if not RE_REF.match(ref) or binance is None: raise ValueError("Orden inválida")
+        if not RE_REF.match(ref) or bn()["cuenta"] is None: raise ValueError("Orden inválida")
         with st.eng.connect() as c:
             o = c.execute(select(ordenes).where(ordenes.c.ref == ref)).first()
             ya = c.execute(select(pagos_usados).where(pagos_usados.c.orden_ref == ref)).first()
@@ -957,7 +1239,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         return entregadas + revisar_binance()
 
     def revisar_binance():
-        if binance is None: return 0
+        if bn()["cuenta"] is None: return 0
         with st.eng.connect() as c:
             pend = c.execute(select(ordenes).where(ordenes.c.proveedor == "binance", ordenes.c.estado.in_(("pendiente", "pagada")))).all()
         if not pend: return 0
@@ -966,7 +1248,9 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
             pagos = leer_pagos(min(o.creada_en for o in pend) - 120, ahora)
         except Exception as e:  # noqa: BLE001 — se reintenta en la próxima vuelta
             with st.eng.begin() as c: st.log(c, None, "binance_no_disponible", str(e)[:200])
+            binance_marcar(ultimo_error_en=reloj(), ultimo_error=str(e)[:300])
             return 0
+        binance_marcar(ultima_revision_en=reloj())
         n = 0
         for o in pend:
             try:
@@ -1003,9 +1287,12 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
             if ya: return ya
             if not o.cliente_rif: raise ValueError("La orden no tiene el RIF del cliente")
             usdt = o.moneda == "USDT"
+            forma = {"binance": "USDT por Binance", "avilapay": "Bolívares por Ávila Pay",
+                     "avilapay_usd": f"{AV.METODOS_USD.get(o.metodo, ('', 'Dólares'))[1]} por Ávila Pay"}.get(o.proveedor, "Pago móvil (Bs)")
             f = fx.emitir(con, cliente_nombre=o.cliente, cliente_rif=o.cliente_rif, cliente_direccion=o.cliente_direccion, cliente_correo=o.correo,
-                          moneda="USDT" if usdt else "VES", tasa_bcv=o.tasa_bcv, monto_con_iva=(o.monto_esperado or o.monto) if usdt else o.monto,
-                          concepto=_concepto(o.plan, o.modulos, meses=o.meses), forma_pago="USDT por Binance" if usdt else ("Bolívares por Ávila Pay" if o.proveedor == "avilapay" else "Pago móvil (Bs)"),
+                          moneda=o.moneda if o.moneda in ("USDT", "USD") else "VES", tasa_bcv=o.tasa_bcv,
+                          monto_con_iva=(o.monto_esperado or o.monto) if usdt else o.monto,
+                          concepto=_concepto(o.plan, o.modulos, meses=o.meses), forma_pago=forma,
                           orden_ref=ref, licencia_id=o.licencia_id, reloj=reloj)
             st.log(con, o.licencia_id, "factura_emitida", f"orden={ref} factura={f['serie']}{f['numero']} control={f['numero_control']}")
         enviar_factura(f["id"])
