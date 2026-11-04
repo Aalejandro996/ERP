@@ -101,6 +101,9 @@ tbody tr:hover{background:var(--surface-2)}
 td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 tr.total td{font-weight:700;color:var(--ink);background:var(--surface-2)}
 tr.anulado td{color:var(--muted);text-decoration:line-through}
+tr.producto-criteriseg td:first-child{border-left:4px solid #2F6FAD}
+tr.producto-bot_whatsapp td:first-child{border-left:4px solid #F39200}
+tr.producto-control_financiero td:first-child{border-left:4px solid #0B6B4D}
 tr.clic{cursor:pointer}
 td a.fila{color:var(--ink);font-weight:600;text-decoration:none}
 td a.fila:hover{text-decoration:underline}

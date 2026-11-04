@@ -3,8 +3,9 @@ suspensión, estado de licencias y parámetros legales GLOBALES (UT, tarifa ISLR
 El Maestro no tiene acceso a la contabilidad ni a la facturación de ningún cliente (RLS lo impide en la BD)."""
 import re
 import secrets
+import time
 
-from flask import current_app, flash, g, get_flashed_messages, redirect, request, url_for
+from flask import current_app, flash, g, get_flashed_messages, make_response, redirect, request, url_for
 from markupsafe import escape
 from sqlalchemy import func, select
 
@@ -319,6 +320,122 @@ def maestro_licencias():
              form=dict(action=request.path, boton="Regenerar y enviar", campos=[h("reenviar"), campo("lid", "Licencia", "select", opciones=ids),
                        campo("correo", "Enviar a (vacío = correo registrado)", "email", req=False)]))]
     return pagina("Licencias", None, secs)
+
+
+@ruta("/plataforma/suscripciones", "plataforma", ("GET", "POST"))
+def maestro_suscripciones():
+    from .licensing.admin import ErrorAdmin
+    if request.method == "POST":
+        accion, autor = F["accion"], g.usuario.username
+        try:
+            adm = _admin()
+            if accion == "crear":
+                sid = adm.crear_suscripcion(producto_id=F["producto"], cliente=F["cliente"], correo=F["correo"],
+                    referencia_sujeto=F["referencia"], plan=F["plan"], dias=int(F["dias"]), entorno=F["entorno"],
+                    max_usuarios=int(F.get("usuarios") or 1), max_instancias=int(F.get("instancias") or 1),
+                    max_empresas=int(F.get("empresas") or 1), max_equipos=int(F.get("equipos") or 1), notas=F.get("notas") or "", autor=autor)
+                registrar(autor, "SUSCRIPCION_CREADA", f"id={sid} producto={F['producto']} sujeto={F['referencia']}", org=None)
+                flash(f"Suscripción #{sid} creada. Descargue su licencia firmada desde la tabla.")
+            elif accion == "modificar":
+                cambios = adm.cambiar_suscripcion(int(F["sid"]), estado=F.get("estado") or None,
+                    dias_extra=F.get("dias_extra") or None, notas=F.get("notas"), plan=F.get("plan") or None,
+                    entorno=F.get("entorno") or None, max_usuarios=F.get("max_usuarios") or None,
+                    max_instancias=F.get("max_instancias") or None, max_empresas=F.get("max_empresas") or None,
+                    max_equipos=F.get("max_equipos") or None)
+                registrar(autor, "SUSCRIPCION_MODIFICADA", f"id={F['sid']} cambios={sorted(cambios)}", org=None)
+                flash("Suscripción actualizada.")
+            elif accion == "crear_plan":
+                plan = adm.crear_plan_producto(F["producto_plan"], codigo=F["codigo_plan"], nombre=F["nombre_plan"])["plan"]
+                registrar(autor, "PLAN_PRODUCTO_CREADO", f"producto={plan['producto_id']} codigo={plan['codigo']}", org=None)
+                flash("Plan agregado. Permanece en modalidad «Cotizar».")
+            elif accion == "estado_plan":
+                activo = F.get("activo") == "1"
+                adm.activar_plan_producto(F["producto_plan"], F["codigo_plan"], activo)
+                registrar(autor, "PLAN_PRODUCTO_ESTADO", f"producto={F['producto_plan']} codigo={F['codigo_plan']} activo={activo}", org=None)
+                flash("Estado del plan actualizado.")
+            else: raise ValueError("Acción inválida")
+            db.session.commit()
+        except (ErrorAdmin, ValueError, OSError) as e:
+            db.session.rollback(); flash(str(e)[:250])
+        return redirect(request.url)
+
+    try:
+        adm = _admin(); prods = adm.productos(); subs = adm.suscripciones()
+    except (ErrorAdmin, ValueError, OSError) as e:
+        flash(f"No se pudo conectar al servicio de licencias: {str(e)[:180]}")
+        prods, subs = [], []
+    opciones_producto = [(p["id"], p["nombre"]) for p in prods if p["activo"]]
+    opciones_plan = [(plan["codigo"], f"{p['nombre']} · {plan['nombre']} · {plan['precio_estado']}") for p in prods for plan in p["planes"] if plan["activo"]]
+    entornos = list(dict.fromkeys(e for p in prods for e in p["entornos"]))
+    opciones_entorno = [(e, {"nube": "Servicio conectado", "cerrado": "Entorno cerrado / sin acceso externo"}.get(e, e)) for e in entornos]
+    productos_filas = [dict(cells=[p["nombre"], "Organización" if p["tipo_sujeto"] == "organizacion" else "Cuenta individual",
+        ", ".join({"nube": "Nube conectada", "cerrado": "Entorno cerrado"}.get(e, e) for e in p["entornos"]),
+        f"{p['primario']} / {p['acento']}", f"{sum(1 for x in p['planes'] if x['activo'])} activos"], clase=f"producto-{p['id']}") for p in prods]
+    filas = []
+    for s in subs:
+        vence = _fecha(s["vence_en"])
+        filas.append(dict(cells=[f"#{s['id']} · {s['cliente']}", s["producto_nombre"], s["tipo_sujeto"].capitalize(),
+            s["referencia_sujeto"], s["plan"], s["estado"].capitalize(), "Entorno cerrado" if s["entorno"] == "cerrado" else "Conectado",
+            s["max_usuarios"], s["max_instancias"], vence, "Licencia firmada ↓"],
+            clase=f"producto-{s['producto_id']}", url=url_for("web.maestro_suscripcion_token", sid=s["id"])) )
+    ids = [(s["id"], f"#{s['id']} · {s['producto_nombre']} · {s['cliente']} ({s['estado']})") for s in subs]
+    planes_filas = []
+    for p in prods:
+        for plan in p["planes"]:
+            activo = bool(plan["activo"])
+            planes_filas.append(dict(cells=[p["nombre"], plan["codigo"], plan["nombre"], "Cotizar", "Activo" if activo else "Inactivo"], clase=f"producto-{p['id']}",
+                form=dict(action=request.path, boton="Desactivar" if activo else "Activar", campos=[h("estado_plan"), campo("producto_plan", "", "hidden", valor=p["id"]),
+                     campo("codigo_plan", "", "hidden", valor=plan["codigo"]), campo("activo", "", "hidden", valor="0" if activo else "1")])) )
+    return pagina("Suscripciones de productos", None, [
+        dict(kpis=[("Productos", len(prods)), ("Suscripciones", len(subs)),
+            ("Activas", sum(s["estado"] == "activa" and s["vence_en"] > time.time() for s in subs)),
+            ("Por cotizar", sum(sum(1 for x in p["planes"] if x["activo"]) for p in prods))]),
+        dict(titulo="Catálogo de sistemas", nota="Cada producto conserva su paleta. El modo cerrado permite instalar una licencia firmada en redes sin conexión al Maestro.",
+             tabla=dict(cols=["Sistema", "Unidad licenciada", "Entornos", "Colores", "Planes"], filas=productos_filas)),
+        dict(nota="Criteriseg y Bot_Whatsapp se licencian por organización; Bot admite entornos cerrados. Control financiero se licencia por cuenta individual. "
+             "Las licencias firmadas llevan los límites y la vigencia; los entornos cerrados deben recibir un archivo nuevo para aplicar extensiones o suspensiones.",
+             tabla=dict(cols=["Cliente", "Producto", "Sujeto", "Identificador", "Plan", "Estado", "Entorno", "Usuarios", "Instalaciones", "Vence", "Archivo"],
+                        num=[7, 8], filas=filas, ancha=True)),
+        dict(titulo="Planes por producto", nota="Los precios de estos productos siguen en modalidad «Cotizar» hasta que se definan. Los planes se administran por sistema y no se publican en el portal.",
+             tabla=dict(cols=["Producto", "Código", "Plan", "Precio", "Estado"], filas=planes_filas, accion=True)),
+        dict(asistente=dict(action=request.path, boton="Crear suscripción y preparar licencia", titulo="Nueva suscripción", ocultos=[("accion", "crear")],
+            pasos=[dict(titulo="Producto y cliente", campos=[campo("producto", "Sistema", "select", opciones=opciones_producto),
+                campo("cliente", "Cliente / organización"), campo("correo", "Correo de contacto", "email"),
+                campo("referencia", "ID de organización o cuenta en el sistema", ph="Ej.: código de organización o correo del titular")]),
+                dict(titulo="Plan y entorno", nota="Los productos nuevos están en modalidad «Cotizar». No se muestran ni se infieren precios.",
+                     campos=[campo("plan", "Plan", "select", opciones=opciones_plan), campo("entorno", "Entorno", "select", opciones=list(dict(opciones_entorno).items())),
+                             campo("dias", "Vigencia (días)", "number", valor=365)]),
+                dict(titulo="Límites y notas", sub="Se incluyen en el token firmado de la licencia", campos=[
+                    campo("usuarios", "Usuarios permitidos", "number", valor=1), campo("instancias", "Instalaciones", "number", valor=1),
+                    campo("empresas", "Empresas", "number", valor=1), campo("equipos", "Equipos", "number", valor=1),
+                    campo("notas", "Notas internas", "textarea", req=False)]),
+            ], resumen=dict(titulo="Nueva licencia", eco=[("Producto", "producto"), ("Cliente", "cliente"),
+                ("Sujeto", "referencia"), ("Plan", "plan"), ("Entorno", "entorno"), ("Vigencia", "dias")]))),
+        dict(titulo="Agregar plan para cotizar", nota="El código se usa en la licencia firmada. No cargue un precio hasta que esté aprobado.",
+             form=dict(action=request.path, boton="Agregar plan", campos=[h("crear_plan"), campo("producto_plan", "Sistema", "select", opciones=opciones_producto),
+                 campo("codigo_plan", "Código corto", ph="ej. sucursal"), campo("nombre_plan", "Nombre del plan", ph="Licencia por sucursal")])) ,
+        dict(titulo="Modificar suscripción", nota="Solo cambia los campos que complete. Al suspender o revocar un entorno conectado, el cambio se aplica al renovar. Un entorno cerrado conserva el token instalado hasta su vencimiento.",
+             form=dict(action=request.path, boton="Guardar cambios", campos=[h("modificar"), campo("sid", "Suscripción", "select", opciones=ids),
+                 campo("estado", "Estado", "select", req=False, opciones=[("", "Sin cambio"), ("activa", "Activa"), ("suspendida", "Suspendida"), ("revocada", "Revocada")]),
+                 campo("plan", "Cambiar plan", "select", req=False, opciones=[("", "Sin cambio")] + opciones_plan),
+                 campo("entorno", "Cambiar entorno", "select", req=False, opciones=[("", "Sin cambio")] + opciones_entorno),
+                 campo("max_usuarios", "Usuarios", "number", req=False), campo("max_instancias", "Instalaciones", "number", req=False),
+                 campo("max_empresas", "Empresas", "number", req=False), campo("max_equipos", "Equipos", "number", req=False),
+                 campo("dias_extra", "Extender vigencia (días)", "number", req=False), campo("notas", "Reemplazar notas internas", "textarea", req=False)]))])
+
+
+@ruta("/plataforma/suscripciones/<int:sid>/licencia", "plataforma")
+def maestro_suscripcion_token(sid):
+    from .licensing.admin import ErrorAdmin
+    try:
+        token = _admin().token_suscripcion(sid)
+    except (ErrorAdmin, ValueError, OSError) as e:
+        flash(str(e)[:250]); return redirect(url_for("web.maestro_suscripciones"))
+    response = make_response(token + "\n")
+    response.headers["Content-Type"] = "application/vnd.gigadevs.license"
+    response.headers["Content-Disposition"] = f'attachment; filename="suscripcion-{sid}.license"'
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @ruta("/plataforma/pagos", "plataforma", ("GET", "POST"))

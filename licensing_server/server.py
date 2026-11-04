@@ -141,6 +141,38 @@ pagos_usados = Table(
     "lic_pagos_usados", md,
     Column("pago_id", String(120), primary_key=True), Column("orden_ref", String(32), nullable=False),
     Column("monto", Numeric(18, 8), nullable=False), Column("registrado_en", Float, nullable=False))
+
+# Suscripciones de los productos que administra el Maestro. ERP conserva su modelo
+# anterior; estos registros son genéricos y no comparten datos de negocio con los productos.
+PRODUCTOS = {
+    "criteriseg": {"nombre": "Criteriseg", "tipo_sujeto": "organizacion", "entornos": ["nube", "cerrado"], "primario": "#17365D", "acento": "#2F6FAD",
+                   "planes": [("institucional", "Licencia institucional", "Cotizar")]},
+    "bot_whatsapp": {"nombre": "Bot_Whatsapp", "tipo_sujeto": "organizacion", "entornos": ["nube", "cerrado"], "primario": "#0033A0", "acento": "#F39200",
+                      "planes": [("organizacion", "Licencia por organización", "Cotizar")]},
+    "control_financiero": {"nombre": "Control financiero", "tipo_sujeto": "cuenta", "entornos": ["nube"], "primario": "#0B6B4D", "acento": "#4FC79C",
+                            "planes": [("individual", "Cuenta individual", "Cotizar")]},
+}
+productos = Table(
+    "lic_productos", md,
+    Column("id", String(40), primary_key=True), Column("nombre", String(80), nullable=False),
+    Column("tipo_sujeto", String(20), nullable=False), Column("entornos", Text, nullable=False),
+    Column("primario", String(7), nullable=False), Column("acento", String(7), nullable=False),
+    Column("activo", Integer, nullable=False, default=1))
+planes_producto = Table(
+    "lic_planes_producto", md,
+    Column("producto_id", String(40), ForeignKey("lic_productos.id"), primary_key=True),
+    Column("codigo", String(32), primary_key=True), Column("nombre", String(100), nullable=False),
+    Column("precio_estado", String(20), nullable=False, default="Cotizar"), Column("activo", Integer, nullable=False, default=1))
+suscripciones = Table(
+    "lic_suscripciones", md,
+    Column("id", Integer, primary_key=True), Column("producto_id", String(40), ForeignKey("lic_productos.id"), nullable=False),
+    Column("cliente", String(200), nullable=False), Column("correo", String(254), nullable=False),
+    Column("tipo_sujeto", String(20), nullable=False), Column("referencia_sujeto", String(200), nullable=False),
+    Column("plan", String(32), nullable=False), Column("estado", String(12), nullable=False, default="activa"),
+    Column("entorno", String(12), nullable=False), Column("max_usuarios", Integer, nullable=False, default=1),
+    Column("max_instancias", Integer, nullable=False, default=1), Column("max_empresas", Integer, nullable=False, default=1),
+    Column("max_equipos", Integer, nullable=False, default=1), Column("creada_en", Float, nullable=False),
+    Column("inicia_en", Float, nullable=False), Column("vence_en", Float, nullable=False), Column("notas", Text))
 COLUMNAS_NUEVAS = {"lic_licencias": [("modulos", "TEXT"), ("venta_monto", "NUMERIC(18,4)"), ("venta_moneda", "VARCHAR(4)"), ("venta_tasa", "NUMERIC(18,6)"),
                                      ("venta_forma_pago", "TEXT"), ("cliente_rif", "TEXT"), ("dias", "INTEGER")], "lic_ordenes": [("monto_esperado", "NUMERIC(18,4)"), ("expira_en", "FLOAT"), ("instrucciones", "TEXT"),
                                    ("cliente_rif", "TEXT"), ("cliente_direccion", "TEXT"), ("combo_id", "INTEGER"), ("modulos", "TEXT"),
@@ -194,6 +226,7 @@ class Almacen:
         self.eng = create_engine(url, pool_pre_ping=True)
         self.reloj = reloj
         md.create_all(self.eng)
+        self.sembrar_productos()
         from . import facturas as fx
         from . import presupuestos as px
         fx.instalar(self.eng); px.instalar(self.eng)
@@ -204,6 +237,114 @@ class Almacen:
                 for nombre, tipo in cols:
                     if nombre not in existentes: c.execute(text(f"ALTER TABLE {tabla} ADD COLUMN {nombre} {tipo}"))
         self.sembrar_referencia()
+
+    def sembrar_productos(self):
+        """Registra el catálogo sin fijar precios públicos; esos productos se cotizan."""
+        with self.eng.begin() as c:
+            for pid, cfg in PRODUCTOS.items():
+                if not c.execute(select(productos.c.id).where(productos.c.id == pid)).first():
+                    c.execute(insert(productos).values(id=pid, nombre=cfg["nombre"], tipo_sujeto=cfg["tipo_sujeto"],
+                        entornos=json.dumps(cfg["entornos"]), primario=cfg["primario"], acento=cfg["acento"], activo=1))
+                for code, name, price_state in cfg["planes"]:
+                    if not c.execute(select(planes_producto.c.codigo).where(planes_producto.c.producto_id == pid, planes_producto.c.codigo == code)).first():
+                        c.execute(insert(planes_producto).values(producto_id=pid, codigo=code, nombre=name, precio_estado=price_state, activo=1))
+
+    def listar_productos(self):
+        with self.eng.connect() as c:
+            rows = c.execute(select(productos).order_by(productos.c.nombre)).mappings().all()
+            result = []
+            for row in rows:
+                d = dict(row); d["entornos"] = json.loads(d["entornos"])
+                d["planes"] = [dict(p) for p in c.execute(select(planes_producto).where(planes_producto.c.producto_id == d["id"]).order_by(planes_producto.c.nombre)).mappings()]
+                result.append(d)
+            return result
+
+    def crear_plan_producto(self, producto_id, codigo, nombre):
+        if producto_id not in PRODUCTOS: raise ValueError("Producto inválido")
+        codigo = str(codigo or "").strip().lower()
+        nombre = str(nombre or "").strip()[:100]
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,30}", codigo): raise ValueError("Use un código corto en minúsculas, sin espacios")
+        if not nombre: raise ValueError("Indique el nombre del plan")
+        with self.eng.begin() as c:
+            if c.execute(select(planes_producto.c.codigo).where(planes_producto.c.producto_id == producto_id, planes_producto.c.codigo == codigo)).first():
+                raise ValueError("Ya existe un plan con ese código para el producto")
+            c.execute(insert(planes_producto).values(producto_id=producto_id, codigo=codigo, nombre=nombre, precio_estado="Cotizar", activo=1))
+        return {"producto_id": producto_id, "codigo": codigo, "nombre": nombre, "precio_estado": "Cotizar", "activo": 1}
+
+    def activar_plan_producto(self, producto_id, codigo, activo):
+        with self.eng.begin() as c:
+            if not c.execute(update(planes_producto).where(planes_producto.c.producto_id == producto_id,
+                planes_producto.c.codigo == codigo).values(activo=1 if activo else 0)).rowcount:
+                raise LookupError("Plan inexistente")
+
+    def crear_suscripcion(self, producto_id, cliente, correo, referencia_sujeto, plan, dias=365, entorno="nube",
+                          max_usuarios=1, max_instancias=1, max_empresas=1, max_equipos=1, notas=""):
+        cfg = next((p for p in self.listar_productos() if p["id"] == producto_id and p["activo"]), None)
+        if cfg is None: raise ValueError("Producto inválido o inactivo")
+        if not RE_CORREO.match(str(correo or "")): raise ValueError("Correo inválido")
+        if entorno not in cfg["entornos"]: raise ValueError("Entorno no permitido para este producto")
+        if plan not in {p["codigo"] for p in cfg["planes"] if p["activo"]}: raise ValueError("Plan inválido o inactivo para este producto")
+        cliente = str(cliente or "").strip()[:200]
+        referencia_sujeto = str(referencia_sujeto or "").strip()[:200]
+        if not cliente or not referencia_sujeto: raise ValueError("Indique el cliente y el identificador de la organización o cuenta")
+        dias = _entero(dias, "días", 1, 3650); ahora = self.reloj()
+        limites = {"max_usuarios": _entero(max_usuarios, "usuarios", 1, 100000),
+                   "max_instancias": _entero(max_instancias, "instancias", 1, 1000),
+                   "max_empresas": _entero(max_empresas, "empresas", 1, 100000),
+                   "max_equipos": _entero(max_equipos, "equipos", 1, 100000)}
+        if cfg["tipo_sujeto"] == "cuenta" and limites["max_usuarios"] != 1:
+            raise ValueError("Control financiero se licencia por una cuenta individual")
+        with self.eng.begin() as c:
+            existente = c.execute(select(suscripciones.c.id).where(suscripciones.c.producto_id == producto_id,
+                suscripciones.c.referencia_sujeto == referencia_sujeto, suscripciones.c.estado == "activa",
+                suscripciones.c.vence_en > ahora)).first()
+            if existente: raise ValueError("Ya existe una suscripción activa para esa cuenta u organización")
+            sid = c.execute(insert(suscripciones).values(producto_id=producto_id, cliente=cliente, correo=correo.strip().lower(),
+                tipo_sujeto=cfg["tipo_sujeto"], referencia_sujeto=referencia_sujeto, plan=plan, estado="activa", entorno=entorno,
+                **limites, creada_en=ahora, inicia_en=ahora, vence_en=ahora + dias * 86400, notas=str(notas or "")[:1000]).returning(suscripciones.c.id)).scalar()
+        return sid
+
+    def listar_suscripciones(self, producto_id=None):
+        q = select(suscripciones, productos.c.nombre.label("producto_nombre"), productos.c.primario, productos.c.acento).join(productos, productos.c.id == suscripciones.c.producto_id).order_by(suscripciones.c.id.desc())
+        if producto_id: q = q.where(suscripciones.c.producto_id == producto_id)
+        with self.eng.connect() as c: return [dict(r) for r in c.execute(q).mappings()]
+
+    def cambiar_suscripcion(self, sid, estado=None, dias_extra=None, notas=None, plan=None, entorno=None,
+                             max_usuarios=None, max_instancias=None, max_empresas=None, max_equipos=None):
+        if estado is not None and estado not in ESTADOS: raise ValueError("Estado inválido")
+        cambios = {}
+        with self.eng.begin() as c:
+            row = c.execute(select(suscripciones).where(suscripciones.c.id == int(sid)).with_for_update()).first()
+            if row is None: raise LookupError("Suscripción inexistente")
+            cfg = next((p for p in self.listar_productos() if p["id"] == row.producto_id), None)
+            if plan not in (None, ""):
+                if cfg is None or plan not in {p["codigo"] for p in cfg["planes"] if p["activo"]}: raise ValueError("Plan inválido o inactivo")
+                cambios["plan"] = plan
+            if entorno not in (None, ""):
+                if cfg is None or entorno not in cfg["entornos"]: raise ValueError("Entorno no permitido para este producto")
+                cambios["entorno"] = entorno
+            for k, val, label, maximum in (("max_usuarios", max_usuarios, "usuarios", 100000),
+                    ("max_instancias", max_instancias, "instancias", 1000), ("max_empresas", max_empresas, "empresas", 100000),
+                    ("max_equipos", max_equipos, "equipos", 100000)):
+                if val not in (None, ""): cambios[k] = _entero(val, label, 1, maximum)
+            if row.tipo_sujeto == "cuenta" and cambios.get("max_usuarios", row.max_usuarios) != 1:
+                raise ValueError("Control financiero se licencia por una cuenta individual")
+            if estado is not None: cambios["estado"] = estado
+            if dias_extra not in (None, ""): cambios["vence_en"] = max(row.vence_en, self.reloj()) + _entero(dias_extra, "días", 1, 3650) * 86400
+            if notas is not None: cambios["notas"] = str(notas)[:1000]
+            if cambios: c.execute(update(suscripciones).where(suscripciones.c.id == int(sid)).values(**cambios))
+        return cambios
+
+    def token_suscripcion(self, sid, clave_privada):
+        row = next((s for s in self.listar_suscripciones() if s["id"] == int(sid)), None)
+        if row is None: raise LookupError("Suscripción inexistente")
+        if row["estado"] != "activa" or row["vence_en"] <= self.reloj(): raise ValueError("Solo se puede exportar una suscripción activa y vigente")
+        ahora = int(self.reloj())
+        claims = {"producto": row["producto_id"], "suscripcion": row["id"], "cliente": row["cliente"],
+                  "tipo_sujeto": row["tipo_sujeto"], "sujeto": row["referencia_sujeto"], "plan": row["plan"],
+                  "estado": row["estado"], "entorno": row["entorno"], "iat": ahora, "exp": int(row["vence_en"]),
+                  "vence_suscripcion": int(row["vence_en"]), "limites": {k: row[k] for k in ("max_usuarios", "max_instancias", "max_empresas", "max_equipos")}}
+        return firmar(claims, clave_privada)
 
     # ---------------- licencias ----------------
     def crear_licencia(self, cliente, dias=365, max_usuarios=5, max_empresas=10, max_instancias=1, plan="ERP_CONTABLE",
@@ -515,6 +656,52 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
 
     @app.errorhandler(LookupError)
     def _nf(e): return jsonify(message=str(e)[:200]), 404
+
+    @app.get("/admin/v1/productos")
+    def a_productos():
+        return jsonify(productos=st.listar_productos())
+
+    @app.post("/admin/v1/productos/<producto_id>/planes")
+    def a_crear_plan_producto(producto_id):
+        d = cuerpo()
+        plan = st.crear_plan_producto(producto_id, d.get("codigo"), d.get("nombre"))
+        with st.eng.begin() as con: st.log(con, None, "plan_producto_creado", f"{producto_id}/{plan['codigo']} por {d.get('autor', '')}")
+        return jsonify(plan=plan), 201
+
+    @app.patch("/admin/v1/productos/<producto_id>/planes/<codigo>")
+    def a_estado_plan_producto(producto_id, codigo):
+        d = cuerpo()
+        if not isinstance(d.get("activo"), bool): raise ValueError("El estado del plan debe ser booleano")
+        st.activar_plan_producto(producto_id, codigo, d["activo"])
+        with st.eng.begin() as con: st.log(con, None, "plan_producto_estado", f"{producto_id}/{codigo} activo={d['activo']} por {d.get('autor', '')}")
+        return jsonify(ok=True)
+
+    @app.get("/admin/v1/suscripciones")
+    def a_suscripciones():
+        return jsonify(suscripciones=st.listar_suscripciones(request.args.get("producto") or None))
+
+    @app.post("/admin/v1/suscripciones")
+    def a_crear_suscripcion():
+        d = cuerpo()
+        sid = st.crear_suscripcion(d.get("producto_id"), d.get("cliente"), d.get("correo"), d.get("referencia_sujeto"),
+            d.get("plan"), d.get("dias", 365), d.get("entorno", "nube"), d.get("max_usuarios", 1),
+            d.get("max_instancias", 1), d.get("max_empresas", 1), d.get("max_equipos", 1), d.get("notas", ""))
+        with st.eng.begin() as con: st.log(con, None, "suscripcion_creada", f"#{sid} producto={d.get('producto_id')} por {d.get('autor', '')}")
+        return jsonify(id=sid), 201
+
+    @app.patch("/admin/v1/suscripciones/<int:sid>")
+    def a_cambiar_suscripcion(sid):
+        d = cuerpo()
+        cambios = st.cambiar_suscripcion(sid, d.get("estado"), d.get("dias_extra"), d.get("notas") if "notas" in d else None,
+            d.get("plan"), d.get("entorno"), d.get("max_usuarios"), d.get("max_instancias"), d.get("max_empresas"), d.get("max_equipos"))
+        with st.eng.begin() as con: st.log(con, None, "suscripcion_modificada", f"#{sid} {sorted(cambios)} por {d.get('autor', '')}")
+        return jsonify(cambios=cambios)
+
+    @app.get("/admin/v1/suscripciones/<int:sid>/token")
+    def a_token_suscripcion(sid):
+        token = st.token_suscripcion(sid, clave_privada)
+        with st.eng.begin() as con: st.log(con, None, "token_suscripcion_emitido", f"id={sid}", request.remote_addr or "?")
+        return jsonify(token=token)
 
     @app.get("/admin/v1/licencias")
     def a_listar():
