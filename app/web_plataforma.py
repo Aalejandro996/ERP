@@ -5,7 +5,7 @@ import re
 import secrets
 import time
 
-from flask import current_app, flash, g, get_flashed_messages, make_response, redirect, request, url_for
+from flask import current_app, flash, g, get_flashed_messages, make_response, redirect, render_template, request, url_for
 from markupsafe import escape
 from sqlalchemy import func, select
 
@@ -20,6 +20,12 @@ from .security import hashear
 from .web import F, campo, hoy, intentar, pagina, ruta, validar_rif
 
 h = lambda v: campo("accion", "", "hidden", valor=v)
+
+
+@ruta("/plataforma/sistemas", "plataforma")
+def maestro_sistemas():
+    """Inicio de la consola: cada tarjeta abre la operación del producto seleccionado."""
+    return render_template("maestro_sistemas.html", titulo="Selecciona un sistema")
 
 
 @ruta("/plataforma", "plataforma", ("GET", "POST"))

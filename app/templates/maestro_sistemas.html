@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block contenido %}
+<section class="sistemas-portada">
+  <p class="sistemas-eyebrow">GIGADEVS · CONSOLA MAESTRA</p>
+  <h1>¿Qué sistema quieres gestionar?</h1>
+  <p class="sistemas-intro">Elige un producto para abrir su espacio de licencias y suscripciones.</p>
+  <div class="sistemas-grid">
+    <a class="sistema-card sistema-erp" href="{{ url_for('web.plataforma') }}">
+      <span class="sistema-logo"><img src="{{ url_for('static', filename='marca/logo-icono.svg') }}" alt=""></span>
+      <span class="sistema-texto"><b>Contax ERP</b><small>Gestión empresarial · licencias, equipos y facturación</small></span><span class="sistema-ir">Abrir <b>→</b></span>
+    </a>
+    <a class="sistema-card sistema-criteri" href="{{ url_for('web.maestro_suscripciones', producto='criteriseg') }}">
+      <span class="sistema-logo"><img src="{{ url_for('static', filename='marca/criteriseg.svg') }}" alt=""></span>
+      <span class="sistema-texto"><b>CriteriSeg</b><small>Seguridad · suscripciones por organización</small></span><span class="sistema-ir">Abrir <b>→</b></span>
+    </a>
+    <a class="sistema-card sistema-enlace" href="{{ url_for('web.maestro_suscripciones', producto='bot_whatsapp') }}">
+      <span class="sistema-logo sistema-monograma" aria-hidden="true">EM</span>
+      <span class="sistema-texto"><b>Enlace MIT</b><small>Mensajería · organizaciones y entornos cerrados</small></span><span class="sistema-ir">Abrir <b>→</b></span>
+    </a>
+    <a class="sistema-card sistema-quincena" href="{{ url_for('web.maestro_suscripciones', producto='control_financiero') }}">
+      <span class="sistema-logo quincena-logo"><img src="{{ url_for('static', filename='marca/quincena.svg') }}" alt=""></span>
+      <span class="sistema-texto"><b>Quincena VE</b><small>Finanzas personales · cuenta individual</small><span class="trabajando"><i aria-hidden="true"></i>Trabajando en ello<span class="puntos-carga" aria-hidden="true"><b>.</b><b>.</b><b>.</b></span></span></span><span class="sistema-ir">Abrir <b>→</b></span>
+    </a>
+  </div>
+  <p class="sistemas-nota">Facturación Gigadevs centralizada en Contax ERP. La conexión operativa y contable de los otros productos se habilitará al integrar sus servicios.</p>
+</section>
+{% endblock %}
