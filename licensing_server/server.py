@@ -392,6 +392,13 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
     def salud():
         return jsonify(ok=True)
 
+    @app.get("/v1/clave-publica")
+    def clave_publica():
+        """Clave PÚBLICA Ed25519 (no es secreta): con ella el relé de Binance verifica que las consultas vienen de aquí."""
+        from cryptography.hazmat.primitives import serialization
+        raw = clave_privada.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        return jsonify(ed25519=base64.urlsafe_b64encode(raw).decode().rstrip("="))
+
     # ------------------------------------------------------------------ activación pública
     def emitir(accion):
         ip = request.remote_addr or "?"
@@ -946,6 +953,14 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
     # ------------------------------------------------------------------ Binance configurable desde la consola
     from .binance import BinanceCuenta, ErrorBinance
 
+    def transporte_binance():
+        """Pruebas: transporte simulado. Producción: el relé de Frankfurt si BINANCE_RELAY_URL está definido (Binance bloquea EE. UU.)."""
+        if binance_transporte: return {"transporte": binance_transporte}
+        if cfg.get("binance_relay"):
+            from .relay_binance import transporte_por_rele
+            return {"transporte": transporte_por_rele(cfg["binance_relay"], clave_privada, reloj)}
+        return {}
+
     def binance_conf():
         with st.eng.connect() as c:
             return c.execute(select(binance_cfg).where(binance_cfg.c.id == 1)).first()
@@ -955,8 +970,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         r = binance_conf()
         if r is not None and r.api_key_cifrada:
             try:
-                cuenta = BinanceCuenta(descifrar(r.api_key_cifrada), descifrar(r.secreto_cifrado),
-                                       **({"transporte": binance_transporte} if binance_transporte else {}), reloj=reloj)
+                cuenta = BinanceCuenta(descifrar(r.api_key_cifrada), descifrar(r.secreto_cifrado), **transporte_binance(), reloj=reloj)
             except ErrorBinance:
                 cuenta = None
             return {"cuenta": cuenta, "pay_id": r.pay_id or "", "red": r.red or "", "direccion": r.direccion or "", "activa": bool(r.activa), "origen": "consola"}
@@ -991,7 +1005,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         if direccion and not re.fullmatch(r"[0-9A-Za-z]{20,120}", direccion): raise ValueError("Dirección de depósito inválida")
         if direccion and not red: raise ValueError("Indique la red de la dirección de depósito (p. ej. TRC20 o BSC)")
         try:
-            cuenta = BinanceCuenta(k, sec, **({"transporte": binance_transporte} if binance_transporte else {}), reloj=reloj)
+            cuenta = BinanceCuenta(k, sec, **transporte_binance(), reloj=reloj)
         except ErrorBinance as e:
             raise ValueError(str(e)) from e
         binance_probar(cuenta)                         # se verifica ANTES de guardar

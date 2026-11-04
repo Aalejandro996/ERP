@@ -104,6 +104,26 @@ projects:
                 sync: false
               - key: PAGO_MOVIL_INSTRUCCIONES
                 sync: false
+              - key: BINANCE_RELAY_URL           # https://erp-binance-relay.onrender.com (Binance bloquea servidores en EE. UU.)
+                sync: false
+
+          # ------------------------------------------------------------- relé de Binance (Frankfurt)
+          # Binance responde 451 a servidores en EE. UU. (erp-licencias está en Ohio). Este relé reenvía SOLO las dos
+          # consultas de solo lectura del cobro en USDT; verifica la firma Ed25519 de erp-licencias con su clave pública
+          # (no hay secretos aquí) y el secreto de Binance nunca pasa por él.
+          - type: web
+            name: erp-binance-relay
+            runtime: python
+            plan: starter
+            region: frankfurt
+            buildCommand: pip install -r requirements.txt
+            startCommand: gunicorn licensing_server.relay_binance:app --workers 1 --timeout 30 --forwarded-allow-ips="*"
+            healthCheckPath: /salud
+            envVars:
+              - key: PYTHON_VERSION
+                value: 3.12.7
+              - key: LICENSE_SERVER_URL
+                value: https://erp-licencias.onrender.com
 
           # ------------------------------------------------------------- límites de tasa compartidos entre procesos
           # ------------------------------------------------------------- pasarela de WhatsApp (OpenWA, open-wa.org)

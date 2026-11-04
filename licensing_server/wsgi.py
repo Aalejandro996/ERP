@@ -13,13 +13,20 @@ from app import brevo
 from licensing_server.binance import BinanceCuenta
 from licensing_server.server import create_app
 
-_b = os.environ["LICENSE_PRIVATE_KEY"]
 _url = os.environ.get("LICENSE_DB_URL") or os.environ.get("DATABASE_URL") or "sqlite:///licencias.db"
 _secreto = os.environ["LICENSE_ADMIN_SECRET"]
 if len(_secreto) < 32:
     raise RuntimeError("LICENSE_ADMIN_SECRET debe tener al menos 32 caracteres")
 # Cuenta PERSONAL de Binance, clave de SOLO LECTURA (sin trading, retiros ni transferencias)
-_binance = BinanceCuenta(os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"]) if os.environ.get("BINANCE_API_KEY") else None
+_b = os.environ["LICENSE_PRIVATE_KEY"]
+_priv = Ed25519PrivateKey.from_private_bytes(base64.urlsafe_b64decode(_b + "=" * (-len(_b) % 4)))
+# Binance no atiende servidores en EE. UU.: las consultas pasan por el relé de Frankfurt (licensing_server/relay_binance.py)
+_rele = os.environ.get("BINANCE_RELAY_URL", "").strip().rstrip("/")
+_transporte_bn = {}
+if _rele:
+    from licensing_server.relay_binance import transporte_por_rele
+    _transporte_bn = {"transporte": transporte_por_rele(_rele, _priv)}
+_binance = BinanceCuenta(os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], **_transporte_bn) if os.environ.get("BINANCE_API_KEY") else None
 
 
 def _correo(destino, asunto, texto, html=None):
@@ -27,11 +34,12 @@ def _correo(destino, asunto, texto, html=None):
                  html=html, etiquetas=("licencia",))
 
 
-app = create_app(_url, Ed25519PrivateKey.from_private_bytes(base64.urlsafe_b64decode(_b + "=" * (-len(_b) % 4))),
+app = create_app(_url, _priv,
                  secreto_admin=_secreto, binance=_binance, correo=_correo,
                  config={"url_publica": os.environ.get("PUBLIC_URL", "").rstrip("/"), "url_erp": os.environ.get("ERP_URL", "").rstrip("/"),
                          "pago_movil": os.environ.get("PAGO_MOVIL_INSTRUCCIONES", ""), "binance_pay_id": os.environ.get("BINANCE_PAY_ID", "").strip(),
-                         "usdt_red": os.environ.get("BINANCE_USDT_RED", "").strip(), "usdt_direccion": os.environ.get("BINANCE_USDT_DIRECCION", "").strip()})
+                         "usdt_red": os.environ.get("BINANCE_USDT_RED", "").strip(), "usdt_direccion": os.environ.get("BINANCE_USDT_DIRECCION", "").strip(),
+                         "binance_relay": _rele})
 
 from werkzeug.middleware.proxy_fix import ProxyFix  # noqa: E402
 

@@ -62,6 +62,9 @@ class BinanceCuenta:
             raise ErrorBinance(f"Respuesta no válida de Binance ({estado})") from e
         if estado != 200:
             msg = r.get("msg") if isinstance(r, dict) else None
+            if estado == 451:   # Binance no atiende servidores en EE. UU. (Render Ohio): hay que pasar por el relé de Frankfurt
+                raise ErrorBinance("Binance bloquea las consultas desde la ubicación del servidor (EE. UU.). Configure el relé "
+                                   "erp-binance-relay (Frankfurt) en BINANCE_RELAY_URL de erp-licencias.")
             raise ErrorBinance(f"Binance respondió {estado}: {str(msg)[:120]}")
         return r
 
