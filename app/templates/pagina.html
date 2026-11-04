@@ -64,7 +64,7 @@
 {% elif s.logo %}<p><img class="logo-empresa" src="{{ s.logo }}" alt="Logo de la empresa"></p>
 {% elif s.kpis %}<div class="kpis">{% for k, v in s.kpis %}<div class="kpi"><span>{{ k }}</span><b>{{ v }}</b></div>{% endfor %}</div>
 {% else %}{% set plegar = s.form and not s.tabla and not s.pares and s.titulo and secciones|length > 2 and not s.abierto %}
-{% if plegar %}<details class="seccion-plegable"><summary><h2>{{ s.titulo }}</h2></summary><section>{% else %}<section>{% if s.titulo %}<h2>{{ s.titulo }}</h2>{% endif %}{% endif %}{% if s.nota %}<p class="peq nota">{{ s.nota }}</p>{% endif %}
+{% if plegar %}<details class="seccion-plegable"><summary><h2>{{ s.titulo }}</h2></summary><section class="panel-seccion {{ s.clase or '' }}">{% else %}<section class="panel-seccion {{ s.clase or '' }}">{% if s.titulo %}<h2>{{ s.titulo }}</h2>{% endif %}{% endif %}{% if s.nota %}<p class="peq nota">{{ s.nota }}</p>{% endif %}
 {% if s.tarjetas is defined %}{% if s.tarjetas %}<div class="tarjetas">{% for t in s.tarjetas %}{% if t.url %}<a href="{{ t.url }}"><b>{{ t.titulo }}</b><span class="peq">{{ t.sub }}</span><br><span class="ir">Abrir →</span></a>{% else %}<div class="tarjeta"><b>{{ t.titulo }}</b><p class="peq">{{ t.sub }} · Su rol no tiene módulos habilitados en esta empresa.</p></div>{% endif %}{% endfor %}</div>{% else %}<p class="peq">{{ s.vacio }}</p>{% endif %}{% endif %}
 {% if s.grafico %}{% set gr = s.grafico %}<figure class="viz">{% if gr.series|length > 1 %}<div class="viz-leyenda">{% for se in gr.series %}<span><i class="serie-{{ loop.index }}"></i>{{ se }}</span>{% endfor %}</div>{% endif %}
 <svg viewBox="0 0 {{ gr.ancho }} {{ gr.alto }}" role="img" aria-label="{{ gr.titulo }}" class="viz-svg">

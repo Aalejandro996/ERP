@@ -145,11 +145,11 @@ pagos_usados = Table(
 # Suscripciones de los productos que administra el Maestro. ERP conserva su modelo
 # anterior; estos registros son genéricos y no comparten datos de negocio con los productos.
 PRODUCTOS = {
-    "criteriseg": {"nombre": "Criteriseg", "tipo_sujeto": "organizacion", "entornos": ["nube", "cerrado"], "primario": "#17365D", "acento": "#2F6FAD",
+    "criteriseg": {"nombre": "CriteriSeg", "tipo_sujeto": "organizacion", "entornos": ["nube", "cerrado"], "primario": "#17365D", "acento": "#2F6FAD",
                    "planes": [("institucional", "Licencia institucional", "Cotizar")]},
-    "bot_whatsapp": {"nombre": "Bot_Whatsapp", "tipo_sujeto": "organizacion", "entornos": ["nube", "cerrado"], "primario": "#0033A0", "acento": "#F39200",
+    "bot_whatsapp": {"nombre": "Enlace MIT", "tipo_sujeto": "organizacion", "entornos": ["nube", "cerrado"], "primario": "#0033A0", "acento": "#F39200",
                       "planes": [("organizacion", "Licencia por organización", "Cotizar")]},
-    "control_financiero": {"nombre": "Control financiero", "tipo_sujeto": "cuenta", "entornos": ["nube"], "primario": "#0B6B4D", "acento": "#4FC79C",
+    "control_financiero": {"nombre": "Quincena VE", "tipo_sujeto": "cuenta", "entornos": ["nube"], "primario": "#0B6B4D", "acento": "#4FC79C",
                             "planes": [("individual", "Cuenta individual", "Cotizar")]},
 }
 productos = Table(
@@ -245,6 +245,9 @@ class Almacen:
                 if not c.execute(select(productos.c.id).where(productos.c.id == pid)).first():
                     c.execute(insert(productos).values(id=pid, nombre=cfg["nombre"], tipo_sujeto=cfg["tipo_sujeto"],
                         entornos=json.dumps(cfg["entornos"]), primario=cfg["primario"], acento=cfg["acento"], activo=1))
+                else:
+                    c.execute(update(productos).where(productos.c.id == pid).values(nombre=cfg["nombre"], tipo_sujeto=cfg["tipo_sujeto"],
+                        entornos=json.dumps(cfg["entornos"]), primario=cfg["primario"], acento=cfg["acento"]))
                 for code, name, price_state in cfg["planes"]:
                     if not c.execute(select(planes_producto.c.codigo).where(planes_producto.c.producto_id == pid, planes_producto.c.codigo == code)).first():
                         c.execute(insert(planes_producto).values(producto_id=pid, codigo=code, nombre=name, precio_estado=price_state, activo=1))
