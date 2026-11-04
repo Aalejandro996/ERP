@@ -68,14 +68,14 @@ def crear_entorno():
     with app_owner.app_context():
         db.session.execute(text("CREATE EXTENSION IF NOT EXISTS citext")); db.session.commit()
         db.create_all()
-        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql", "011_whatsapp_openwa.sql"):
+        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql", "011_whatsapp_openwa.sql", "012_profit_plus.sql"):
             db.session.execute(text(pathlib.Path("migrations", m).read_text(encoding="utf-8"))); db.session.commit()
     with owner.connect() as c:
         c.execute(text("GRANT USAGE ON SCHEMA public TO erp_app"))
         c.execute(text("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO erp_app"))
         c.execute(text("GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO erp_app"))
         c.execute(text("GRANT EXECUTE ON FUNCTION pg_control_system() TO erp_app"))
-        c.execute(text("GRANT EXECUTE ON FUNCTION maestro_resumen_organizaciones(), maestro_cadenas_bitacora(), whatsapp_destino(text), maestro_empresas_whatsapp(integer[]) TO erp_app"))
+        c.execute(text("GRANT EXECUTE ON FUNCTION maestro_resumen_organizaciones(), maestro_cadenas_bitacora(), whatsapp_destino(text), maestro_empresas_whatsapp(integer[]), profit_destino(text), maestro_monitor_bot() TO erp_app"))
     from urllib.parse import quote
     app_url = re.sub(r"//[^@]+@", lambda m: f"//erp_app:{quote(APP_PW, safe='')}@", URL)   # la clave puede traer «@», «:» o «/»
     class CfgApp(CfgOwner):
@@ -884,7 +884,8 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
         if (metodo, ruta) == ("GET", f"/sessions/{SID}"):
             return 200, json.dumps({"status": pasarela["estado"], "phone": pasarela["telefono"], "pushName": "Epsilon"}).encode()
         if ruta == f"/sessions/{SID}/qr": return 200, b'{"qrCode":"data:image/png;base64,iVBORw0KGgo=","status":"qr_ready"}'
-        if ruta == f"/sessions/{SID}/messages/send-text": pasarela["enviados"].append(d); return 201, b'{"messageId":"out1","timestamp":1}'
+        if ruta == f"/sessions/{SID}/messages/send-text":
+            pasarela["enviados"].append(d); return 201, json.dumps({"messageId": f"out{len(pasarela['enviados'])}", "timestamp": 1}).encode()
         if ruta == f"/sessions/{SID}/logout": pasarela["estado"] = "disconnected"; return 200, b'{}'
         if metodo == "DELETE": pasarela["borradas"].append(ruta); return 204, b""
         return 404, b'{"message":"no"}'
@@ -923,6 +924,92 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     n = len(pasarela["enviados"])
     ow_aviso("message.received", {"id": "true_584125550000@c.us_A1", "from": "584125550000@c.us", "type": "text", "body": "Hola", "kind": "individual"})
     assert len(pasarela["enviados"]) == n                                                             # aviso repetido: no responde dos veces
+    # --- Profit Plus (solo lectura): el Maestro habilita la API, la empresa activa su conector y el conector envía la foto firmada
+    import configparser, gzip as _gz, sys as _sys, time as _time
+    from datetime import datetime as _dt
+    _sys.path.insert(0, "conector_profit")
+    import contax_profit as CP
+    assert a.get("/plataforma/bot").status_code == 403                                                # la consola es solo del Maestro
+    assert "no está habilitada" in a.get(f"/e/{eid}/whatsapp/profit").get_data(as_text=True)
+    r = root.post("/plataforma/bot", data={"accion": "guardar", "activa": "1", "intervalo_min": "15", "max_articulos": "20000", "max_clientes": "50000",
+                                           "url_publica": "http://inseguro.test"}, follow_redirects=True)
+    assert "https://" in r.get_data(as_text=True)
+    r = root.post("/plataforma/bot", data={"accion": "guardar", "activa": "1", "intervalo_min": "15", "max_articulos": "20000", "max_clientes": "50000"}, follow_redirects=True)
+    assert "API de Profit Plus guardada" in r.get_data(as_text=True), alerta(r)
+    r = a.post(f"/e/{eid}/whatsapp/profit", data={"accion": "activar"}, follow_redirects=True)
+    assert "Integración activada" in r.get_data(as_text=True), alerta(r)
+    ini = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(";",))
+    ini.read_string(a.get(f"/e/{eid}/whatsapp/profit/descargar/configuracion").get_data(as_text=True))
+    cid, clave_pp = ini["contax"]["conector"], ini["contax"]["clave"]
+    assert ini["contax"]["url"] == "https://erp.test" and ini["sqlserver"]["usuario"] == "contax_lectura"
+    assert clave_pp not in uno("SELECT secreto_cifrado FROM profit_conexion WHERE empresa_id=:e", e=eid)       # cifrada en reposo
+    assert b"saStockAlmacen" in a.get(f"/e/{eid}/whatsapp/profit/descargar/usuario-sql").data
+    assert a.get(f"/e/{eid}/whatsapp/profit/descargar/config").status_code == 404
+    def conector(ruta, datos, clave_=None, fecha=None, gz=False):
+        cuerpo, cab = json.dumps(datos).encode(), {"X-Contax-Conector": cid}
+        if gz: cuerpo, cab["Content-Encoding"] = _gz.compress(cuerpo), "gzip"
+        f = fecha or int(_time.time())
+        cab.update({"X-Contax-Fecha": str(f), "X-Contax-Firma": CP.firmar(clave_ or clave_pp, f, cuerpo)})
+        return anon.post("/api/profit/v1/" + ruta, data=cuerpo, content_type="application/json", headers=cab)
+    assert conector("ping", {}, clave_="otra-clave").status_code == 401
+    assert conector("ping", {}, fecha=int(_time.time()) - 900).status_code == 401                      # firma vencida
+    assert anon.post("/api/profit/v1/ping", data=b"{}", headers={"X-Contax-Conector": "pp_no_existe"}).status_code == 401
+    r = conector("ping", {"version": "1.0.0", "equipo": "SRV-PROFIT"})
+    assert r.status_code == 200 and r.get_json()["config"] == {"activo": True, "almacenes": [], "lista_precio": "01", "restar_comprometido": True, "intervalo_min": 15}
+    t = a.get(f"/e/{eid}/whatsapp/profit").get_data(as_text=True)
+    assert "SRV-PROFIT" in t and "aún no llega la primera foto" in t
+    foto = CP.construir_foto(
+        almacenes_rows=[("01", "PRINCIPAL", False), ("02", "DAÑADOS", True)], listas_rows=[("01", "DETAL"), ("02", "MAYOR")],
+        articulos_rows=[("HAR-01", "HARINA PAN 1KG", "ALIM", "1"), ("ARR-02", "ARROZ MARY 1KG", "ALIM", "1"), ("LECHE", "LECHE COMPLETA 1L", "ALIM", "7")],
+        stock_rows=[("HAR-01", "01", "ACT", 50), ("HAR-01", "01", "COM", 10), ("HAR-01", "02", "ACT", 99), ("ARR-02", "01", "ACT", 0), ("LECHE", "01", "ACT", 5)],
+        precios_rows=[(c, "", Decimal(p), "BS", _dt(2026, 1, 1)) for c, p in (("HAR-01", "45.5"), ("ARR-02", "38"), ("LECHE", "60"))],
+        clientes_rows=[("C001", "COMERCIAL ORITUCO CA", "J123456789", "Av. Principal, Altagracia de Orituco", "0238-1234567 / 0414-7778899", "compras@orituco.test")],
+        config=r.get_json()["config"], alicuotas={"1": "G", "7": "E"})
+    r = conector("sync", foto, gz=True)
+    assert r.status_code == 200 and (r.get_json()["articulos"], r.get_json()["clientes"]) == (3, 1), r.data[:300]
+    assert uno("SELECT existencia FROM profit_articulos WHERE empresa_id=:e AND codigo='HAR-01'", e=eid) == Decimal("40")   # 50 − 10; «no venta» no cuenta
+    assert conector("sync", {"articulos": "x", "clientes": []}).status_code == 400                     # foto inválida: queda la anterior
+    assert uno("SELECT count(*) FROM profit_articulos WHERE empresa_id=:e", e=eid) == 3
+    t = a.get(f"/e/{eid}/whatsapp/profit").get_data(as_text=True)
+    assert "Usa el catálogo de Profit Plus" in t and "HARINA PAN 1KG" in t and "01 · PRINCIPAL" in t and "02 · MAYOR" in t and "Faltan" in t
+    # el cliente de Profit escribe desde su celular registrado: el bot lo reconoce, busca, arma y confirma el pedido con lo de Profit
+    profit_msg = lambda i, txt: ow_aviso("message.received", {"id": f"true_584147778899@c.us_P{i}", "from": "584147778899@c.us", "chatId": "584147778899@c.us",
+                                                              "type": "text", "body": txt, "fromMe": False, "isGroup": False, "kind": "individual"})
+    ultimo = lambda: pasarela["enviados"][-1]["text"]
+    profit_msg(1, "harina")
+    assert "HAR-01" in ultimo() and "45,50" in ultimo()
+    assert uno("SELECT nombre || ' ' || rif || ' ' || tipo FROM whatsapp_contactos WHERE empresa_id=:e AND telefono='584147778899'", e=eid) == "COMERCIAL ORITUCO CA J-12345678-9 cliente"
+    profit_msg(2, "HAR-01 60"); assert "Solo tenemos 40" in ultimo()
+    profit_msg(3, "HAR-01 3"); profit_msg(4, "LECHE 2"); profit_msg(5, "3")
+    assert "Pedido recibido" in ultimo() and "256,50" in ultimo()
+    assert uno("SELECT total FROM pedidos WHERE empresa_id=:e ORDER BY id DESC LIMIT 1", e=eid) == Decimal("256.50")
+    profit_msg(6, "LECHE 2"); profit_msg(7, "6")                                                       # presupuesto con precio y alícuota de Profit
+    assert uno("SELECT exento || '/' || total FROM presupuestos_venta WHERE empresa_id=:e ORDER BY id DESC LIMIT 1", e=eid) == "120.00/120.00"
+    # la empresa elige otra lista y almacén: viaja al conector en su siguiente conexión
+    r = a.post(f"/e/{eid}/whatsapp/profit", data={"accion": "guardar", "activo": "1", "almacenes": ["01"], "lista_precio": "02", "restar_comprometido": "0",
+                                                  "solo_con_existencia": "1"}, follow_redirects=True)
+    assert "Configuración guardada" in r.get_data(as_text=True), alerta(r)
+    cfg_pp = conector("ping", {}).get_json()["config"]
+    assert cfg_pp["almacenes"] == ["01"] and cfg_pp["lista_precio"] == "02" and cfg_pp["restar_comprometido"] is False
+    profit_msg(8, "buscar arroz"); assert "No encontramos productos con «arroz»" in ultimo()          # solo lo que tiene existencia
+    # orden de compra en PDF: se lee contra el catálogo de Profit y queda ORDEN DE VENTA (la factura fiscal se emite en Profit)
+    archivos["true_584147778899@c.us_PDF1"] = pdf(["ORDEN DE COMPRA N° 9001", "COMERCIAL ORITUCO CA - RIF J-12345678-9", "HAR-01 HARINA PAN 1KG 100", "LECHE 1"])
+    ow_aviso("message.received", {"id": "true_584147778899@c.us_PDF1", "from": "584147778899@c.us", "chatId": "584147778899@c.us", "type": "document",
+                                  "body": "", "kind": "individual", "media": {"mimetype": "application/pdf", "filename": "oc9001.pdf"}})
+    resp = ultimo()
+    assert "Orden de venta N°" in resp and "Factura" not in resp and "pidió 100" in resp and "HAR-01" in resp and "LECHE" in resp, resp
+    assert "factura fiscal se emitirá" in resp
+    ov_pdf = re.search(r"https://erp\.test(/ov/\S+)", resp).group(1)
+    doc = anon.get(ov_pdf).get_data(as_text=True)
+    assert "COMERCIAL ORITUCO CA" in doc and "Altagracia de Orituco" in doc and "J-12345678-9" in doc and "LECHE COMPLETA 1L" in doc
+    assert uno("SELECT estado || ' ' || referencia_cliente FROM pedidos WHERE empresa_id=:e ORDER BY id DESC LIMIT 1", e=eid) == "Nuevo 9001"
+    # monitoreo del Maestro: estados y conteos, nunca catálogo ni conversaciones
+    t = root.get("/plataforma/bot").get_data(as_text=True)
+    assert "Epsilon Market CA" in t and "Conectores Profit" in t and "1.0.0" in t and "HARINA" not in t and "ORITUCO" not in t
+    # pausar el conector: el bot vuelve al inventario de Contax y el conector deja de enviar
+    a.post(f"/e/{eid}/whatsapp/profit", data={"accion": "guardar", "activo": "0", "lista_precio": "02", "restar_comprometido": "1", "solo_con_existencia": "0"})
+    assert conector("sync", foto).get_json()["ignorado"] == "pausado"
+    profit_msg(9, "harina"); assert "HAR-01" not in ultimo()
     # el Maestro ve la sesión con el nombre de la empresa; la empresa desvincula y la sesión se borra de la pasarela
     assert "Epsilon Market CA" in root.get("/plataforma/whatsapp").get_data(as_text=True)
     r = a.post(f"/e/{eid}/whatsapp/bot", data={"accion": "desconectar"}, follow_redirects=True)

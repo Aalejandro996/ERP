@@ -217,7 +217,13 @@ def enviar_wa(eid, destino, texto, contacto=None) -> str:
     return wamid
 
 
-def catalogo_bot(eid) -> dict:
+def catalogo_bot(eid, todos=False) -> dict:
+    """{codigo: (nombre, precio_bs, existencia)} que ofrece el bot: el de Profit Plus si la empresa lo tiene conectado
+    (solo lectura, foto cada 15 min), si no el inventario de Contax. `todos` (lectura de PDF): incluye artículos sin precio."""
+    from . import servicios_profit as SP
+    if SP.activa(eid): return SP.catalogo(eid, todos=todos)
+    if todos:
+        return {p.codigo: (p.nombre, p.precio_venta, p.cantidad_actual) for p in db.session.execute(select(Producto).where(Producto.empresa_id == eid)).scalars()}
     return {p.codigo: (p.nombre, p.precio_venta or Decimal(0), p.cantidad_actual)
             for p in db.session.execute(select(Producto).where(Producto.empresa_id == eid, Producto.precio_venta > 0).order_by(Producto.codigo).limit(200)).scalars()}
 
@@ -231,8 +237,10 @@ def procesar_mensaje(eid, telefono, nombre, texto, wamid, adjunto=None, modulos=
     c = db.session.execute(select(WhatsappContacto).where(WhatsappContacto.empresa_id == eid, WhatsappContacto.telefono == tel).with_for_update()).scalar_one_or_none()
     if c is None:
         prov = db.session.execute(select(Proveedor).where(Proveedor.empresa_id == eid, Proveedor.whatsapp == tel)).scalars().first()
-        c = WhatsappContacto(empresa_id=eid, telefono=tel, nombre=(prov.razon_social if prov else nombre) or None, tipo="proveedor" if prov else "nuevo",
-                             rif=prov.rif if prov else None, estado={})
+        from . import servicios_profit as SP
+        cp = SP.cliente_por_whatsapp(eid, tel) if prov is None and SP.activa(eid) else None     # cliente de Profit Plus con ese celular
+        c = WhatsappContacto(empresa_id=eid, telefono=tel, nombre=(prov.razon_social if prov else cp.nombre if cp else nombre) or None,
+                             tipo="proveedor" if prov else "cliente" if cp else "nuevo", rif=prov.rif if prov else cp.rif if cp else None, estado={})
         db.session.add(c); db.session.flush()
     elif nombre and not c.nombre: c.nombre = nombre[:120]
     c.ultimo_mensaje = _ahora()
@@ -257,7 +265,8 @@ def procesar_mensaje(eid, telefono, nombre, texto, wamid, adjunto=None, modulos=
                                                                       .order_by(Pedido.id.desc()).limit(10)).scalars()]
     ocs = [(o.numero, o.estado, o.total, o.moneda) for o in db.session.execute(select(OrdenCompra).where(OrdenCompra.empresa_id == eid, OrdenCompra.dest_whatsapp == tel)
                                                                                 .order_by(OrdenCompra.id.desc()).limit(30)).scalars()] if c.tipo == "proveedor" else []
-    respuestas, estado, eventos = BOT.responder(texto, c.tipo, c.estado or {}, catalogo_bot(eid), e.razon_social, peds, ocs, cfg.bienvenida if cfg else None)
+    catalogo = catalogo_bot(eid)
+    respuestas, estado, eventos = BOT.responder(texto, c.tipo, c.estado or {}, catalogo, e.razon_social, peds, ocs, cfg.bienvenida if cfg else None)
     c.estado = estado
     for ev in eventos:
         if "tipo_contacto" in ev: c.tipo = ev["tipo_contacto"]
@@ -271,9 +280,17 @@ def procesar_mensaje(eid, telefono, nombre, texto, wamid, adjunto=None, modulos=
             registrar("whatsapp", "PEDIDO_WHATSAPP", f"empresa={eid} {p.tipo} N°{p.numero} tel=…{tel[-4:]} total={total}")
         if "crear_presupuesto" in ev:
             from . import web_presupuestos as WP
+            from . import servicios_profit as SP
             auto = (cfg.presupuesto_modo if cfg else "automatico") == "automatico"
-            pv = WP.crear(eid, "whatsapp", dict(nombre=c.nombre or ("+" + tel), rif=c.rif, telefono=tel), ev["crear_presupuesto"]["lineas"], origen="whatsapp",
-                          estado="Enviado" if auto else "Borrador", contacto_id=c.id)
+            lineas_p, externos = ev["crear_presupuesto"]["lineas"], SP.activa(eid)
+            if externos:          # artículos de Profit Plus: precio en Bs del catálogo y alícuota de Profit
+                lineas_p = [dict(l, precio=str(catalogo[l["codigo"]][1]), alicuota=(SP.articulo(eid, l["codigo"]).alicuota if SP.articulo(eid, l["codigo"]) else "G"))
+                            for l in lineas_p if l.get("codigo") in catalogo]
+            if not lineas_p:      # los artículos salieron del catálogo de Profit entre el carrito y la solicitud
+                respuestas = ["Los productos que agregó ya no están disponibles. Escriba *1* para ver el catálogo actualizado."]
+                continue
+            pv = WP.crear(eid, "whatsapp", dict(nombre=c.nombre or ("+" + tel), rif=c.rif, telefono=tel), lineas_p, origen="whatsapp",
+                          estado="Enviado" if auto else "Borrador", contacto_id=c.id, externos=externos)
             respuestas = [WP.resumen_whatsapp(pv)] if auto else [f"📑 Recibimos su solicitud de presupuesto N° {pv.numero}. Un asesor lo revisará y se lo enviará por aquí en breve."]
         if "presupuesto_aceptado" in ev:
             from .models_compras import PresupuestoVenta
@@ -337,7 +354,7 @@ def pedido_dict(p: Pedido) -> dict:
     exento = base = iva = Decimal(0); lineas = []
     for l in p.lineas:
         prod = db.session.get(Producto, (p.empresa_id, l.get("codigo"))) if l.get("codigo") else None
-        a = prod.alicuota_iva if prod else "G"
+        a = prod.alicuota_iva if prod else (l.get("alicuota") if l.get("alicuota") in ("G", "R", "A", "E") else "G")
         monto = (Decimal(str(l.get("cantidad") or 0)) * Decimal(str(l.get("precio") or 0))).quantize(C2)
         pct = Decimal(0) if a == "E" else Decimal(str(al["G"])) + (Decimal(str(al["A"])) if a == "A" else 0) if a in ("G", "A") else Decimal(str(al["R"]))
         if a == "E": exento += monto
@@ -349,8 +366,14 @@ def pedido_dict(p: Pedido) -> dict:
             "tipo_destinatario": "cliente", "moneda": "VES", "tasa_bcv": "1", "condicion_pago": "Pago en oficina / transferencia", "lugar_entrega": e.direccion,
             "observaciones": nota or None, "creado_por": "Bot de WhatsApp", "exento": str(exento), "base": str(base), "iva": str(iva), "total": str(total), "total_bs": str(total),
             "emisor": emisor_dict(e),
-            "destinatario": {"nombre": p.nombre or ("+" + (p.telefono or "")), "rif": p.rif or "—", "direccion": None, "telefono": ("+" + p.telefono) if p.telefono else None, "email": None},
+            "destinatario": {"nombre": p.nombre or ("+" + (p.telefono or "")), "rif": p.rif or "—", "direccion": _direccion_profit(p), "telefono": ("+" + p.telefono) if p.telefono else None, "email": None},
             "lineas": lineas}
+
+
+def _direccion_profit(p: Pedido):
+    from . import servicios_profit as SP
+    cp = SP.cliente_por_rif(p.empresa_id, p.rif) if p.rif and SP.conexion(p.empresa_id) else None
+    return cp.direccion if cp else None
 
 
 def procesar_orden_pdf(eid, c: WhatsappContacto, adjunto, modulos) -> list[str]:
@@ -373,8 +396,7 @@ def procesar_orden_pdf(eid, c: WhatsappContacto, adjunto, modulos) -> list[str]:
             from . import wasender as WS
             datos, _ = WS.descargar_media(cfg.api_url, cif.descifrar(cfg.token_cifrado), adjunto["raw"], transporte=current_app.extensions.get("wasender_transporte"))
         else: datos, _ = WA.descargar_media(adjunto["id"], cif.descifrar(cfg.token_cifrado))
-        leido = LP.interpretar(LP.texto_pdf(datos), catalogo_bot(eid) | {p.codigo: (p.nombre, p.precio_venta, p.cantidad_actual) for p in
-                                                                        db.session.execute(select(Producto).where(Producto.empresa_id == eid)).scalars()})
+        leido = LP.interpretar(LP.texto_pdf(datos), catalogo_bot(eid, todos=True))
     except (LP.ErrorLectura, WA.ErrorWhatsapp) as err:
         responder(f"No pudimos leer su archivo: {err}."); return []
     if not leido["lineas"]:
@@ -384,12 +406,17 @@ def procesar_orden_pdf(eid, c: WhatsappContacto, adjunto, modulos) -> list[str]:
                               nombre=c.nombre, lineas=[], total=0, nota=("No identificado: " + "; ".join(leido["no_identificadas"]))[:2000] or "PDF sin productos reconocidos",
                               referencia_cliente=leido["referencia"], rif=leido["rif"]))
         return []
-    cat = {p.codigo: (p.nombre, p.precio_venta, p.cantidad_actual) for p in db.session.execute(select(Producto).where(Producto.empresa_id == eid)).scalars()}
-    lineas, faltan = LP.despachable(leido["lineas"], cat)
+    from . import servicios_profit as SP
+    con_profit = SP.activa(eid)            # con Profit Plus la factura fiscal se emite en Profit: el bot deja la ORDEN DE VENTA
+    lineas, faltan = LP.despachable(leido["lineas"], catalogo_bot(eid, todos=True))
+    if con_profit:
+        for l in lineas:
+            art = SP.articulo(eid, l["codigo"]); l["alicuota"] = art.alicuota if art else "G"
     rif = leido["rif"] or c.rif
     cli = db.session.execute(select(ClienteFact).where(ClienteFact.empresa_id == eid, ClienteFact.rif == rif)).scalar_one_or_none() if rif else None
+    cp = SP.cliente_por_rif(eid, rif) if con_profit else None
     if rif and not c.rif: c.rif = rif
-    nombre = (cli.razon_social if cli else None) or c.nombre or ("+" + c.telefono)
+    nombre = (cp.nombre if cp else None) or (cli.razon_social if cli else None) or c.nombre or ("+" + c.telefono)
     total = sum((Decimal(l["cantidad"]) * Decimal(l["precio"]) for l in lineas), Decimal(0)).quantize(C2)
     nota = "; ".join(([f"Sin existencia suficiente: {', '.join(faltan)}"] if faltan else []) + ([f"No identificado: {'; '.join(leido['no_identificadas'][:8])}"] if leido["no_identificadas"] else []))
     p = Pedido(empresa_id=eid, numero=_siguiente(eid, Pedido), tipo="venta", origen="whatsapp_pdf", contacto_id=c.id, telefono=c.telefono, nombre=nombre,
@@ -397,7 +424,7 @@ def procesar_orden_pdf(eid, c: WhatsappContacto, adjunto, modulos) -> list[str]:
     db.session.add(p); db.session.flush()
     registrar("whatsapp", "ORDEN_PDF_RECIBIDA", f"empresa={eid} pedido N°{p.numero} lineas={len(lineas)} faltantes={len(faltan)} ref={leido['referencia'] or ''}")
     factura = None
-    if lineas and cfg.factura_automatica and cfg.serie_id and rif and cfg.usuario_id and "facturacion" in modulos:
+    if lineas and not con_profit and cfg.factura_automatica and cfg.serie_id and rif and cfg.usuario_id and "facturacion" in modulos:
         from datetime import timedelta
         from .servicios_fact import emitir_documento, numero_completo
         db.session.commit()                       # lo recibido queda guardado aunque la factura no se pueda emitir
@@ -430,6 +457,7 @@ def procesar_orden_pdf(eid, c: WhatsappContacto, adjunto, modulos) -> list[str]:
         partes.append(f"Ver documento: {enlace_pedido(p)}")
         partes.append(cfg.instrucciones_pago or f"Puede pagar y retirar en nuestra oficina: {e.direccion or e.razon_social}" + (f" · Tel. {e.telefono}" if e.telefono else "") + ".")
         if not rif: partes.append("Para emitir su factura fiscal responda con su *RIF* (J-12345678-9).")
+        elif con_profit: partes.append("Su factura fiscal se emitirá al confirmar el despacho.")
     try:
         responder("\n\n".join(partes))
     except WA.ErrorWhatsapp as err:

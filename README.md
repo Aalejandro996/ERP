@@ -63,6 +63,36 @@ por el chat (catálogo con precios e inventario) y los proveedores confirman sus
 compra (Administración → Órdenes de compra) siguen el modelo de la factura de Gigadevs con los datos de la empresa emisora y del
 proveedor o cliente, y se envían por correo o WhatsApp.
 
+## Profit Plus (solo lectura) para el bot
+Para empresas que facturan en **Profit Plus**: el bot de WhatsApp atiende con el catálogo de Profit (artículos, existencias por
+almacén, precios de venta y clientes), actualizado cada 15 minutos. Contax **no escribe ni envía nada a Profit**; la factura fiscal
+se sigue emitiendo en Profit y el bot deja **órdenes de venta** con lo disponible (pedidos por chat, presupuestos y órdenes de compra en PDF).
+
+```
+ Red del cliente (Windows)                                 Render (Contax)
+ ┌──────────────────────────────┐   HTTPS 443, solo SALIDA  ┌───────────────────────────┐    ┌──────────────┐
+ │ SQL Server (Profit Plus)     │   foto firmada HMAC       │ erp-web /api/profit/v1/*  │◄──►│ erp-whatsapp │◄─► WhatsApp
+ │   ▲ SELECT (usuario lectura) │ ────────────────────────► │ profit_* (RLS por cliente)│    │  (OpenWA)    │    del cliente
+ │ contax_profit.exe (tarea)    │ ◄──── configuración ───── │ bot → catálogo de Profit  │    └──────────────┘
+ └──────────────────────────────┘                           └───────────────────────────┘
+```
+- **Dónde corre cada cosa:** el bot sigue en Render (`erp-web` + `erp-whatsapp`, sin servicios nuevos). El conector
+  (`conector_profit/`) se instala en el servidor de Profit Plus o en cualquier PC de esa red siempre encendido. No se abren puertos,
+  no hay VPN y SQL Server nunca se expone a Internet; la clave de la base queda solo en ese equipo.
+- **Empresa → Clientes → Profit Plus:** activa la integración, descarga `contax_profit.ini` (URL, ID y clave de su empresa), el
+  conector y el script del usuario de lectura, y elige almacenes, lista de precios (`co_precio`), si se descuenta lo comprometido y si
+  el bot ofrece solo lo que tiene existencia. El conector recibe esa configuración en cada conexión. Ve la última foto, errores y una
+  muestra del catálogo. «Renovar clave» invalida el `.ini` anterior. Pausar el conector devuelve el bot al inventario de Contax.
+- **Maestro → Bot y Profit Plus:** activa/pausa la API, URL pública para los conectores, intervalo (5–1440 min), topes de artículos y
+  clientes y la URL del instalador `.exe`. Monitoreo por empresa: estado del WhatsApp, bot activo, mensajes recibidos/enviados/fallidos
+  en 24 h, último mensaje, pedidos, última foto de Profit (⚠️ atrasado si pasa de 2 intervalos), artículos y versión del conector, y una
+  lista de alertas. Solo conteos y estados (función `maestro_monitor_bot`): el Maestro no ve conversaciones, clientes ni precios.
+- **Bot:** reconoce al cliente de Profit por su celular (`saCliente.telefonos`) o RIF; busca por nombre («harina», «BUSCAR aceite»)
+  para catálogos grandes; precios en divisas se muestran en Bs a la tasa BCV del día (sin tasa, no se ofrecen).
+- **Seguridad:** cada petición del conector va firmada (HMAC-SHA256 de fecha + SHA-256 del cuerpo, vale 5 min), el secreto se guarda
+  cifrado (Fernet), la foto se valida y reemplaza completa en una transacción (una foto inválida deja la anterior), y requiere licencia
+  con Facturación o Inventario. Tablas `profit_*` con RLS (migración `012_profit_plus.sql`). Instalación: `conector_profit/LEAME.md`.
+
 ## Presupuestos
 - **Gigadevs (consola Maestro → Presupuestos):** presupuestos con formato Contax a precios VIGENTES del catálogo (planes, combos y
   módulos), mensual o anual según elija el cliente, más servicios a la medida; envío por correo y estado (aceptado/rechazado). En la misma

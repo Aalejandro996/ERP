@@ -1,0 +1,2 @@
+pyodbc==5.2.0          # conexión a SQL Server (requiere «ODBC Driver 17/18 for SQL Server» de Microsoft)
+# Para compilar el .exe:  pip install pyinstaller==6.11.1 && pyinstaller --onefile --name contax_profit contax_profit.py

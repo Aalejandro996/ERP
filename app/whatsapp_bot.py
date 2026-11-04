@@ -11,6 +11,8 @@ from decimal import Decimal, InvalidOperation
 
 MAX_CARRITO = 30
 MAX_CATALOGO = 40
+MAX_BUSQUEDA = 15
+COD = r"[a-z0-9.\-_/#]{1,40}"
 
 
 def _n(t) -> str:
@@ -37,7 +39,25 @@ def menu(tipo, empresa) -> str:
                 "Para responder una orden: *CONFIRMAR 12* o *RECHAZAR 12 motivo*.")
     return (f"*{empresa}* · ¿Qué desea hacer?\n"
             "1️⃣ Ver catálogo\n2️⃣ Ver mi pedido\n3️⃣ Confirmar pedido\n4️⃣ Estado de mis pedidos\n5️⃣ Hablar con una persona\n6️⃣ Pedir presupuesto de lo que agregué\n"
-            "Para pedir escriba el código y la cantidad, p. ej. *A001 3*. Para quitar: *QUITAR A001*. *VACIAR* borra el pedido.")
+            "Para pedir escriba el código y la cantidad, p. ej. *A001 3*. Para buscar escriba el nombre, p. ej. *harina*. "
+            "Para quitar: *QUITAR A001*. *VACIAR* borra el pedido.")
+
+
+def _linea(c, v) -> str:
+    return f"• *{c}* {v[0]} — Bs {bs(v[1])}" + ("" if v[2] is None else (" ✅" if Decimal(str(v[2])) > 0 else " (agotado)"))
+
+
+def buscar(catalogo, consulta, n=MAX_BUSQUEDA):
+    """Artículos cuyo nombre (o código) contiene TODAS las palabras buscadas, sin importar acentos ni mayúsculas."""
+    palabras = [p for p in _n(consulta).split() if len(p) >= 2][:6]
+    if not palabras: return []
+    out = []
+    for c, v in catalogo.items():
+        nom = _n(f"{c} {v[0]}")
+        if all(p in nom for p in palabras):
+            out.append((c, v))
+            if len(out) >= n: break
+    return out
 
 
 def _carrito_texto(carrito, catalogo):
@@ -113,9 +133,9 @@ def responder(texto, tipo, estado, catalogo, empresa, pedidos=(), ordenes=(), bi
     # ------------------------------------------------------------ clientes
     if t == "1":
         if not catalogo: return ["Por ahora no tenemos productos publicados. Escriba *5* para hablar con una persona."], est, ev
-        lin = [f"• *{c}* {v[0]} — Bs {bs(v[1])}" + ("" if v[2] is None else (" ✅" if Decimal(str(v[2])) > 0 else " (agotado)"))
-               for c, v in list(catalogo.items())[:MAX_CATALOGO]]
-        return ["📦 *Catálogo*\n" + "\n".join(lin) + "\nPara pedir: código y cantidad, p. ej. *" + next(iter(catalogo)) + " 2*"], est, ev
+        lin = [_linea(c, v) for c, v in list(catalogo.items())[:MAX_CATALOGO]]
+        mas = f"\nMostrando {MAX_CATALOGO} de {len(catalogo)} productos. Escriba el nombre de lo que busca, p. ej. *harina*." if len(catalogo) > MAX_CATALOGO else ""
+        return ["📦 *Catálogo*\n" + "\n".join(lin) + mas + "\nPara pedir: código y cantidad, p. ej. *" + next(iter(catalogo)) + " 2*"], est, ev
     if t == "2":
         return [_carrito_texto(carrito, catalogo)[0]], est, ev
     if t in ("3", "confirmar", "confirmar pedido"):
@@ -140,13 +160,13 @@ def responder(texto, tipo, estado, catalogo, empresa, pedidos=(), ordenes=(), bi
         return ["Gracias, registramos su aceptación."], est, ev
     if t == "vaciar":
         return ["Su pedido quedó vacío."], {k: v for k, v in est.items() if k != "carrito"}, ev
-    m = re.fullmatch(r"(?:quitar|eliminar|borrar)\s+([a-z0-9.\-_]{1,40})", t)
+    m = re.fullmatch(r"(?:quitar|eliminar|borrar)\s+(" + COD + ")", t)
     if m:
         cod = next((c for c in carrito if c.lower() == m.group(1)), None)
         if cod is None: return [f"{m.group(1).upper()} no está en su pedido."], est, ev
         carrito.pop(cod)
         return [f"Quitado {cod}.\n" + _carrito_texto(carrito, catalogo)[0]], {**est, "carrito": carrito}, ev
-    m = re.fullmatch(r"(?:pedir\s+)?([a-z0-9.\-_]{1,40})\s*(?:x|\*|×)?\s*(\d+(?:[.,]\d+)?)", t)
+    m = re.fullmatch(r"(?:pedir\s+)?(" + COD + r")\s*(?:x|\*|×)?\s*(\d+(?:[.,]\d+)?)", t)
     if m:
         cod = next((c for c in catalogo if c.lower() == m.group(1)), None)
         cant = _dec(m.group(2))
@@ -158,4 +178,12 @@ def responder(texto, tipo, estado, catalogo, empresa, pedidos=(), ordenes=(), bi
         if cod not in carrito and len(carrito) >= MAX_CARRITO: return ["Su pedido alcanzó el máximo de productos."], est, ev
         carrito[cod] = format(cant.normalize(), "f")
         return [f"Agregado: {cod} {catalogo[cod][0]} × {carrito[cod]}.\nEscriba *2* para ver su pedido o *3* para confirmarlo."], {**est, "carrito": carrito}, ev
+    m = re.fullmatch(r"(?:buscar|busco|tienen|hay|precio(?: de)?)\s+(.{2,60})", t)
+    consulta = m.group(1) if m else (t if 3 <= len(t) <= 60 and re.search(r"[a-z]{3}", t) else None)
+    if consulta:
+        hall = buscar(catalogo, consulta)
+        if hall:
+            return [f"🔎 *{consulta}*\n" + "\n".join(_linea(c, v) for c, v in hall) + ("\n(hay más: escriba una palabra adicional para afinar)" if len(hall) >= MAX_BUSQUEDA else "")
+                    + f"\nPara pedir: código y cantidad, p. ej. *{hall[0][0]} 2*"], est, ev
+        if m: return [f"No encontramos productos con «{consulta}». Pruebe con otra palabra o escriba *1* para ver el catálogo."], est, ev
     return ["No entendí su mensaje. Escriba *MENÚ* para ver las opciones."], est, ev

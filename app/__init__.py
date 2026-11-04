@@ -52,7 +52,7 @@ def create_app(config_obj=None):
     app.extensions["admin_licencias"] = (lambda: ClienteAdmin(app.config["LICENSE_ADMIN_URL"], app.config["LICENSE_ADMIN_SECRET"])) \
         if app.config.get("LICENSE_ADMIN_SECRET") else None
 
-    from . import models, models2, models_fact, models_compras  # noqa: F401  (registra tablas)
+    from . import models, models2, models_fact, models_compras, models_profit  # noqa: F401  (registra tablas)
     from .cifrado import CifradorCampos
     app.extensions["cifrador"] = CifradorCampos(app.config["FIELD_ENCRYPTION_KEY"])
 

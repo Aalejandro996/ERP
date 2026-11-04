@@ -137,3 +137,14 @@ contrastarse con la normativa vigente; el ajuste por inflación sigue siendo sim
 Binance Pay se probó con un simulador de su API (firma y verificación reales); falta probarlo con credenciales de comercio
 reales. El remitente `aalejandro996@icloud.com` en Brevo puede ir a spam: iCloud publica DMARC y Brevo no puede firmar por
 ese dominio; se recomienda un remitente de un dominio propio de Gigadevs autenticado en Brevo (SPF/DKIM).
+
+## 7. Integración con Profit Plus (solo lectura)
+- **Topología:** conector en la red del cliente → HTTPS de salida → `erp-web` (`/api/profit/v1/ping|sync`). No hay conexiones entrantes
+  a la red del cliente ni credenciales de SQL Server en Contax.
+- **Autenticación:** `X-Contax-Conector` (id público) → `profit_destino()` (SECURITY DEFINER) da empresa y organización; luego RLS.
+  Firma `HMAC-SHA256(secreto, "<unix>." + sha256(cuerpo))`, ventana de 5 min; licencia con Facturación o Inventario (402 si no).
+- **Datos:** `profit_articulos`, `profit_clientes`, `profit_conexion`, `profit_sincronizaciones` (últimas 200), todas con RLS.
+  La foto reemplaza la anterior en una transacción; es idempotente, por eso repetirla dentro de la ventana no causa daño.
+- **Lectura en Profit 2K12:** `saArticulo`, `saStockAlmacen` (ACT − COM), `saArtPrecio` (lista vigente), `saTipoPrecio`, `saAlmacen`,
+  `saCliente`. Usuario SQL con `SELECT` sobre esas 6 tablas y `DENY` de escritura. Otras versiones: sección `[consultas]` del `.ini`.
+- **Factura:** con Profit activo el bot nunca emite factura en Contax (la fiscal es la de Profit): deja orden de venta.

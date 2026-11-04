@@ -29,7 +29,9 @@ h = lambda v: campo("accion", "", "hidden", valor=v)
 
 
 # ---------------------------------------------------------------- servicio
-def crear(eid, autor, cliente: dict, lineas: list[dict], origen="manual", estado="Borrador", contacto_id=None, validez=15, nota=None) -> PresupuestoVenta:
+def crear(eid, autor, cliente: dict, lineas: list[dict], origen="manual", estado="Borrador", contacto_id=None, validez=15, nota=None,
+          externos=False) -> PresupuestoVenta:
+    """`externos`: los códigos vienen de otro sistema (Profit Plus) y no existen en el inventario de Contax; cada línea trae su precio y alícuota."""
     from .servicios_fact import alicuotas_vigentes
     if not (cliente.get("nombre") or "").strip(): raise ValueError("Indique el cliente")
     hoy = hoy_ve()
@@ -40,7 +42,7 @@ def crear(eid, autor, cliente: dict, lineas: list[dict], origen="manual", estado
     for l in lineas:
         cod = (l.get("codigo") or "").strip() or None
         prod = db.session.get(Producto, (eid, cod)) if cod else None
-        if cod and prod is None: raise ValueError(f"El producto {cod} no existe")
+        if cod and prod is None and not (externos and str(l.get("precio") or "").strip()): raise ValueError(f"El producto {cod} no existe")
         desc = (l.get("descripcion") or "").strip() or (prod.nombre if prod else "")
         if not desc: continue
         cant = a_decimal(l.get("cantidad") or 1)

@@ -38,6 +38,7 @@
     <a href="{{ url_for('web.maestro_contratos') }}" class="{{ 'activo' if ep in ('web.maestro_contratos', 'web.maestro_contrato_ver') }}">Contratos</a>
     <a href="{{ url_for('web.maestro_facturas') }}" class="{{ 'activo' if ep in ('web.maestro_facturas', 'web.maestro_factura_ver') }}">Facturación Gigadevs</a>
     <a href="{{ url_for('web.maestro_whatsapp') }}" class="{{ 'activo' if ep == 'web.maestro_whatsapp' }}">WhatsApp (OpenWA)</a>
+    <a href="{{ url_for('web.maestro_bot') }}" class="{{ 'activo' if ep == 'web.maestro_bot' }}">Bot y Profit Plus</a>
     <a href="{{ url_for('web.maestro_bd') }}" class="{{ 'activo' if ep == 'web.maestro_bd' }}">Base de datos</a>
     <a href="{{ url_for('web.admin_fiscal') }}" class="{{ 'activo' if ep == 'web.admin_fiscal' }}">Parámetros legales</a>
     <a href="{{ url_for('web.plataforma_bitacora') }}" class="{{ 'activo' if ep == 'web.plataforma_bitacora' }}">Bitácora</a></nav>

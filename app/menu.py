@@ -43,7 +43,8 @@ MENU = [
         ("web.proveedores", "🚚", "Proveedores", "compras.ver"),
         ("web.inventario", "📦", "Inventario", "inventario.ver"),
         ("web.pedidos", "💬", "Pedidos por WhatsApp", "whatsapp.ver"),
-        ("web.whatsapp_config", "🤖", "Bot de WhatsApp", "whatsapp.configurar")]),
+        ("web.whatsapp_config", "🤖", "Bot de WhatsApp", "whatsapp.configurar"),
+        ("web.profit_config", "🔗", "Profit Plus", "whatsapp.configurar")]),
     ("Auditoría", [
         ("web.auditoria", "🕵️", "Auditoría financiera", "auditoria.ver")]),
     ("Empresa", [
@@ -59,7 +60,7 @@ PESTANAS = [
     ["web.cxc", "web.cxp", "web.libro_compras"],
     ["web.ordenes_compra", "web.proveedores"],
     ["web.fiscal_islr", "web.fiscal_retenciones", "web.fiscal_libros"],
-    ["web.pedidos", "web.whatsapp_config"],
+    ["web.pedidos", "web.whatsapp_config", "web.profit_config"],
     ["web.periodos", "web.cuadre"],
     ["web.empresa_datos", "web.migracion"],
     ["web.presupuestos", "web.presupuesto_nuevo"],
@@ -81,7 +82,7 @@ AREAS = [
                            ("Fiscal Venezuela", None), ("Auditoría", None)]),
     # la conciliación bancaria (módulo administrativo) va en el orden de IQ_Contable y también aquí, por si la contabilidad está apagada
     ("Administración", "💼", [("Administración", ("web.cxc", "web.cxp", "web.libro_compras", "web.bancos"))]),
-    ("Clientes", "👥", [("Facturación", None), ("WhatsApp", ("web.pedidos", "web.whatsapp_config"))]),
+    ("Clientes", "👥", [("Facturación", None), ("WhatsApp", ("web.pedidos", "web.whatsapp_config", "web.profit_config"))]),
     ("Inventario", "📦", [("Inventario", ("web.inventario",)), ("Compras", ("web.ordenes_compra", "web.proveedores"))]),
     ("Empresa", "🏢", [("Empresa", None)]),
 ]
