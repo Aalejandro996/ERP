@@ -329,22 +329,50 @@ def maestro_licencias():
     return pagina("Licencias", None, secs)
 
 
-# Licencia de Gigadevs en Contax: pago único, sin vencimiento práctico (10 años, el máximo del servidor, renovable sin costo).
-DIAS_PAGO_UNICO = 3650
+# Licencia de Gigadevs en Contax: sin cobro (es quien lleva la contabilidad de Gigadevs). Vigencia por defecto: 5 años.
+ANIOS_GIGADEVS = 5
 
 
 def _usuario_gigadevs():
-    """(usuario, organización) responsables de Gigadevs en Contax según GIGADEVS_USUARIO, o (None, None) si falta."""
+    """(administrador, organización) de Gigadevs en Contax según GIGADEVS_USUARIO: usuario, correo o RIF de la organización."""
     ref = (current_app.config.get("GIGADEVS_USUARIO") or "").strip()
     if not ref: return None, None
+    org = db.session.execute(select(Organizacion).where(Organizacion.rif == ref.upper())).scalar_one_or_none()
+    if org is not None:
+        u = db.session.execute(select(Usuario).where(Usuario.organizacion_id == org.id, Usuario.rol == "Administrador")
+                               .order_by(Usuario.id)).scalars().first()
+        return u, org
     u = db.session.execute(select(Usuario).where((Usuario.username == ref) | (Usuario.email == ref.lower()))).scalar_one_or_none()
     if u is None or u.organizacion_id is None: return u, None
     return u, db.session.get(Organizacion, u.organizacion_id)
 
 
+def _enviar_configuracion(u, org, correo_nuevo):
+    """Enlace para configurar la empresa en Contax. Si el correo cambia, el mismo enlace lo confirma: el cambio solo se aplica
+    cuando el dueño del correo nuevo lo abre (un correo mal escrito nunca deja la cuenta sin acceso)."""
+    from . import correo
+    from .auth.routes import crear_token
+    if correo_nuevo != (u.email or "").lower():
+        url = correo.url_absoluta(url_for("auth.correo_confirmar", token=crear_token(u, "verificar", correo_nuevo)))
+        boton, validez = ("Confirmar correo y configurar Contax", url), "24 horas, un solo uso"
+    else:
+        boton, validez = ("Entrar a Contax", correo.url_absoluta(url_for("auth.login"))), "—"
+    correo.enviar(correo_nuevo, "Configure la empresa de Gigadevs en Contax",
+                  f"Estimado(a) {u.username}:\n\n"
+                  f"Contax llevará la contabilidad, la administración y la parte fiscal de {org.nombre}. Le asignamos una licencia "
+                  f"All in One por {ANIOS_GIGADEVS} años, sin costo. La clave le llega en un correo aparte.\n\n"
+                  "1. Pulse el botón para confirmar este correo y entrar.\n\n"
+                  "2. En Organización → Licencia pegue la clave de licencia y pulse Activar.\n\n"
+                  "3. El tutorial de configuración le guiará para crear la empresa: datos fiscales, logo, módulos y plan de cuentas.",
+                  titulo="Bienvenido(a) a Contax", boton=boton,
+                  filas=[("Usuario", u.username), ("Organización", f"{org.nombre} ({org.rif})"), ("Licencia", f"All in One · {ANIOS_GIGADEVS} años"),
+                         ("Validez del enlace", validez)],
+                  nota="Si usted no esperaba este mensaje, ignórelo: no se cambiará ningún dato de la cuenta.")
+
+
 @ruta("/plataforma/gigadevs", "plataforma", ("GET", "POST"))
 def maestro_gigadevs():
-    """Contax lleva la contabilidad, la administración y la parte fiscal de Gigadevs con una licencia All in One de pago único."""
+    """Contax lleva la contabilidad, la administración y la parte fiscal de Gigadevs con una licencia All in One sin cobro."""
     from .licensing.admin import ErrorAdmin
     from .planes import MODULOS
     ref = (current_app.config.get("GIGADEVS_USUARIO") or "").strip()
@@ -354,40 +382,61 @@ def maestro_gigadevs():
         try: lics = _admin().licencias(org=str(org.id))
         except (ErrorAdmin, ValueError, OSError) as e: flash(str(e)[:200])
     vigente = next((l for l in lics if l["plan"] == "ALL_IN_ONE" and l["estado"] == "activa" and l["vence_en"] > time.time()), None)
+    correo_sugerido = (current_app.config.get("GIGADEVS_CORREO") or (u.email if u else "") or "").strip().lower()
     if request.method == "POST":
+        a, autor = F.get("accion"), g.usuario.username
         try:
-            if F.get("accion") != "emitir": raise ValueError("Acción inválida")
-            if org is None: raise ValueError("Primero configure GIGADEVS_USUARIO con el usuario que llevará Gigadevs en Contax")
-            if vigente: raise ValueError(f"Gigadevs ya tiene su licencia All in One vigente (#{vigente['id']})")
-            r = _admin().crear_licencia(cliente=org.nombre, correo=(u.email or org.correo_contacto or "").strip().lower(), organizacion_ref=str(org.id),
-                                        plan="ALL_IN_ONE", dias=DIAS_PAGO_UNICO, max_usuarios=int(F.get("usuarios") or 10), max_empresas=int(F.get("empresas") or 5),
-                                        max_equipos=int(F.get("equipos") or 10), max_instancias=int(F.get("equipos") or 10), autor=g.usuario.username)
-            registrar(g.usuario.username, "LICENCIA_GIGADEVS", f"licencia={r['id']} org={org.rif} plan=ALL_IN_ONE pago_unico", org=None); db.session.commit()
-            flash("Licencia All in One de pago único emitida para Gigadevs. La clave se envió por correo al usuario responsable.")
+            if org is None or u is None: raise ValueError("Primero configure GIGADEVS_USUARIO con el usuario o el RIF de Gigadevs en Contax")
+            correo_dest = (F.get("correo") or correo_sugerido).strip().lower()
+            if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[a-z]{2,}", correo_dest): raise ValueError("Correo inválido")
+            if db.session.execute(select(Usuario.id).where(Usuario.email == correo_dest, Usuario.id != u.id)).first():
+                raise ValueError("Ese correo ya pertenece a otro usuario")
+            if a == "activar":
+                if vigente: raise ValueError(f"Gigadevs ya tiene su licencia All in One vigente (#{vigente['id']})")
+                anios = max(1, min(int(F.get("anios") or ANIOS_GIGADEVS), 10))
+                r = _admin().crear_licencia(cliente=org.nombre, correo=correo_dest, organizacion_ref=str(org.id), plan="ALL_IN_ONE", dias=anios * 365,
+                                            max_usuarios=int(F.get("usuarios") or 10), max_empresas=int(F.get("empresas") or 5),
+                                            max_equipos=int(F.get("equipos") or 10), max_instancias=int(F.get("equipos") or 10), autor=autor)
+                org.correo_contacto = correo_dest
+                _enviar_configuracion(u, org, correo_dest)
+                registrar(autor, "LICENCIA_GIGADEVS", f"licencia={r['id']} org={org.rif} plan=ALL_IN_ONE años={anios} sin_cobro correo={correo_dest}", org=None)
+                db.session.commit()
+                flash(f"Licencia All in One por {anios} años emitida sin cobro. Se enviaron a {correo_dest} la clave y el enlace para configurar la empresa.")
+            elif a == "reenviar":
+                _enviar_configuracion(u, org, correo_dest)
+                registrar(autor, "GIGADEVS_ENLACE_CONFIGURACION", f"org={org.rif} correo={correo_dest}", org=None); db.session.commit()
+                flash(f"Enlace de configuración reenviado a {correo_dest}.")
+            else: raise ValueError("Acción inválida")
         except (ErrorAdmin, ValueError, OSError) as e:
             db.session.rollback(); flash(str(e)[:250])
         return redirect(url_for("web.maestro_gigadevs"))
     if not ref: estado = "Pendiente: falta el usuario"
-    elif u is None: estado = f"El usuario «{ref}» no existe todavía"
-    elif org is None: estado = f"«{ref}» no pertenece a una organización"
+    elif org is None: estado = f"No se encontró «{ref}» o no pertenece a una organización"
+    elif u is None: estado = f"{org.nombre} no tiene administrador"
     else: estado = f"{u.username} · {org.nombre} ({org.rif})"
     secs = [dict(kpis=[("Usuario responsable", u.username if u else "Pendiente"), ("Organización", org.nombre if org else "—"),
-                       ("Licencia", "All in One · pago único" if vigente else "Sin emitir"), ("Vence", _fecha(vigente["vence_en"]) if vigente else "—")]),
+                       ("Licencia", "All in One · sin cobro" if vigente else "Sin emitir"), ("Vence", _fecha(vigente["vence_en"]) if vigente else "—")]),
             dict(titulo="Gigadevs dentro de Contax", clase="maestro-hero",
                  nota="Contax lleva la contabilidad, la administración, la parte fiscal y la normativa legal de Gigadevs Corp con una licencia "
-                      "All in One de pago único. CriteriSeg, Enlace MIT y Quincena VE emiten sus propios presupuestos, contratos y facturas con el "
+                      "All in One sin cobro. CriteriSeg, Enlace MIT y Quincena VE emiten sus propios presupuestos, contratos y facturas con el "
                       "emisor, la numeración fiscal y las cláusulas legales de Contax; esas operaciones se llevarán a la contabilidad de esta organización."),
-            dict(titulo="Vínculo", clase="maestro-contexto", pares=[("Estado", estado), ("Variable", "GIGADEVS_USUARIO (servicio erp-web en Render)"),
-                 ("Módulos de la licencia", ", ".join(MODULOS.values())), ("Modalidad", f"Pago único · {DIAS_PAGO_UNICO // 365} años, renovable sin costo")])]
-    if org is not None and not vigente:
-        secs.append(dict(titulo="Emitir licencia All in One de pago único", clase="maestro-form",
-                         nota="La clave se envía una sola vez al correo del usuario responsable. No genera factura: es la licencia interna de Gigadevs.",
-                         form=dict(action=request.path, boton="Emitir licencia de Gigadevs", campos=[h("emitir"),
+            dict(titulo="Vínculo", clase="maestro-contexto", pares=[("Estado", estado), ("Correo actual", (u.email if u else None) or "—"),
+                 ("Variable", "GIGADEVS_USUARIO (servicio erp-web en Render)"), ("Módulos de la licencia", ", ".join(MODULOS.values()))])]
+    if org is not None and u is not None and not vigente:
+        secs.append(dict(titulo="Activar Gigadevs en Contax", clase="maestro-form", abierto=True,
+                         nota="Emite la licencia All in One sin cobro (no genera factura), envía la clave y el enlace para configurar la empresa. "
+                              "Si cambia el correo, el enlace lo confirma: el cambio se aplica cuando se abre desde el correo nuevo.",
+                         form=dict(action=request.path, boton="Activar: licencia + enlace de configuración", campos=[h("activar"),
+                             campo("correo", "Correo del responsable", "email", valor=correo_sugerido),
+                             campo("anios", "Vigencia (años)", "number", valor=ANIOS_GIGADEVS),
                              campo("usuarios", "Usuarios", "number", valor=10), campo("empresas", "Empresas", "number", valor=5),
                              campo("equipos", "Equipos", "number", valor=10)])))
+    elif vigente:
+        secs.append(dict(titulo="Reenviar enlace de configuración", clase="maestro-form",
+                         form=dict(action=request.path, boton="Reenviar enlace", campos=[h("reenviar"), campo("correo", "Correo", "email", valor=correo_sugerido)])))
     elif org is None:
-        secs.append(dict(titulo="Qué falta", nota="Cree (o invite) al usuario que manejará Gigadevs en Contax y cargue su nombre de usuario o correo en la "
-                         "variable GIGADEVS_USUARIO. Al volver aquí podrá emitir la licencia All in One de pago único."))
+        secs.append(dict(titulo="Qué falta", nota="Cargue en la variable GIGADEVS_USUARIO el usuario, el correo o el RIF de la organización que "
+                         "llevará Gigadevs en Contax. Al volver aquí podrá activar su licencia."))
     if lics:
         secs.append(dict(titulo="Licencias de la organización", tabla=dict(cols=["#", "Plan", "Estado", "Usuarios", "Empresas", "Vence"], num=[3, 4], filas=[
             dict(cells=[l["id"], nombre_plan({"plan": l["plan"]}) if l["plan"] else "Legado", l["estado"], l["max_usuarios"], l["max_empresas"], _fecha(l["vence_en"])])

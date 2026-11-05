@@ -890,6 +890,21 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
                      follow_redirects=True).get_data(as_text=True).count("se administran en Contax") == 1
     giga = root.get("/plataforma/gigadevs").get_data(as_text=True)
     assert "Gigadevs dentro de Contax" in giga and "GIGADEVS_USUARIO" in giga and "Cobros y precios" in giga
+    # Gigadevs en Contax: su organización recibe la licencia All in One sin cobro y el enlace para configurar la empresa;
+    # el correo nuevo solo se aplica cuando se confirma desde ese buzón
+    app.config["GIGADEVS_USUARIO"] = "J-77777777-7"
+    n = len(entorno["correos_lic"])
+    r = root.post("/plataforma/gigadevs", data={"accion": "activar", "correo": "giga@gigadevs.test", "anios": "5", "usuarios": "10", "empresas": "5", "equipos": "10"},
+                  follow_redirects=True)
+    assert any("All in One por 5 años emitida sin cobro" in m for m in alerta(r)), alerta(r)
+    assert entorno["correos_lic"][-1][0] == "giga@gigadevs.test" and len(entorno["correos_lic"]) == n + 1      # la clave
+    assert uno("SELECT count(*) FROM tokens_correo t JOIN usuarios u ON u.id = t.usuario_id JOIN organizaciones o ON o.id = u.organizacion_id "
+               "WHERE o.rif='J-77777777-7' AND t.proposito='verificar' AND t.email='giga@gigadevs.test' AND t.usado_en IS NULL") == 1
+    assert uno("SELECT correo_contacto FROM organizaciones WHERE rif='J-77777777-7'") == "giga@gigadevs.test"
+    giga = root.get("/plataforma/gigadevs").get_data(as_text=True)
+    assert "All in One · sin cobro" in giga and "Reenviar enlace" in giga
+    assert any("ya tiene su licencia" in m for m in alerta(root.post("/plataforma/gigadevs", data={"accion": "activar", "correo": "giga@gigadevs.test"}, follow_redirects=True)))
+    app.config["GIGADEVS_USUARIO"] = ""
     # portada pública de Contax: funciones, planes con los precios vigentes del catálogo y enlaces legales
     portada = _cliente(app).get("/").get_data(as_text=True)
     for txt in ("Factura, lleva tu contabilidad y vende por WhatsApp", "Bot de WhatsApp", "Planes", "All in One", "$69", "Iniciar sesión", "/legal/terminos"):
