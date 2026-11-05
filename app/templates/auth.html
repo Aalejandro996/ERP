@@ -34,9 +34,12 @@
   <form method="post">{{ csrf }}
     <label>Contraseña<input name="nueva" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label>
     <label>Repita la contraseña<input name="repetir" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label>
+    {% if vista == 'restablecer' and pide_mfa %}<fieldset class="auth-confirmar"><legend>Confirme que es usted</legend>
+      <p class="peq">Escriba el código de 6 dígitos de su aplicación autenticadora (o uno de sus códigos de respaldo). Sin él, la contraseña no cambia.</p>
+      <label>Código de verificación<input name="codigo" required inputmode="numeric" autocomplete="one-time-code" maxlength="11" placeholder="123456"></label></fieldset>{% endif %}
     {% if vista == 'invitacion' %}<p class="peq">Al activar su cuenta acepta los <a href="{{ url_for('web.legal', pagina='terminos') }}" target="_blank">Términos y condiciones</a>,
     la <a href="{{ url_for('web.legal', pagina='privacidad') }}" target="_blank">Política de privacidad</a> y la de <a href="{{ url_for('web.legal', pagina='cookies') }}" target="_blank">cookies</a>.</p>{% endif %}
-    <button>Guardar</button></form>
+    <button>{{ 'Cambiar contraseña' if vista == 'restablecer' else 'Guardar' }}</button></form>
 
 {% elif vista == 'recuperar' %}
   <h2>Recuperar acceso</h2><p class="peq">Le enviaremos un enlace de un solo uso (válido 30 minutos) a su correo verificado.</p>

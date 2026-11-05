@@ -219,7 +219,7 @@ def test_flujo_completo(entorno):
     assert a.post(inv_a, data={"nueva": CLAVE, "repetir": CLAVE}).status_code == 302
     assert a.post(inv_a, data={"nueva": CLAVE, "repetir": CLAVE}).status_code == 302                # enlace de un solo uso → redirige a login
     b.post(inv_b, data={"nueva": CLAVE + "b", "repetir": CLAVE + "b"})
-    _login_total(a, "adminA", CLAVE)
+    sec_a = _login_total(a, "adminA", CLAVE)
     sec_b = _login_total(b, "b@beta.test", CLAVE + "b")                                            # login con correo
     # Límite de equipos: B ya usa su único equipo; un segundo navegador queda fuera aunque la clave y el MFA sean correctos
     b2 = _cliente(app)
@@ -477,12 +477,22 @@ def test_flujo_completo(entorno):
     with owner.connect() as c:
         assert c.execute(text("SELECT count(*) FROM equipos")).scalar() == 2
 
-    # --- Recuperación de contraseña: enlace por correo y cierre de todas las sesiones ---
+    # --- Recuperación de contraseña: enlace por correo, confirmación con MFA y cierre de todas las sesiones ---
+    from app import totp
+    import time as _tr
     otro = _cliente(app)
     otro.post("/recuperar", data={"email": "a@alfa.test"})
     enlace = _ultimo_enlace("recuperar")
-    assert otro.post(enlace, data={"nueva": CLAVE, "repetir": CLAVE}).status_code == 200            # no reutilizar
-    assert otro.post(enlace, data={"nueva": "Otra-Clave#2026z", "repetir": "Otra-Clave#2026z"}).status_code == 302
+    form = otro.get(enlace).get_data(as_text=True)
+    assert "Confirme que es usted" in form and 'name="codigo"' in form
+    assert otro.post(enlace, data={"nueva": CLAVE, "repetir": CLAVE, "codigo": totp.codigo(sec_a, _tr.time() + 30)}).status_code == 200   # no reutilizar
+    r = otro.post(enlace, data={"nueva": "Otra-Clave#2026z", "repetir": "Otra-Clave#2026z", "codigo": "000000"}, follow_redirects=True)
+    assert "La contraseña no se cambió" in r.get_data(as_text=True)                                 # solo el enlace del correo no basta
+    assert dueño("SELECT count(*) FROM audit_log WHERE accion='RECUPERACION_MFA_FALLIDO'") == 1
+    r = otro.post(enlace, data={"nueva": "Otra-Clave#2026z", "repetir": "Otra-Clave#2026z", "codigo": totp.codigo(sec_a, _tr.time() + 30)})
+    assert r.status_code == 302 and r.headers["Location"].endswith("/login")
+    assert dueño("SELECT detalles FROM audit_log WHERE accion='CLAVE_RESTABLECIDA_CORREO' ORDER BY id DESC LIMIT 1") == "confirmada con totp"
+    assert otro.get(enlace, follow_redirects=True).request.path == "/recuperar"                    # enlace de un solo uso
     assert a.get("/").headers["Location"].endswith("/login")                                        # sesión anterior invalidada
     r = otro.post("/recuperar", data={"email": "nadie@x.test"}); assert r.status_code == 302         # respuesta genérica
 

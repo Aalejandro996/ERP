@@ -645,3 +645,6 @@ button[aria-busy="true"]::before,.btn[aria-busy="true"]::before,.qr-espera::befo
 @media(max-width:820px){.sel-grid{grid-template-columns:1fr}.sel-resumen{width:100%}.sel-resumen div{flex:1;min-width:0}
   .sel-central-principal{flex-wrap:wrap}.sel-abrir{margin-left:0;width:100%;justify-content:center}}
 @media(prefers-reduced-motion:reduce){.sel-tarjeta{transition:none}.sel-tarjeta:hover{transform:none}}
+
+.auth-confirmar{margin:6px 0 14px;padding:12px 14px;border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:10px;background:var(--accent-soft)}
+.auth-confirmar legend{padding:0 6px;font-weight:700;color:var(--ink)}
