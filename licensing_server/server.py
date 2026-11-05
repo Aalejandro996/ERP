@@ -153,6 +153,11 @@ PRODUCTOS = {
                       "planes": [("organizacion", "Licencia por organización", "Cotizar")], "modulos": [
                           ("sesiones", "Sesiones y conexiones"), ("envio_mensajes", "Envío de mensajes"),
                           ("historial", "Historial de mensajes"), ("incidencias", "Incidencias y seguimiento")]},
+    "surtia": {"nombre": "Surtia", "tipo_sujeto": "organizacion", "entornos": ["nube"], "primario": "#0B2530", "acento": "#16C79A",
+               "planes": [("empresa", "Licencia por empresa", "Cotizar")], "modulos": [
+                   ("bot_pedidos", "Bot de pedidos por WhatsApp"), ("presupuestos", "Presupuestos"),
+                   ("conversaciones", "Conversaciones y atención"), ("ordenes_compra", "Lectura de órdenes de compra (PDF)"),
+                   ("integracion", "Integración con el sistema administrativo"), ("avisos", "Avisos por correo")]},
     "control_financiero": {"nombre": "Quincena VE", "tipo_sujeto": "cuenta", "entornos": ["nube"], "primario": "#0B6B4D", "acento": "#4FC79C",
                             "planes": [("individual", "Cuenta individual", "Cotizar")], "modulos": [
                                 ("inicio", "Panel de finanzas"), ("movimientos", "Ingresos y gastos"),
@@ -1508,7 +1513,8 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         if not f.get("cliente_correo"): raise ValueError("La factura no tiene correo del cliente")
         intro = intro or (f"Estimado(a) {f['cliente_nombre']}: adjuntamos la factura de su compra. Su clave de licencia llegó en un correo aparte."
                           if f.get("orden_ref") else f"Estimado(a) {f['cliente_nombre']}: le enviamos su factura.")
-        correo(f["cliente_correo"], f"Factura N° {f['numero_completo']} · Contax", fx_texto(f, intro), html=pc.factura_html(f, cfg.get("url_erp") or "", intro))
+        correo(f["cliente_correo"], f"Factura N° {f['numero_completo']} · {pc.MARCAS.get(f.get('sistema') or 'contax', pc.MARCAS['contax'])[0]}",
+               fx_texto(f, intro), html=pc.factura_html(f, cfg.get("url_erp") or "", intro))
         with st.eng.begin() as c:
             c.execute(update(fx.facturas).where(fx.facturas.c.id == fid).values(correo_enviado_en=reloj()))
         return f
@@ -1696,8 +1702,10 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
                     f"Gigadevs Corp le envía el contrato {ct['numero_txt']} de los servicios de {ct['sistema_nombre']} aceptados en el presupuesto {ct['presupuesto_txt']}.",
                     "Puede leerlo completo y aceptarlo electrónicamente con su nombre y cédula en el siguiente enlace (válido 30 días). La aceptación "
                     "tiene plena validez conforme al Decreto con Fuerza de Ley sobre Mensajes de Datos y Firmas Electrónicas."]
-        correo(destino, titulo + " · " + ct["sistema_nombre"].rstrip("®"), pc.texto(titulo, parrafos, ("Leer y firmar el contrato", url)),
-               html=pc.html(titulo, parrafos, cfg.get("url_erp") or "", "Contax", "Tu empresa en orden. Tu fisco al día.", ("Leer y firmar el contrato", url)))
+        correo(destino, titulo + " · " + ct["sistema_nombre"].rstrip("®"),
+               pc.texto(titulo, parrafos, ("Leer y firmar el contrato", url), nombre=ct["sistema_nombre"].rstrip("®")),
+               html=pc.html(titulo, parrafos, cfg.get("url_erp") or "", "Contax", "Tu empresa en orden. Tu fisco al día.", ("Leer y firmar el contrato", url),
+                            sistema=ct.get("sistema")))
         with st.eng.begin() as c:
             c.execute(update(px.contratos).where(px.contratos.c.id == cid, px.contratos.c.estado == "Borrador").values(estado="Enviado", enviado_en=reloj()))
         return jsonify(ok=True)

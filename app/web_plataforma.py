@@ -448,7 +448,7 @@ def maestro_gigadevs():
 def maestro_suscripciones():
     from .licensing.admin import ErrorAdmin
     producto_sel = (request.args.get("producto") or "criteriseg").strip()
-    if producto_sel not in {"criteriseg", "bot_whatsapp", "control_financiero"}:
+    if producto_sel not in {"criteriseg", "bot_whatsapp", "control_financiero", "surtia"}:
         producto_sel = "criteriseg"
     action_url = url_for("web.maestro_suscripciones", producto=producto_sel)
     if request.method == "POST":
@@ -493,8 +493,8 @@ def maestro_suscripciones():
         prods, todas_subs = [], []
     producto = next((p for p in prods if p["id"] == producto_sel), None)
     if producto is None:
-        producto = {"id": producto_sel, "nombre": {"criteriseg": "CriteriSeg", "bot_whatsapp": "Enlace MIT", "control_financiero": "Quincena VE"}[producto_sel],
-                    "tipo_sujeto": "cuenta" if producto_sel == "control_financiero" else "organizacion", "entornos": ["nube"] if producto_sel == "control_financiero" else ["nube", "cerrado"],
+        producto = {"id": producto_sel, "nombre": {"criteriseg": "CriteriSeg", "bot_whatsapp": "Enlace MIT", "control_financiero": "Quincena VE", "surtia": "Surtia"}[producto_sel],
+                    "tipo_sujeto": "cuenta" if producto_sel == "control_financiero" else "organizacion", "entornos": ["nube"] if producto_sel in ("control_financiero", "surtia") else ["nube", "cerrado"],
                     "primario": "#0B6B4D" if producto_sel == "control_financiero" else "#17365D", "acento": "#4FC79C" if producto_sel == "control_financiero" else "#2F6FAD", "planes": []}
     subs = [s for s in todas_subs if s["producto_id"] == producto_sel]
     opciones_plan = [(plan["codigo"], f"{plan['nombre']} · {plan['precio_estado']}") for plan in producto["planes"] if plan["activo"]]
@@ -505,10 +505,13 @@ def maestro_suscripciones():
         "criteriseg": "Auditoría y cumplimiento · licencias por organización · nube o entorno privado",
         "bot_whatsapp": "Mensajería para organizaciones · opción de instalación cerrada · cotización por organización",
         "control_financiero": "Finanzas personales por quincena · cuenta individual · titular con correo verificado",
+        "surtia": "Pedidos por WhatsApp conectados al sistema administrativo · licencia por empresa · nube",
     }
     politicas = {
         "criteriseg": "CriteriSeg sustituye a SICAS en el catálogo comercial. Cada organización tiene su propia suscripción; las instalaciones cerradas requieren redes privadas autorizadas y un archivo de licencia vigente.",
         "bot_whatsapp": "Cada organización tiene su licencia. En entorno cerrado, el servicio debe quedar en una red privada o VPN y las IP de ingreso deben restringirse en el firewall o proxy de la organización.",
+        "surtia": "Cada empresa tiene su licencia: su sujeto es el RIF con que está registrada en Surtia. El Maestro de Surtia la carga en "
+                  "Empresas → licencia; la conexión con Profit Plus u otro sistema sigue en solo lectura.",
         "control_financiero": "Cada persona tiene una licencia individual asociada a su correo verificado. El límite es una cuenta por licencia y los datos financieros permanecen aislados por titular.",
     }
     filas = []
@@ -543,8 +546,10 @@ def maestro_suscripciones():
         dict(clase="maestro-form", asistente=dict(action=action_url, boton="Crear suscripción", titulo="Nueva suscripción", ocultos=[("accion", "crear")],
             pasos=[dict(titulo="Titular y organización", campos=[campo("producto", "", "hidden", valor=producto_sel),
                 campo("cliente", "Cliente / organización"), campo("correo", "Correo de contacto", "email"),
-                campo("referencia", "Correo verificado del titular" if producto_sel == "control_financiero" else "Referencia de la organización",
-                      "email" if producto_sel == "control_financiero" else "text", ph="" if producto_sel == "control_financiero" else "Ej.: identificador asignado por el sistema")]),
+                campo("referencia", "Correo verificado del titular" if producto_sel == "control_financiero" else
+                      ("RIF de la empresa en Surtia" if producto_sel == "surtia" else "Referencia de la organización"),
+                      "email" if producto_sel == "control_financiero" else "text",
+                      ph="" if producto_sel == "control_financiero" else ("J-12345678-9" if producto_sel == "surtia" else "Ej.: identificador asignado por el sistema"))]),
                 dict(titulo="Plan, módulos y entorno", nota="El sistema queda fijado por el selector. Los módulos elegidos quedan asociados al registro y al token firmado.",
                      campos=[campo("plan", "Plan", "select", opciones=opciones_plan), campo("entorno", "Entorno", "select", opciones=opciones_entorno),
                              campo("dias", "Vigencia (días)", "number", valor=365), campo("modulos", "Módulos habilitados", "checks", valor=modulos_todos, opciones=opciones_modulos)]),

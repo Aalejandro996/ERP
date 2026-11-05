@@ -68,7 +68,7 @@ class ClienteAdmin:
     def crear_plan_producto(self, producto_id, **d): return self._req("POST", f"/admin/v1/productos/{producto_id}/planes", d)
     def activar_plan_producto(self, producto_id, codigo, activo): return self._req("PATCH", f"/admin/v1/productos/{producto_id}/planes/{codigo}", {"activo": bool(activo)})
     def suscripciones(self, producto=None): return self._req("GET", "/admin/v1/suscripciones", params={"producto": producto})["suscripciones"]
-    def crear_suscripcion(self, **d): return self._req("POST", "/admin/v1/suscripciones", d)
+    def crear_suscripcion(self, **d): return self._req("POST", "/admin/v1/suscripciones", d)["id"]   # número de la suscripción creada
     def cambiar_suscripcion(self, sid, **d): return self._req("PATCH", f"/admin/v1/suscripciones/{int(sid)}", d)
     def token_suscripcion(self, sid): return self._req("GET", f"/admin/v1/suscripciones/{int(sid)}/token")["token"]
     # precios y órdenes

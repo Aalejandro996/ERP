@@ -9,11 +9,13 @@ FUENTE = "'Inter','Segoe UI',Helvetica,Arial,sans-serif"
 
 
 # Marca de cada sistema de Gigadevs en sus documentos (presupuestos, contratos y facturas). Los correos no muestran SVG: PNG.
+# (nombre, logo PNG, color de acento, lema, color del texto sobre el acento)
 MARCAS = {
-    "contax": ("Contax", "icono-192.png", LIMA, "Tu empresa en orden. Tu fisco al día."),
-    "criteriseg": ("CriteriSeg", "criteriseg-192.png", "#2f7fd6", "Auditoría y cumplimiento"),
-    "bot_whatsapp": ("Enlace MIT", "enlace-mit-192.png", "#ff9a0a", "Mensajería para organizaciones"),
-    "control_financiero": ("Quincena VE", "quincena-192.png", "#19b37d", "Finanzas personales por quincena"),
+    "contax": ("Contax", "icono-192.png", LIMA, "Tu empresa en orden. Tu fisco al día.", LIMA_TINTA),
+    "criteriseg": ("CriteriSeg", "criteriseg-192.png", "#2f7fd6", "Auditoría y cumplimiento", "#ffffff"),
+    "bot_whatsapp": ("Enlace MIT", "enlace-mit-192.png", "#ff9a0a", "Mensajería para organizaciones", "#2a1600"),
+    "control_financiero": ("Quincena VE", "quincena-192.png", "#19b37d", "Finanzas personales por quincena", "#ffffff"),
+    "surtia": ("Surtia", "surtia-192.png", "#16C79A", "Pedidos por WhatsApp conectados a su sistema", "#04281E"),
 }
 
 
@@ -24,7 +26,7 @@ def _marca(sistema) -> tuple:
 def _cabecera(sistema, base, tam) -> str:
     """Celda con el logo y el nombre del sistema. Contax conserva su logotipo (Conta + x lima)."""
     e = escape
-    nombre, logo, color, lema = _marca(sistema)
+    nombre, logo, color, lema = _marca(sistema)[:4]
     titulo = (f'Conta<span style="color:{LIMA}">x</span><sup style="font-size:10px">®</sup>' if nombre == "Contax"
               else f'{e(nombre)}<span style="color:{color}">.</span>')
     return (f'<td style="padding-right:10px"><img src="{e(base)}/static/marca/{logo}" width="{tam}" height="{tam}" alt="{e(nombre)}" '
@@ -44,17 +46,23 @@ def _pie(sistema, registrada=False) -> str:
     return f'<strong style="color:{TINTA}">{escape(nombre)}</strong> · un sistema de Gigadevs Corp · normativa legal de Contax® · Venezuela'
 
 
-def html(titulo, parrafos, base_url, nombre="Contax", lema="", boton=None, destacado=None, filas=(), nota=None, pie=None):
+def html(titulo, parrafos, base_url, nombre="Contax", lema="", boton=None, destacado=None, filas=(), nota=None, pie=None, sistema=None):
     """titulo: encabezado. parrafos: textos (se escapan). boton: (texto, url). destacado: (etiqueta, valor) en un recuadro
-    (p. ej. una clave). filas: [(etiqueta, valor)] en tabla de datos. nota: aviso de seguridad al final."""
+    (p. ej. una clave). filas: [(etiqueta, valor)] en tabla de datos. nota: aviso de seguridad al final.
+    sistema: correo de otro sistema de Gigadevs (criteriseg, surtia…): su logo, su color, su nombre y su pie."""
     e = escape
-    logo = f"{base_url.rstrip('/')}/static/marca/icono-192.png"
+    marca = _marca(sistema)
+    acento, tinta_acento = marca[2], marca[4]
+    if sistema and sistema != "contax": nombre, lema = marca[0], marca[3]
+    logo = f"{base_url.rstrip('/')}/static/marca/{marca[1]}"
+    firma = (f'<strong style="color:{TINTA}">{e(nombre)}</strong>® · una marca de Gigadevs Corp · Venezuela'
+             if not sistema or sistema == "contax" else _pie(sistema))
     cuerpo = "".join(f'<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:{TEXTO}">{e(p)}</p>' for p in parrafos)
     if destacado:
         cuerpo += (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0 20px"><tr>'
                    f'<td style="background:{TINTA};border-radius:12px;padding:18px 20px">'
                    f'<div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#a3a3a3">{e(destacado[0])}</div>'
-                   f'<div style="font-family:Menlo,Consolas,monospace;font-size:20px;font-weight:700;color:{LIMA};margin-top:6px;word-break:break-all">{e(destacado[1])}</div>'
+                   f'<div style="font-family:Menlo,Consolas,monospace;font-size:20px;font-weight:700;color:{acento};margin-top:6px;word-break:break-all">{e(destacado[1])}</div>'
                    f'</td></tr></table>')
     if filas:
         cuerpo += f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 20px;border-top:1px solid {LINEA}">'
@@ -64,9 +72,9 @@ def html(titulo, parrafos, base_url, nombre="Contax", lema="", boton=None, desta
         cuerpo += "</table>"
     if boton:
         cuerpo += (f'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:8px 0 24px"><tr>'
-                   f'<td style="background:{LIMA};border-radius:10px">'
+                   f'<td style="background:{acento};border-radius:10px">'
                    f'<a href="{e(boton[1])}" style="display:inline-block;padding:14px 26px;font-family:{FUENTE};font-size:15px;font-weight:700;'
-                   f'color:{LIMA_TINTA};text-decoration:none">{e(boton[0])}</a></td></tr></table>'
+                   f'color:{tinta_acento};text-decoration:none">{e(boton[0])}</a></td></tr></table>'
                    f'<p style="margin:0 0 16px;font-size:12px;line-height:1.5;color:{SUAVE}">Si el botón no funciona, copie este enlace en su navegador:<br>'
                    f'<span style="color:{TINTA};word-break:break-all">{e(boton[1])}</span></p>')
     if nota:
@@ -86,13 +94,13 @@ def html(titulo, parrafos, base_url, nombre="Contax", lema="", boton=None, desta
           <div style="font-size:12px;color:#a3a3a3">{e(lema)}</div></td>
     </tr></table>
   </td></tr>
-  <tr><td style="height:4px;background:{LIMA};font-size:0;line-height:0">&nbsp;</td></tr>
+  <tr><td style="height:4px;background:{acento};font-size:0;line-height:0">&nbsp;</td></tr>
   <tr><td style="background:#ffffff;padding:32px 28px;border:1px solid {LINEA};border-top:0;border-radius:0 0 16px 16px">
     <h1 style="margin:0 0 18px;font-size:22px;line-height:1.3;color:{TINTA};font-weight:700">{e(titulo)}</h1>
     {cuerpo}
   </td></tr>
   <tr><td style="padding:20px 8px;text-align:center;font-size:12px;line-height:1.6;color:{SUAVE}">
-    {e(pie)}<br><strong style="color:{TINTA}">{e(nombre)}</strong>® · una marca de Gigadevs Corp · Venezuela
+    {e(pie)}<br>{firma}
   </td></tr>
 </table></td></tr></table></body></html>"""
 

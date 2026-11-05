@@ -24,23 +24,34 @@ CLAVE_SESION = "maestro_sistema"
 # Módulos licenciables de cada producto (los de Contax están en app/planes.py y los demás en el servidor de licencias).
 SISTEMAS = {
     "contax": {
+        "licencia": "Licencia All in One · pago único",
         "nombre": "Contax", "marca": "Contax®", "color": "#7fdc45", "logo": "marca/logo-icono.svg",
         "lema": "Contabilidad, administración, fiscal y normativa legal de Gigadevs · All in One · pago único",
         "modulos_licencia": ["Contabilidad y fiscal", "Administración", "Auditoría financiera", "Inventario", "Facturación"],
     },
     "criteriseg": {
+        "licencia": "Por organización · nube o entorno cerrado",
         "nombre": "CriteriSeg", "marca": "CriteriSeg", "color": "#2f7fd6", "logo": "marca/criteriseg.svg",
         "lema": "Auditoría y cumplimiento · suscripciones por organización",
         "modulos_licencia": ["Planificación de auditoría", "Trabajo de campo y evidencias", "Cumplimiento normativo",
                              "Informes y planes de acción", "Analítica y dashboards"],
     },
     "bot_whatsapp": {
+        "licencia": "Por organización · nube o entorno cerrado",
         "nombre": "Enlace MIT", "marca": "Enlace MIT", "color": "#ff9a0a", "monograma": "EM",
         "logo": _logo("enlace-mit.svg", "enlace-mit.png"),   # sin archivo subido se muestra el monograma
         "lema": "Mensajería · organizaciones y entornos cerrados",
         "modulos_licencia": ["Sesiones y conexiones", "Envío de mensajes", "Historial de mensajes", "Incidencias y seguimiento"],
     },
+    "surtia": {
+        "licencia": "Por empresa · nube",
+        "nombre": "Surtia", "marca": "Surtia™", "color": "#16C79A", "logo": "marca/surtia.svg",
+        "lema": "Pedidos por WhatsApp conectados a Profit Plus y otros sistemas · licencia por empresa",
+        "modulos_licencia": ["Bot de pedidos por WhatsApp", "Presupuestos", "Conversaciones y atención",
+                             "Lectura de órdenes de compra (PDF)", "Integración con el sistema administrativo", "Avisos por correo"],
+    },
     "control_financiero": {
+        "licencia": "Cuenta individual · nube",
         "nombre": "Quincena VE", "marca": "Quincena VE", "color": "#19b37d", "logo": "marca/quincena.svg",
         "lema": "Finanzas personales · cuenta individual", "en_desarrollo": True,
         "modulos_licencia": ["Panel de finanzas", "Ingresos y gastos", "Deudas y compromisos", "Pagos programados", "Herramientas de negocio"],

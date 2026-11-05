@@ -155,7 +155,7 @@ class _Seguro(dict):
 
 
 # Sistema contratado → nombre en el contrato (None = Contax, texto original). Una sola normativa para todos.
-SISTEMA_CONTRATADO = {"contax": None, "criteriseg": "CriteriSeg", "bot_whatsapp": "Enlace MIT", "control_financiero": "Quincena VE"}
+SISTEMA_CONTRATADO = {"contax": None, "criteriseg": "CriteriSeg", "bot_whatsapp": "Enlace MIT", "control_financiero": "Quincena VE", "surtia": "Surtia"}
 DEF_CONTAX = "«Contax®» es la plataforma de gestión empresarial propiedad de GIGADEVS, marca registrada de Gigadevs Corp"
 
 
