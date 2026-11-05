@@ -3,8 +3,9 @@
 <link rel="icon" href="{{ url_for('static', filename='marca/favicon.ico') }}" sizes="any"><link rel="icon" href="{{ url_for('static', filename='marca/logo-icono.svg') }}" type="image/svg+xml">
 <link rel="apple-touch-icon" href="{{ url_for('static', filename='marca/apple-touch-icon.png') }}"><meta name="theme-color" content="#191919"><meta name="description" content="{{ config.APP_NOMBRE }} — {{ config.APP_LEMA }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='estilo.css') }}"><script src="{{ url_for('static', filename='app.js') }}" defer></script></head>
-<body class="{{ 'maestro-selector' if g.usuario and g.usuario.rol == 'Maestro' and request.endpoint == 'web.maestro_sistemas' }}" data-maestro-product="{{ 'erp' if request.endpoint == 'web.maestro_licencias' else request.args.get('producto', 'criteriseg') if request.endpoint in ('web.maestro_suscripciones', 'web.maestro_suscripcion_token') else '' }}">{% set u = g.usuario %}{% set ep = request.endpoint %}{% set prod = request.args.get('producto', 'criteriseg') if ep in ('web.maestro_suscripciones', 'web.maestro_suscripcion_token') else ('erp' if ep == 'web.maestro_licencias' else '') %}
-<div class="app{{ ' app-maestro-selector' if u and u.rol == 'Maestro' and ep == 'web.maestro_sistemas' }}"><input type="checkbox" id="nav-toggle">
+{% set u = g.usuario %}{% set ep = request.endpoint %}{% set es_maestro = u and u.rol == 'Maestro' %}{% set sis = sistema_activo() if es_maestro else None %}{% set sin_menu = es_maestro and not sis %}
+<body class="{{ 'maestro-selector' if sin_menu }}" data-maestro-product="{{ sis or '' }}">
+<div class="app{{ ' app-maestro-selector' if sin_menu }}"><input type="checkbox" id="nav-toggle">
 <aside class="sidebar">
   <a class="marca" href="{{ url_for('web.maestro_sistemas') if u and u.rol == 'Maestro' else '/' }}"><img src="{{ url_for('static', filename='marca/logo-icono.svg') }}" alt="" width="30" height="30">{{ config.APP_NOMBRE }}</a>
   {% if u and u.rol != 'Maestro' %}
@@ -23,38 +24,19 @@
     <a href="{{ url_for('web.admin_organizacion') }}" class="{{ 'activo' if ep == 'web.admin_organizacion' }}">Mi organización</a>
     <a href="{{ url_for('web.admin_equipos') }}" class="{{ 'activo' if ep == 'web.admin_equipos' }}">Equipos</a>
     <a href="{{ url_for('web.admin_licencia') }}" class="{{ 'activo' if ep == 'web.admin_licencia' }}">Licencia</a></nav>{% endif %}
-  {% elif u %}
-  {% if prod %}<div class="org sistema-lateral"><b>{{ {'erp':'Contax ERP','criteriseg':'CriteriSeg','bot_whatsapp':'Enlace MIT','control_financiero':'Quincena VE'}.get(prod) }}</b><span class="chip">Sistema activo</span></div>
-  <nav class="nav-grupo"><span>Gestión del sistema</span>
-    {% if prod == 'erp' %}<a href="{{ url_for('web.maestro_licencias') }}" class="activo">Licencias y equipos</a>
-    {% else %}<a href="{{ url_for('web.maestro_suscripciones', producto=prod) }}" class="activo">Licencias y suscripciones</a>{% endif %}
-  </nav>
-  {% else %}<div class="org"><b>Consola Maestro</b><span class="chip">Maestro</span></div>
-  <nav class="nav-grupo"><span>Inicio</span><a href="{{ url_for('web.maestro_sistemas') }}" class="{{ 'activo' if ep == 'web.maestro_sistemas' }}">Sistemas</a></nav>
-  <nav class="nav-grupo"><span>Plataforma</span>
-    <a href="{{ url_for('web.plataforma') }}" class="{{ 'activo' if ep == 'web.plataforma' }}">Clientes</a>
-    <a href="{{ url_for('web.maestro_licencias') }}" class="{{ 'activo' if ep == 'web.maestro_licencias' }}">Licencias y equipos</a>
-    <a href="{{ url_for('web.maestro_suscripciones', producto='criteriseg') }}" class="{{ 'activo' if ep in ('web.maestro_suscripciones', 'web.maestro_suscripcion_token') }}">Licencias y suscripciones</a>
-    {% set cobros = ('web.maestro_precios', 'web.maestro_pagos', 'web.maestro_dolares', 'web.maestro_avilapay') %}
-    <details class="nav-desplegable" {{ 'open' if ep in cobros }}><summary class="{{ 'activo' if ep in cobros }}">Cobros y precios</summary>
-      <a href="{{ url_for('web.maestro_precios') }}" class="{{ 'activo' if ep == 'web.maestro_precios' }}">Precios y planes</a>
-      <a href="{{ url_for('web.maestro_pagos') }}" class="{{ 'activo' if ep == 'web.maestro_pagos' }}">Órdenes</a>
-      <a href="{{ url_for('web.maestro_dolares') }}" class="{{ 'activo' if ep == 'web.maestro_dolares' }}">Pagos en dólares</a>
-      <a href="{{ url_for('web.maestro_avilapay') }}" class="{{ 'activo' if ep == 'web.maestro_avilapay' }}">Pagos en bolívares</a></details>
-    <a href="{{ url_for('web.maestro_presupuestos') }}" class="{{ 'activo' if ep in ('web.maestro_presupuestos', 'web.maestro_presupuesto_ver') }}">Presupuestos</a>
-    <a href="{{ url_for('web.maestro_contratos') }}" class="{{ 'activo' if ep in ('web.maestro_contratos', 'web.maestro_contrato_ver') }}">Contratos</a>
-    <a href="{{ url_for('web.maestro_facturas') }}" class="{{ 'activo' if ep in ('web.maestro_facturas', 'web.maestro_factura_ver') }}">Facturación Gigadevs</a>
-    <a href="{{ url_for('web.maestro_whatsapp') }}" class="{{ 'activo' if ep == 'web.maestro_whatsapp' }}">WhatsApp (OpenWA)</a>
-    <a href="{{ url_for('web.maestro_bd') }}" class="{{ 'activo' if ep == 'web.maestro_bd' }}">Base de datos</a>
-    <a href="{{ url_for('web.admin_fiscal') }}" class="{{ 'activo' if ep == 'web.admin_fiscal' }}">Parámetros legales</a>
-    <a href="{{ url_for('web.plataforma_bitacora') }}" class="{{ 'activo' if ep == 'web.plataforma_bitacora' }}">Bitácora</a></nav>{% endif %}
+  {% elif sis %}{% set S = SISTEMAS[sis] %}
+  <a class="sistema-lateral marca-{{ sis }}" href="{{ inicio_sistema(sis) }}"><span class="sistema-lateral-logo">{% if S.logo %}<img src="{{ url_for('static', filename=S.logo) }}" alt="">{% else %}{{ S.monograma }}{% endif %}</span>
+    <span><b>{{ S.nombre }}</b><small>Sistema activo</small></span></a>
+  {% for grp in menu_sistema(sis) %}<nav class="nav-grupo"><span>{{ grp.titulo }}</span>
+    {% for it in grp.enlaces %}<a href="{{ it.url }}" class="{{ 'activo' if it.activo }}"><span class="ico" aria-hidden="true">{{ it.icono }}</span>{{ it.texto }}</a>{% endfor %}</nav>{% endfor %}
+  <a class="nav-cambiar" href="{{ url_for('web.maestro_sistemas') }}">⇄ Cambiar de sistema</a>
   {% endif %}
   <div class="pie">{{ config.APP_LEMA }}<br>Normativa VE: VEN-NIF · Prov. SNAT 0071 · LIVA · LISLR · IGTF<br>{{ config.APP_NOMBRE }}® · Gigadevs Corp<span class="pie-legal"><a href="{{ url_for('web.legal', pagina='terminos') }}">Términos</a><a href="{{ url_for('web.legal', pagina='privacidad') }}">Privacidad</a><a href="{{ url_for('web.legal', pagina='cookies') }}">Cookies</a></span></div>
 </aside>
 <div class="principal">
   <header class="topbar">
     <label for="nav-toggle" class="hamburguesa" aria-label="Menú"><i></i></label>
-    {% if u and u.rol == 'Maestro' and ep in ('web.maestro_licencias', 'web.maestro_suscripciones', 'web.maestro_suscripcion_token') %}<a class="sistema-cambio" href="{{ url_for('web.maestro_sistemas') }}" aria-label="Volver al selector de sistemas">‹ <span>Sistemas</span></a>{% endif %}
+    {% if sis %}<a class="sistema-cambio" href="{{ url_for('web.maestro_sistemas') }}" aria-label="Volver al selector de sistemas">‹ <span>Sistemas</span></a><span class="sistema-chip marca-{{ sis }}">{{ SISTEMAS[sis].nombre }}</span>{% elif sin_menu %}<a class="marca-top" href="{{ url_for('web.maestro_sistemas') }}"><img src="{{ url_for('static', filename='marca/logo-icono.svg') }}" alt="" width="26" height="26">Consola Maestro · Gigadevs</a>{% endif %}
     {% if empresa and u.rol != 'Maestro' %}<details class="menu"><summary>{{ empresa.razon_social }}</summary><div class="panel">
       {% for x in mis_empresas() %}<a href="{{ url_empresa(x.id) or '/' }}">{{ x.razon_social }} <span class="peq">{{ x.rif }}</span></a>{% endfor %}</div></details>{% endif %}
     {% if u and u.rol != 'Maestro' %}{% if empresa %}<span class="estado-emp trabajando" title="Empresa activa">● Trabajando</span>{% else %}<span class="estado-emp libre">● Sin empresa</span>{% endif %}{% endif %}

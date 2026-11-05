@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import servicios as S
+from . import sistemas
 from .calculos import estados
 from .calculos.fiscal import ErrorFiscal
 from .contabilidad import service as contab
@@ -159,7 +160,8 @@ F = LocalProxy(lambda: request.form)  # valores del formulario (se resuelve en c
 def ayudantes_plantilla():
     return {"puede": lambda p: g.usuario is not None and tiene_permiso(g.usuario, p),
             "mis_empresas": lambda: mis_empresas() if g.usuario is not None and g.usuario.organizacion_id else [],
-            "url_empresa": url_empresa, "menu_empresa": menu_empresa, "areas_empresa": areas_empresa}
+            "url_empresa": url_empresa, "menu_empresa": menu_empresa, "areas_empresa": areas_empresa,
+            "sistema_activo": sistemas.activo, "menu_sistema": sistemas.menu, "SISTEMAS": sistemas.SISTEMAS, "inicio_sistema": sistemas.inicio}
 
 
 # ---------------------------------------------------------------- panel y empresas
@@ -247,7 +249,7 @@ def portada():
 @bp.route("/", methods=["GET", "POST"])
 def inicio():
     if g.usuario is None: return portada()
-    if g.usuario.rol == "Maestro": return redirect(url_for("web.maestro_sistemas"))
+    if g.usuario.rol == "Maestro": return redirect(url_for("web.maestro_sistemas"))  # solo el selector, sin menú lateral
     if request.method == "GET" and g.usuario.rol == "Administrador" and g.licencia:
         from .models import Organizacion
         org = db.session.get(Organizacion, g.usuario.organizacion_id)

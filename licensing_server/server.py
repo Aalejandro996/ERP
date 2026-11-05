@@ -184,7 +184,8 @@ COLUMNAS_NUEVAS = {"lic_licencias": [("modulos", "TEXT"), ("venta_monto", "NUMER
                                    ("cliente_rif", "TEXT"), ("cliente_direccion", "TEXT"), ("combo_id", "INTEGER"), ("modulos", "TEXT"),
                                    ("metodo", "TEXT"), ("ajuste", "NUMERIC(18,2)")],
                  "lic_avilapay": [("activa_usd", "INTEGER"), ("metodos_usd", "TEXT"), ("secreto_usd_cifrado", "TEXT")],
-                 "lic_suscripciones": [("modulos", "TEXT")]}
+                 "lic_suscripciones": [("modulos", "TEXT")],
+                 "lic_presupuestos": [("sistema", "VARCHAR(40)")], "lic_contratos": [("sistema", "VARCHAR(40)")], "lic_facturas": [("sistema", "VARCHAR(40)")]}
 
 
 def _h(clave: str) -> str:
@@ -1576,6 +1577,13 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
     # ------------------------------------------------------------------ presupuestos de Gigadevs
     from . import presupuestos as px
 
+    def filtro_sistema(columna):
+        """?sistema=… del listado. Los registros sin sistema (anteriores a la columna) son de Contax."""
+        sid = request.args.get("sistema")
+        if not sid: return None
+        sid = px.sistema_de(sid)
+        return or_(columna == "contax", columna.is_(None)) if sid == "contax" else columna == sid
+
     def emisor_px():
         with st.eng.connect() as c:
             cf = dict(c.execute(select(fx.config).where(fx.config.c.id == 1)).first()._mapping)
@@ -1584,7 +1592,8 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
     @app.get("/admin/v1/presupuestos")
     def a_px_listar():
         with st.eng.connect() as c:
-            return jsonify(presupuestos=[px.como_dict(r) for r in c.execute(select(px.presupuestos).order_by(px.presupuestos.c.id.desc()).limit(500))])
+            q, f = select(px.presupuestos).order_by(px.presupuestos.c.id.desc()).limit(500), filtro_sistema(px.presupuestos.c.sistema)
+            return jsonify(presupuestos=[px.como_dict(r) for r in c.execute(q if f is None else q.where(f))])
 
     @app.get("/admin/v1/presupuestos/catalogo")
     def a_px_catalogo():
@@ -1618,7 +1627,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         destino = str(cuerpo().get("correo") or p.get("cliente_correo") or "").strip().lower()
         if not RE_CORREO.match(destino): raise ValueError("Indique el correo del cliente")
         intro = f"Estimado(a) {p.get('atencion') or p['cliente_nombre']}: le enviamos el presupuesto {p['numero_txt']}. Quedamos atentos a sus comentarios."
-        correo(destino, f"Presupuesto {p['numero_txt']} · Contax", intro + "\n\n" + pc.presupuesto_texto(p, em),
+        correo(destino, f"Presupuesto {p['numero_txt']} · {p['sistema_nombre'].rstrip('®')}", intro + "\n\n" + pc.presupuesto_texto(p, em),
                html=pc.presupuesto_html(p, em, cfg.get("url_erp") or "", intro))
         with st.eng.begin() as c:
             c.execute(update(px.presupuestos).where(px.presupuestos.c.id == pid).values(correo_enviado_en=reloj(),
@@ -1634,7 +1643,8 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
     @app.get("/admin/v1/contratos")
     def a_ct_listar():
         with st.eng.connect() as c:
-            ids = [r[0] for r in c.execute(select(px.contratos.c.id).order_by(px.contratos.c.id.desc()).limit(500))]
+            q, f = select(px.contratos.c.id).order_by(px.contratos.c.id.desc()).limit(500), filtro_sistema(px.contratos.c.sistema)
+            ids = [r[0] for r in c.execute(q if f is None else q.where(f))]
             return jsonify(contratos=[_contrato(c, i) for i in ids])
 
     @app.post("/admin/v1/contratos")
@@ -1683,10 +1693,10 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         if not url.startswith("https://"): raise ValueError("Enlace inválido")
         titulo = f"Contrato {ct['numero_txt']} para su firma"
         parrafos = [f"Estimado(a) {ct.get('representante') or ct['cliente_nombre']}:",
-                    f"Gigadevs Corp le envía el contrato {ct['numero_txt']} de los servicios de Contax® aceptados en el presupuesto {ct['presupuesto_txt']}.",
+                    f"Gigadevs Corp le envía el contrato {ct['numero_txt']} de los servicios de {ct['sistema_nombre']} aceptados en el presupuesto {ct['presupuesto_txt']}.",
                     "Puede leerlo completo y aceptarlo electrónicamente con su nombre y cédula en el siguiente enlace (válido 30 días). La aceptación "
                     "tiene plena validez conforme al Decreto con Fuerza de Ley sobre Mensajes de Datos y Firmas Electrónicas."]
-        correo(destino, titulo + " · Contax", pc.texto(titulo, parrafos, ("Leer y firmar el contrato", url)),
+        correo(destino, titulo + " · " + ct["sistema_nombre"].rstrip("®"), pc.texto(titulo, parrafos, ("Leer y firmar el contrato", url)),
                html=pc.html(titulo, parrafos, cfg.get("url_erp") or "", "Contax", "Tu empresa en orden. Tu fisco al día.", ("Leer y firmar el contrato", url)))
         with st.eng.begin() as c:
             c.execute(update(px.contratos).where(px.contratos.c.id == cid, px.contratos.c.estado == "Borrador").values(estado="Enviado", enviado_en=reloj()))
@@ -1723,7 +1733,8 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
     @app.get("/admin/v1/facturas")
     def a_fx_listar():
         with st.eng.connect() as c:
-            fs = [fx.como_dict(r) for r in c.execute(select(fx.facturas).order_by(fx.facturas.c.id.desc()).limit(500))]
+            q, f = select(fx.facturas).order_by(fx.facturas.c.id.desc()).limit(500), filtro_sistema(fx.facturas.c.sistema)
+            fs = [fx.como_dict(r) for r in c.execute(q if f is None else q.where(f))]
         return jsonify(facturas=fs)
 
     @app.get("/admin/v1/facturas/<int:fid>")
@@ -1743,7 +1754,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
             f = fx.emitir(con, cliente_nombre=str(d.get("cliente_nombre") or "").strip() or "Cliente", cliente_rif=str(d.get("cliente_rif") or ""),
                           cliente_direccion=d.get("cliente_direccion"), cliente_correo=correo_cli, moneda=d.get("moneda", "USD"), tasa_bcv=d.get("tasa_bcv"),
                           lineas=d.get("lineas"), monto_con_iva=d.get("monto_con_iva"), concepto=str(d.get("concepto") or "")[:300] or None,
-                          forma_pago=d.get("forma_pago"), licencia_id=d.get("licencia_id"), reloj=reloj)
+                          forma_pago=d.get("forma_pago"), licencia_id=d.get("licencia_id"), reloj=reloj, sistema=d.get("sistema"))
             st.log(con, d.get("licencia_id"), "factura_manual", f"factura={f['serie']}{f['numero']} por {d.get('autor', '')}")
         if correo_cli and d.get("enviar", True): enviar_factura(f["id"])
         return jsonify(id=f["id"]), 201

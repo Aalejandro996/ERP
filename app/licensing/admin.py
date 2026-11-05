@@ -83,14 +83,14 @@ class ClienteAdmin:
     def fijar_precio_modulo(self, modulo, mensual_usd): return self._req("PUT", "/admin/v1/precios-modulo", {"modulo": modulo, "mensual_usd": mensual_usd})
     def solicitar_demo(self, **d): return self._req("POST", "/admin/v1/demo", d)
     # presupuestos de Gigadevs
-    def presupuestos(self): return self._req("GET", "/admin/v1/presupuestos")["presupuestos"]
+    def presupuestos(self, sistema=None): return self._req("GET", "/admin/v1/presupuestos", params={"sistema": sistema})["presupuestos"]
     def px_catalogo(self): return self._req("GET", "/admin/v1/presupuestos/catalogo")
     def crear_presupuesto(self, **d): return self._req("POST", "/admin/v1/presupuestos", d)
     def presupuesto(self, pid): return self._req("GET", f"/admin/v1/presupuestos/{int(pid)}")
     def estado_presupuesto(self, pid, estado): return self._req("POST", f"/admin/v1/presupuestos/{int(pid)}/estado", {"estado": estado})
     def enviar_presupuesto(self, pid, correo=None): return self._req("POST", f"/admin/v1/presupuestos/{int(pid)}/enviar", {"correo": correo})
     # contratos
-    def contratos(self): return self._req("GET", "/admin/v1/contratos")["contratos"]
+    def contratos(self, sistema=None): return self._req("GET", "/admin/v1/contratos", params={"sistema": sistema})["contratos"]
     def crear_contrato(self, **d): return self._req("POST", "/admin/v1/contratos", d)
     def contrato(self, cid): return self._req("GET", f"/admin/v1/contratos/{int(cid)}")
     def estado_contrato(self, cid, estado): return self._req("POST", f"/admin/v1/contratos/{int(cid)}/estado", {"estado": estado})
@@ -118,7 +118,7 @@ class ClienteAdmin:
     def fx_config(self): return self._req("GET", "/admin/v1/facturacion/config")
     def fx_guardar(self, **d): return self._req("PUT", "/admin/v1/facturacion/config", d)
     def fx_rango(self, **d): return self._req("POST", "/admin/v1/facturacion/rango", d)
-    def facturas(self): return self._req("GET", "/admin/v1/facturas")["facturas"]
+    def facturas(self, sistema=None): return self._req("GET", "/admin/v1/facturas", params={"sistema": sistema})["facturas"]
     def factura(self, fid): return self._req("GET", f"/admin/v1/facturas/{int(fid)}")["factura"]
     def crear_factura(self, **d): return self._req("POST", "/admin/v1/facturas", d)
     def reenviar_factura(self, fid): return self._req("POST", f"/admin/v1/facturas/{int(fid)}/reenviar", {})

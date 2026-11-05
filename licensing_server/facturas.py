@@ -41,7 +41,8 @@ facturas = Table(
     Column("iva", Numeric(18, 2), nullable=False), Column("total", Numeric(18, 2), nullable=False), Column("total_divisa", Numeric(18, 4)),
     Column("forma_pago", Text), Column("emisor", Text, nullable=False),   # JSON: copia fija de los datos del emisor y la imprenta
     Column("estado", String(10), nullable=False, default="Emitida"), Column("motivo_anulacion", Text), Column("anulada_en", Float),
-    Column("correo_enviado_en", Float), Column("hash_prev", String(64), nullable=False), Column("hash", String(64), nullable=False))
+    Column("correo_enviado_en", Float), Column("hash_prev", String(64), nullable=False), Column("hash", String(64), nullable=False),
+    Column("sistema", String(40)))   # sistema de Gigadevs que vende (Contax, CriteriSeg…); no entra en la huella: misma serie fiscal
 
 CAMPOS_CONFIG = ("razon_social", "rif", "domicilio", "telefono", "correo", "contribuyente_especial", "iva_pct", "serie", "control_prefijo",
                  "imprenta_razon_social", "imprenta_rif", "imprenta_providencia", "fecha_asignacion")
@@ -102,11 +103,13 @@ def numero_completo(f) -> str:
 
 
 def emitir(con, *, cliente_nombre, cliente_rif, cliente_direccion, cliente_correo, moneda, tasa_bcv, lineas=None, monto_con_iva=None,
-           concepto=None, forma_pago=None, orden_ref=None, licencia_id=None, fecha=None, reloj=time.time) -> dict:
+           concepto=None, forma_pago=None, orden_ref=None, licencia_id=None, fecha=None, reloj=time.time, sistema="contax") -> dict:
     """Emite UNA factura dentro de la transacción `con`. Venta de licencia: `monto_con_iva` + `concepto`.
     Factura manual: `lineas` [{descripcion, cantidad, precio, descuento_pct, alicuota}] con precios SIN IVA."""
     import json
     import re
+    from .presupuestos import sistema_de
+    sistema = sistema_de(sistema)
     cfg = dict(con.execute(select(config).where(config.c.id == 1).with_for_update()).first()._mapping)
     faltan = [n for k, n in (("rif", "RIF del emisor"), ("domicilio", "domicilio fiscal"), ("imprenta_razon_social", "imprenta"),
                              ("imprenta_rif", "RIF de la imprenta"), ("imprenta_providencia", "providencia de la imprenta")) if not cfg.get(k)]
@@ -141,7 +144,8 @@ def emitir(con, *, cliente_nombre, cliente_rif, cliente_direccion, cliente_corre
     fila = dict(numero=numero, serie=cfg["serie"] or "", numero_control=control, fecha=str(fecha or hoy_ve()), emitida_en=reloj(), orden_ref=orden_ref,
                 licencia_id=licencia_id, cliente_nombre=str(cliente_nombre)[:200], cliente_rif=cliente_rif.upper(), cliente_direccion=(cliente_direccion or "")[:300],
                 cliente_correo=cliente_correo, moneda=moneda, tasa_bcv=tasa, lineas=json.dumps(lin), exento=exento, base=base, iva_pct=iva_pct, iva=iva,
-                total=total, total_divisa=total_divisa, forma_pago=(forma_pago or "")[:120], emisor=json.dumps(emisor), estado="Emitida", hash_prev=prev)
+                total=total, total_divisa=total_divisa, forma_pago=(forma_pago or "")[:120], emisor=json.dumps(emisor), estado="Emitida", hash_prev=prev,
+                sistema=sistema)
     fila["hash"] = _hash(prev, fila)
     fid = con.execute(insert(facturas).values(**fila).returning(facturas.c.id)).scalar()
     return {**fila, "id": fid}
@@ -153,6 +157,7 @@ def como_dict(fila) -> dict:
     d["lineas"] = json.loads(d["lineas"]) if isinstance(d["lineas"], str) else d["lineas"]
     d["emisor"] = json.loads(d["emisor"]) if isinstance(d["emisor"], str) else d["emisor"]
     d["numero_completo"] = numero_completo(d)
+    d["sistema"] = d.get("sistema") or "contax"
     return d
 
 
