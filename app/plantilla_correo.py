@@ -8,6 +8,42 @@ FONDO, TINTA, TEXTO, SUAVE, LINEA, LIMA, LIMA_TINTA = "#f4f4f2", "#191919", "#30
 FUENTE = "'Inter','Segoe UI',Helvetica,Arial,sans-serif"
 
 
+# Marca de cada sistema de Gigadevs en sus documentos (presupuestos, contratos y facturas). Los correos no muestran SVG: PNG.
+MARCAS = {
+    "contax": ("Contax", "icono-192.png", LIMA, "Tu empresa en orden. Tu fisco al día."),
+    "criteriseg": ("CriteriSeg", "criteriseg-192.png", "#2f7fd6", "Auditoría y cumplimiento"),
+    "bot_whatsapp": ("Enlace MIT", "enlace-mit-192.png", "#ff9a0a", "Mensajería para organizaciones"),
+    "control_financiero": ("Quincena VE", "quincena-192.png", "#19b37d", "Finanzas personales por quincena"),
+}
+
+
+def _marca(sistema) -> tuple:
+    return MARCAS.get(sistema or "contax", MARCAS["contax"])
+
+
+def _cabecera(sistema, base, tam) -> str:
+    """Celda con el logo y el nombre del sistema. Contax conserva su logotipo (Conta + x lima)."""
+    e = escape
+    nombre, logo, color, lema = _marca(sistema)
+    titulo = (f'Conta<span style="color:{LIMA}">x</span><sup style="font-size:10px">®</sup>' if nombre == "Contax"
+              else f'{e(nombre)}<span style="color:{color}">.</span>')
+    return (f'<td style="padding-right:10px"><img src="{e(base)}/static/marca/{logo}" width="{tam}" height="{tam}" alt="{e(nombre)}" '
+            f'style="display:block;border:0;border-radius:9px"></td>'
+            f'<td><div style="font-size:21px;font-weight:800;color:#fff">{titulo}</div><div style="font-size:11px;color:#a3a3a3">{e(lema)}</div></td>')
+
+
+def _pie_texto(sistema) -> str:
+    nombre = _marca(sistema)[0]
+    return "Contax® · una marca de Gigadevs Corp" if nombre == "Contax" else f"{nombre} · un sistema de Gigadevs Corp"
+
+
+def _pie(sistema, registrada=False) -> str:
+    nombre = _marca(sistema)[0]
+    if nombre == "Contax":
+        return f'<strong style="color:{TINTA}">Contax</strong>® · una marca{" registrada" if registrada else ""} de Gigadevs Corp · Venezuela'
+    return f'<strong style="color:{TINTA}">{escape(nombre)}</strong> · un sistema de Gigadevs Corp · normativa legal de Contax® · Venezuela'
+
+
 def html(titulo, parrafos, base_url, nombre="Contax", lema="", boton=None, destacado=None, filas=(), nota=None, pie=None):
     """titulo: encabezado. parrafos: textos (se escapan). boton: (texto, url). destacado: (etiqueta, valor) en un recuadro
     (p. ej. una clave). filas: [(etiqueta, valor)] en tabla de datos. nota: aviso de seguridad al final."""
@@ -103,11 +139,10 @@ def factura_html(f: dict, base_url: str, intro=None) -> str:
  <tr><td style="background:{TINTA};border-radius:16px 16px 0 0;padding:20px 26px">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
    <td valign="middle"><table role="presentation" cellpadding="0" cellspacing="0"><tr>
-     <td style="padding-right:10px"><img src="{e(base)}/static/marca/icono-192.png" width="38" height="38" alt="Contax" style="display:block;border:0;border-radius:9px"></td>
-     <td><div style="font-size:20px;font-weight:800;color:#fff">Conta<span style="color:#87e64b">x</span></div><div style="font-size:11px;color:#a3a3a3">Tu empresa en orden. Tu fisco al día.</div></td></tr></table></td>
+     {_cabecera(f.get("sistema"), base, 38)}</tr></table></td>
    <td align="right" valign="middle"><img src="{e(base)}/static/marca/gigadevs.png" width="58" height="58" alt="Gigadevs Corp" style="display:block;border:0"></td>
   </tr></table></td></tr>
- <tr><td style="height:4px;background:{LIMA};font-size:0;line-height:0">&nbsp;</td></tr>
+ <tr><td style="height:4px;background:{_marca(f.get("sistema"))[2]};font-size:0;line-height:0">&nbsp;</td></tr>
  <tr><td style="background:#ffffff;padding:26px;border:1px solid {LINEA};border-top:0;border-radius:0 0 16px 16px">
   {f'<p style="margin:0 0 18px;font-size:14px;line-height:1.6;color:{TEXTO}">{e(intro)}</p>' if intro else ''}
   {'<div style="margin:0 0 16px;padding:10px 14px;border:2px solid #c8372d;border-radius:10px;color:#c8372d;font-weight:800;text-align:center">FACTURA ANULADA</div>' if anulada else ''}
@@ -136,7 +171,7 @@ def factura_html(f: dict, base_url: str, intro=None) -> str:
    {e(em['control_prefijo'])}-{int(em['control_hasta'] or 0):08d}{(' el ' + e(em['fecha_asignacion'])) if em.get('fecha_asignacion') else ''}.<br>Huella del documento: {e(f['hash'][:16])}</p>
  </td></tr>
  <tr><td style="padding:18px 8px;text-align:center;font-size:12px;line-height:1.6;color:{SUAVE}">Conserve este correo: es su factura. Para cualquier consulta responda al soporte de Gigadevs Corp.<br>
-   <strong style="color:{TINTA}">Contax</strong>® · una marca de Gigadevs Corp · Venezuela</td></tr>
+   {_pie(f.get("sistema"))}</td></tr>
 </table></td></tr></table></body></html>"""
 
 
@@ -149,7 +184,7 @@ def factura_texto(f: dict) -> str:
             f"Base imponible: Bs {_bs(f['base'])}\nIVA {f['iva_pct']}%: Bs {_bs(f['iva'])}\nTOTAL: Bs {_bs(f['total'])}"
             + (f"\nEquivalente: {f['moneda']} {_bs(f['total_divisa'])} (tasa BCV {_bs(f['tasa_bcv'])})" if f["moneda"] != "VES" and f.get("total_divisa") else "")
             + f"\n\nImprenta autorizada: {em['imprenta_razon_social']} · RIF {em['imprenta_rif']} · {em['imprenta_providencia']}\n"
-              "Conserve este correo: es su factura.\n—\nContax® · una marca de Gigadevs Corp")
+              "Conserve este correo: es su factura.\n—\n" + _pie_texto(f.get("sistema")))
 
 
 def orden_compra_html(oc: dict, base_url: str, intro=None, titulo="ORDEN DE COMPRA", etiqueta="Documento de compra", pie=None, aviso=None) -> str:
@@ -253,11 +288,10 @@ def presupuesto_html(p: dict, em: dict, base_url: str, intro=None) -> str:
  <tr><td style="background:{TINTA};border-radius:16px 16px 0 0;padding:20px 26px">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
    <td valign="middle"><table role="presentation" cellpadding="0" cellspacing="0"><tr>
-     <td style="padding-right:10px"><img src="{e(base)}/static/marca/icono-192.png" width="40" height="40" alt="Contax" style="display:block;border:0;border-radius:9px"></td>
-     <td><div style="font-size:21px;font-weight:800;color:#fff">Conta<span style="color:{LIMA}">x</span><sup style="font-size:10px">®</sup></div><div style="font-size:11px;color:#a3a3a3">Tu empresa en orden. Tu fisco al día.</div></td></tr></table></td>
+     {_cabecera(p.get("sistema"), base, 40)}</tr></table></td>
    <td align="right" valign="middle"><img src="{e(base)}/static/marca/gigadevs.png" width="58" height="58" alt="Gigadevs Corp" style="display:block;border:0"></td>
   </tr></table></td></tr>
- <tr><td style="height:4px;background:{LIMA};font-size:0;line-height:0">&nbsp;</td></tr>
+ <tr><td style="height:4px;background:{_marca(p.get("sistema"))[2]};font-size:0;line-height:0">&nbsp;</td></tr>
  <tr><td style="background:#ffffff;padding:26px;border:1px solid {LINEA};border-top:0;border-radius:0 0 16px 16px">
   {f'<p style="margin:0 0 18px;font-size:14px;line-height:1.6;color:{TEXTO}">{e(intro)}</p>' if intro else ''}
   {f'<div style="margin:0 0 16px;padding:10px 14px;border:2px solid {sello};border-radius:10px;color:{sello};font-weight:800;text-align:center">PRESUPUESTO {e(p["estado"].upper())}</div>' if sello else ''}
@@ -287,7 +321,7 @@ def presupuesto_html(p: dict, em: dict, base_url: str, intro=None) -> str:
    Precios en dólares estadounidenses; el IVA se calcula a la alícuota vigente.</p>
  </td></tr>
  <tr><td style="padding:18px 8px;text-align:center;font-size:12px;line-height:1.6;color:{SUAVE}">Para aceptar, responda este correo o escríbanos por WhatsApp.<br>
-   <strong style="color:{TINTA}">Contax</strong>® · una marca registrada de Gigadevs Corp · Venezuela</td></tr>
+   {_pie(p.get("sistema"), True)}</td></tr>
 </table></td></tr></table></body></html>"""
 
 
@@ -296,7 +330,7 @@ def presupuesto_texto(p: dict, em: dict) -> str:
     return (f"PRESUPUESTO {p['numero_txt']} · Fecha {p['fecha']} · Válido hasta {p['valido_hasta']}\n"
             f"Emisor: {em.get('razon_social') or 'Gigadevs Corp'}{(' · RIF ' + em['rif']) if em.get('rif') else ''}\n"
             f"Cliente: {p['cliente_nombre']}{(' · RIF ' + p['cliente_rif']) if p.get('cliente_rif') else ''}\n\n{lineas}\n\n"
-            f"Subtotal: {_usd(p['subtotal'])}\nIVA {p['iva_pct']}%: {_usd(p['iva'])}\nTOTAL: {_usd(p['total'])}\n—\nContax® · una marca de Gigadevs Corp")
+            f"Subtotal: {_usd(p['subtotal'])}\nIVA {p['iva_pct']}%: {_usd(p['iva'])}\nTOTAL: {_usd(p['total'])}\n—\n" + _pie_texto(p.get("sistema")))
 
 
 def contrato_html(c: dict, clausulas, em: dict, base_url: str, extra="") -> str:
@@ -322,11 +356,10 @@ def contrato_html(c: dict, clausulas, em: dict, base_url: str, extra="") -> str:
  <tr><td style="background:{TINTA};border-radius:16px 16px 0 0;padding:20px 26px">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
    <td valign="middle"><table role="presentation" cellpadding="0" cellspacing="0"><tr>
-     <td style="padding-right:10px"><img src="{e(base)}/static/marca/icono-192.png" width="40" height="40" alt="Contax" style="display:block;border:0;border-radius:9px"></td>
-     <td><div style="font-size:21px;font-weight:800;color:#fff">Conta<span style="color:{LIMA}">x</span><sup style="font-size:10px">®</sup></div><div style="font-size:11px;color:#a3a3a3">Tu empresa en orden. Tu fisco al día.</div></td></tr></table></td>
+     {_cabecera(c.get("sistema"), base, 40)}</tr></table></td>
    <td align="right" valign="middle"><img src="{e(base)}/static/marca/gigadevs.png" width="58" height="58" alt="Gigadevs Corp" style="display:block;border:0"></td>
   </tr></table></td></tr>
- <tr><td style="height:4px;background:{LIMA};font-size:0;line-height:0">&nbsp;</td></tr>
+ <tr><td style="height:4px;background:{_marca(c.get("sistema"))[2]};font-size:0;line-height:0">&nbsp;</td></tr>
  <tr><td style="background:#ffffff;padding:30px;border:1px solid {LINEA};border-top:0;border-radius:0 0 16px 16px">
   {f'<div style="margin:0 0 16px;padding:10px 14px;border:2px solid {sello};border-radius:10px;color:{sello};font-weight:800;text-align:center">CONTRATO ANULADO</div>' if sello else ''}
   <div style="text-align:center;border-bottom:2px solid {TINTA};padding-bottom:14px;margin-bottom:16px">
@@ -348,5 +381,5 @@ def contrato_html(c: dict, clausulas, em: dict, base_url: str, extra="") -> str:
   <p style="margin:22px 0 0;font-size:11px;line-height:1.55;color:{SUAVE};border-top:1px dashed #bbb;padding-top:10px">Textos legales versión {e(c.get('version_legal') or '')}.
    Forman parte de este contrato el presupuesto {e(c.get('presupuesto_txt') or '')}, los Términos y condiciones y la Política de privacidad de Contax® publicados en {e(base)}/legal.</p>
  </td></tr>
- <tr><td style="padding:18px 8px;text-align:center;font-size:12px;line-height:1.6;color:{SUAVE}"><strong style="color:{TINTA}">Contax</strong>® · una marca registrada de Gigadevs Corp · Venezuela</td></tr>
+ <tr><td style="padding:18px 8px;text-align:center;font-size:12px;line-height:1.6;color:{SUAVE}">{_pie(c.get("sistema"), True)}</td></tr>
 </table></td></tr></table></body></html>"""
