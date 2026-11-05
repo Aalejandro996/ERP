@@ -247,7 +247,7 @@ def portada():
 @bp.route("/", methods=["GET", "POST"])
 def inicio():
     if g.usuario is None: return portada()
-    if g.usuario.rol == "Maestro": return redirect(url_for("web.plataforma"))
+    if g.usuario.rol == "Maestro": return redirect(url_for("web.maestro_sistemas"))
     if request.method == "GET" and g.usuario.rol == "Administrador" and g.licencia:
         from .models import Organizacion
         org = db.session.get(Organizacion, g.usuario.organizacion_id)

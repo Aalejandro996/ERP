@@ -343,7 +343,8 @@ def maestro_suscripciones():
                 sid = adm.crear_suscripcion(producto_id=F["producto"], cliente=F["cliente"], correo=F["correo"],
                     referencia_sujeto=F["referencia"], plan=F["plan"], dias=int(F["dias"]), entorno=F["entorno"],
                     max_usuarios=int(F.get("usuarios") or 1), max_instancias=int(F.get("instancias") or 1),
-                    max_empresas=int(F.get("empresas") or 1), max_equipos=int(F.get("equipos") or 1), notas=F.get("notas") or "", autor=autor)
+                    max_empresas=int(F.get("empresas") or 1), max_equipos=int(F.get("equipos") or 1), notas=F.get("notas") or "",
+                    modulos=F.getlist("modulos"), autor=autor)
                 registrar(autor, "SUSCRIPCION_CREADA", f"id={sid} producto={F['producto']} sujeto={F['referencia']}", org=None)
                 flash(f"Suscripción #{sid} creada. Descargue su licencia firmada desde la tabla.")
             elif accion == "modificar":
@@ -382,6 +383,8 @@ def maestro_suscripciones():
     subs = [s for s in todas_subs if s["producto_id"] == producto_sel]
     opciones_plan = [(plan["codigo"], f"{plan['nombre']} · {plan['precio_estado']}") for plan in producto["planes"] if plan["activo"]]
     opciones_entorno = [(e, {"nube": "Nube conectada", "cerrado": "Entorno cerrado"}.get(e, e)) for e in producto["entornos"]]
+    opciones_modulos = [(m["codigo"], m["nombre"]) for m in producto.get("modulos", [])]
+    modulos_todos = [codigo for codigo, _ in opciones_modulos]
     descripciones = {
         "criteriseg": "Tecnología y operaciones seguras · licencias por organización · nube o entorno privado",
         "bot_whatsapp": "Mensajería para organizaciones · opción de instalación cerrada · cotización por organización",
@@ -395,8 +398,10 @@ def maestro_suscripciones():
     filas = []
     for s in subs:
         vence = _fecha(s["vence_en"])
+        modulos_suscripcion = (s.get("modulos") or ",".join(modulos_todos)).split(",")
         filas.append(dict(cells=[f"#{s['id']} · {s['cliente']}", s["producto_nombre"], s["tipo_sujeto"].capitalize(),
-            s["referencia_sujeto"], s["plan"], s["estado"].capitalize(), "Entorno cerrado" if s["entorno"] == "cerrado" else "Conectado",
+            s["referencia_sujeto"], s["plan"], ", ".join(nombre for codigo, nombre in opciones_modulos if codigo in modulos_suscripcion),
+            s["estado"].capitalize(), "Entorno cerrado" if s["entorno"] == "cerrado" else "Conectado",
             s["max_usuarios"], s["max_instancias"], vence, "Licencia firmada ↓"],
             clase=f"producto-{s['producto_id']}", url=url_for("web.maestro_suscripcion_token", sid=s["id"])) )
     ids = [(s["id"], f"#{s['id']} · {s['producto_nombre']} · {s['cliente']} ({s['estado']})") for s in subs]
@@ -415,8 +420,8 @@ def maestro_suscripciones():
              nota=descripciones[producto_sel] + " · Todos los planes siguen en modalidad Cotizar hasta su aprobación."),
         dict(titulo="Políticas y operación", clase="maestro-contexto", nota=politicas[producto_sel] + (" Las renovaciones, suspensiones y revocaciones se reflejan al instalar una nueva licencia." if producto_sel != "control_financiero" else " La cuenta activa su archivo firmado desde la sección Más de Quincena VE.")),
         dict(clase="maestro-panel", nota="Las licencias llevan el plan, el titular, los límites y la vigencia. En entornos cerrados, la suspensión se aplica al renovar o al vencer el archivo instalado.",
-             tabla=dict(cols=["Cliente", "Producto", "Sujeto", "Identificador", "Plan", "Estado", "Entorno", "Usuarios", "Instalaciones", "Vence", "Archivo"],
-                        num=[7, 8], filas=filas, ancha=True)),
+             tabla=dict(cols=["Cliente", "Producto", "Sujeto", "Identificador", "Plan", "Módulos", "Estado", "Entorno", "Usuarios", "Instalaciones", "Vence", "Archivo"],
+                        num=[8, 9], filas=filas, ancha=True)),
         dict(titulo=f"Planes de {producto['nombre']}", clase="maestro-panel", nota="Precios internos sin publicar. Todo producto nuevo conserva «Cotizar» hasta definir sus condiciones comerciales.",
              tabla=dict(cols=["Código", "Plan", "Precio", "Estado"], filas=planes_filas, accion=True)),
         dict(clase="maestro-form", asistente=dict(action=action_url, boton="Crear suscripción y preparar licencia", titulo="Nueva suscripción", ocultos=[("accion", "crear")],
@@ -424,9 +429,9 @@ def maestro_suscripciones():
                 campo("cliente", "Cliente / organización"), campo("correo", "Correo de contacto", "email"),
                 campo("referencia", "Correo verificado del titular" if producto_sel == "control_financiero" else "Referencia de la organización",
                       "email" if producto_sel == "control_financiero" else "text", ph="" if producto_sel == "control_financiero" else "Ej.: identificador asignado por el sistema")]),
-                dict(titulo="Plan y entorno", nota="El sistema queda fijado por el selector superior. La licencia emitida utiliza estas políticas.",
+                dict(titulo="Plan, módulos y entorno", nota="El sistema queda fijado por el selector. Los módulos elegidos quedan asociados al registro y al token firmado.",
                      campos=[campo("plan", "Plan", "select", opciones=opciones_plan), campo("entorno", "Entorno", "select", opciones=opciones_entorno),
-                             campo("dias", "Vigencia (días)", "number", valor=365)]),
+                             campo("dias", "Vigencia (días)", "number", valor=365), campo("modulos", "Módulos habilitados", "checks", valor=modulos_todos, opciones=opciones_modulos)]),
                 dict(titulo="Límites y notas", sub="Se incluyen en el token firmado de la licencia", campos=[
                     campo("usuarios", "Usuarios permitidos", "number", valor=1), campo("instancias", "Instalaciones", "number", valor=1),
                     campo("empresas", "Empresas", "number", valor=1), campo("equipos", "Equipos", "number", valor=1),

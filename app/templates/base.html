@@ -3,8 +3,8 @@
 <link rel="icon" href="{{ url_for('static', filename='marca/favicon.ico') }}" sizes="any"><link rel="icon" href="{{ url_for('static', filename='marca/logo-icono.svg') }}" type="image/svg+xml">
 <link rel="apple-touch-icon" href="{{ url_for('static', filename='marca/apple-touch-icon.png') }}"><meta name="theme-color" content="#191919"><meta name="description" content="{{ config.APP_NOMBRE }} — {{ config.APP_LEMA }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='estilo.css') }}"><script src="{{ url_for('static', filename='app.js') }}" defer></script></head>
-<body data-maestro-product="{{ 'erp' if request.endpoint == 'web.maestro_licencias' else request.args.get('producto', 'criteriseg') if request.endpoint in ('web.maestro_suscripciones', 'web.maestro_suscripcion_token') else '' }}">{% set u = g.usuario %}{% set ep = request.endpoint %}{% set prod = request.args.get('producto', 'criteriseg') if ep in ('web.maestro_suscripciones', 'web.maestro_suscripcion_token') else ('erp' if ep == 'web.maestro_licencias' else '') %}
-<div class="app"><input type="checkbox" id="nav-toggle">
+<body class="{{ 'maestro-selector' if g.usuario and g.usuario.rol == 'Maestro' and request.endpoint == 'web.maestro_sistemas' }}" data-maestro-product="{{ 'erp' if request.endpoint == 'web.maestro_licencias' else request.args.get('producto', 'criteriseg') if request.endpoint in ('web.maestro_suscripciones', 'web.maestro_suscripcion_token') else '' }}">{% set u = g.usuario %}{% set ep = request.endpoint %}{% set prod = request.args.get('producto', 'criteriseg') if ep in ('web.maestro_suscripciones', 'web.maestro_suscripcion_token') else ('erp' if ep == 'web.maestro_licencias' else '') %}
+<div class="app{{ ' app-maestro-selector' if u and u.rol == 'Maestro' and ep == 'web.maestro_sistemas' }}"><input type="checkbox" id="nav-toggle">
 <aside class="sidebar">
   <a class="marca" href="{{ url_for('web.maestro_sistemas') if u and u.rol == 'Maestro' else '/' }}"><img src="{{ url_for('static', filename='marca/logo-icono.svg') }}" alt="" width="30" height="30">{{ config.APP_NOMBRE }}</a>
   {% if u and u.rol != 'Maestro' %}

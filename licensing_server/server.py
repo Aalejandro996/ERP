@@ -146,11 +146,17 @@ pagos_usados = Table(
 # anterior; estos registros son genéricos y no comparten datos de negocio con los productos.
 PRODUCTOS = {
     "criteriseg": {"nombre": "CriteriSeg", "tipo_sujeto": "organizacion", "entornos": ["nube", "cerrado"], "primario": "#17365D", "acento": "#2F6FAD",
-                   "planes": [("institucional", "Licencia institucional", "Cotizar")]},
+                   "planes": [("institucional", "Licencia institucional", "Cotizar")], "modulos": [
+                       ("planificacion", "Planificación de auditoría"), ("trabajo_campo", "Trabajo de campo y evidencias"),
+                       ("cumplimiento", "Cumplimiento normativo"), ("informes", "Informes y planes de acción"), ("analitica", "Analítica y dashboards")]},
     "bot_whatsapp": {"nombre": "Enlace MIT", "tipo_sujeto": "organizacion", "entornos": ["nube", "cerrado"], "primario": "#0033A0", "acento": "#F39200",
-                      "planes": [("organizacion", "Licencia por organización", "Cotizar")]},
+                      "planes": [("organizacion", "Licencia por organización", "Cotizar")], "modulos": [
+                          ("sesiones", "Sesiones y conexiones"), ("envio_mensajes", "Envío de mensajes"),
+                          ("historial", "Historial de mensajes"), ("incidencias", "Incidencias y seguimiento")]},
     "control_financiero": {"nombre": "Quincena VE", "tipo_sujeto": "cuenta", "entornos": ["nube"], "primario": "#0B6B4D", "acento": "#4FC79C",
-                            "planes": [("individual", "Cuenta individual", "Cotizar")]},
+                            "planes": [("individual", "Cuenta individual", "Cotizar")], "modulos": [
+                                ("inicio", "Panel de finanzas"), ("movimientos", "Ingresos y gastos"),
+                                ("deudas", "Deudas y compromisos"), ("pagos", "Pagos programados"), ("negocio", "Herramientas de negocio")]},
 }
 productos = Table(
     "lic_productos", md,
@@ -171,13 +177,14 @@ suscripciones = Table(
     Column("plan", String(32), nullable=False), Column("estado", String(12), nullable=False, default="activa"),
     Column("entorno", String(12), nullable=False), Column("max_usuarios", Integer, nullable=False, default=1),
     Column("max_instancias", Integer, nullable=False, default=1), Column("max_empresas", Integer, nullable=False, default=1),
-    Column("max_equipos", Integer, nullable=False, default=1), Column("creada_en", Float, nullable=False),
+    Column("max_equipos", Integer, nullable=False, default=1), Column("modulos", Text), Column("creada_en", Float, nullable=False),
     Column("inicia_en", Float, nullable=False), Column("vence_en", Float, nullable=False), Column("notas", Text))
 COLUMNAS_NUEVAS = {"lic_licencias": [("modulos", "TEXT"), ("venta_monto", "NUMERIC(18,4)"), ("venta_moneda", "VARCHAR(4)"), ("venta_tasa", "NUMERIC(18,6)"),
                                      ("venta_forma_pago", "TEXT"), ("cliente_rif", "TEXT"), ("dias", "INTEGER")], "lic_ordenes": [("monto_esperado", "NUMERIC(18,4)"), ("expira_en", "FLOAT"), ("instrucciones", "TEXT"),
                                    ("cliente_rif", "TEXT"), ("cliente_direccion", "TEXT"), ("combo_id", "INTEGER"), ("modulos", "TEXT"),
                                    ("metodo", "TEXT"), ("ajuste", "NUMERIC(18,2)")],
-                 "lic_avilapay": [("activa_usd", "INTEGER"), ("metodos_usd", "TEXT"), ("secreto_usd_cifrado", "TEXT")]}
+                 "lic_avilapay": [("activa_usd", "INTEGER"), ("metodos_usd", "TEXT"), ("secreto_usd_cifrado", "TEXT")],
+                 "lic_suscripciones": [("modulos", "TEXT")]}
 
 
 def _h(clave: str) -> str:
@@ -215,6 +222,15 @@ def _entero(v, nombre, minimo=0, maximo=100000):
         raise ValueError(f"{nombre} inválido") from e
     if not (minimo <= n <= maximo): raise ValueError(f"{nombre} fuera de rango")
     return n
+
+
+def _modulos_producto(producto_id, valores=None):
+    cfg = PRODUCTOS.get(producto_id)
+    if not cfg: raise ValueError("Producto inválido")
+    permitidos = {codigo for codigo, _ in cfg["modulos"]}
+    elegidos = permitidos if valores is None else {str(x).strip() for x in valores if str(x).strip()}
+    if not elegidos or not elegidos.issubset(permitidos): raise ValueError("Seleccione al menos un módulo válido para el sistema")
+    return ",".join(sorted(elegidos))
 
 
 class Almacen:
@@ -258,6 +274,7 @@ class Almacen:
             result = []
             for row in rows:
                 d = dict(row); d["entornos"] = json.loads(d["entornos"])
+                d["modulos"] = [{"codigo": code, "nombre": name} for code, name in PRODUCTOS[d["id"]]["modulos"]]
                 d["planes"] = [dict(p) for p in c.execute(select(planes_producto).where(planes_producto.c.producto_id == d["id"]).order_by(planes_producto.c.nombre)).mappings()]
                 result.append(d)
             return result
@@ -281,12 +298,13 @@ class Almacen:
                 raise LookupError("Plan inexistente")
 
     def crear_suscripcion(self, producto_id, cliente, correo, referencia_sujeto, plan, dias=365, entorno="nube",
-                          max_usuarios=1, max_instancias=1, max_empresas=1, max_equipos=1, notas=""):
+                          max_usuarios=1, max_instancias=1, max_empresas=1, max_equipos=1, notas="", modulos=None):
         cfg = next((p for p in self.listar_productos() if p["id"] == producto_id and p["activo"]), None)
         if cfg is None: raise ValueError("Producto inválido o inactivo")
         if not RE_CORREO.match(str(correo or "")): raise ValueError("Correo inválido")
         if entorno not in cfg["entornos"]: raise ValueError("Entorno no permitido para este producto")
         if plan not in {p["codigo"] for p in cfg["planes"] if p["activo"]}: raise ValueError("Plan inválido o inactivo para este producto")
+        modulos = _modulos_producto(producto_id, modulos)
         cliente = str(cliente or "").strip()[:200]
         referencia_sujeto = str(referencia_sujeto or "").strip()[:200]
         if not cliente or not referencia_sujeto: raise ValueError("Indique el cliente y el identificador de la organización o cuenta")
@@ -304,7 +322,7 @@ class Almacen:
             if existente: raise ValueError("Ya existe una suscripción activa para esa cuenta u organización")
             sid = c.execute(insert(suscripciones).values(producto_id=producto_id, cliente=cliente, correo=correo.strip().lower(),
                 tipo_sujeto=cfg["tipo_sujeto"], referencia_sujeto=referencia_sujeto, plan=plan, estado="activa", entorno=entorno,
-                **limites, creada_en=ahora, inicia_en=ahora, vence_en=ahora + dias * 86400, notas=str(notas or "")[:1000]).returning(suscripciones.c.id)).scalar()
+                **limites, modulos=modulos, creada_en=ahora, inicia_en=ahora, vence_en=ahora + dias * 86400, notas=str(notas or "")[:1000]).returning(suscripciones.c.id)).scalar()
         return sid
 
     def listar_suscripciones(self, producto_id=None):
@@ -343,10 +361,12 @@ class Almacen:
         if row is None: raise LookupError("Suscripción inexistente")
         if row["estado"] != "activa" or row["vence_en"] <= self.reloj(): raise ValueError("Solo se puede exportar una suscripción activa y vigente")
         ahora = int(self.reloj())
+        modulos = row.get("modulos") or _modulos_producto(row["producto_id"])
         claims = {"producto": row["producto_id"], "suscripcion": row["id"], "cliente": row["cliente"],
                   "tipo_sujeto": row["tipo_sujeto"], "sujeto": row["referencia_sujeto"], "plan": row["plan"],
                   "estado": row["estado"], "entorno": row["entorno"], "iat": ahora, "exp": int(row["vence_en"]),
-                  "vence_suscripcion": int(row["vence_en"]), "limites": {k: row[k] for k in ("max_usuarios", "max_instancias", "max_empresas", "max_equipos")}}
+                  "vence_suscripcion": int(row["vence_en"]), "modulos": modulos.split(","),
+                  "limites": {k: row[k] for k in ("max_usuarios", "max_instancias", "max_empresas", "max_equipos")}}
         return firmar(claims, clave_privada)
 
     # ---------------- licencias ----------------
@@ -688,7 +708,7 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         d = cuerpo()
         sid = st.crear_suscripcion(d.get("producto_id"), d.get("cliente"), d.get("correo"), d.get("referencia_sujeto"),
             d.get("plan"), d.get("dias", 365), d.get("entorno", "nube"), d.get("max_usuarios", 1),
-            d.get("max_instancias", 1), d.get("max_empresas", 1), d.get("max_equipos", 1), d.get("notas", ""))
+            d.get("max_instancias", 1), d.get("max_empresas", 1), d.get("max_equipos", 1), d.get("notas", ""), d.get("modulos"))
         with st.eng.begin() as con: st.log(con, None, "suscripcion_creada", f"#{sid} producto={d.get('producto_id')} por {d.get('autor', '')}")
         return jsonify(id=sid), 201
 
