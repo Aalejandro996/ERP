@@ -63,7 +63,10 @@ DO $$ BEGIN
   END IF;
 END $$;
 ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS ck_usuarios_rol;
-ALTER TABLE usuarios ADD CONSTRAINT ck_usuarios_rol CHECK (rol IN ('Maestro','Administrador','Contador','Auxiliar','Auditor Financiero','Cajero'));
+-- Lista completa de puestos (ampliada en la 012): esta migración corre en cada despliegue y no debe rechazar los puestos nuevos.
+ALTER TABLE usuarios ADD CONSTRAINT ck_usuarios_rol CHECK (rol IN ('Maestro','Administrador','Contador','Auxiliar','Auditor Financiero','Cajero',
+  'Gerente General','Gerente Administrativo','Analista Fiscal','Tesorero','Analista de Cuentas por Cobrar','Analista de Cuentas por Pagar',
+  'Comprador','Almacenista','Facturador','Vendedor','Auditor Interno','Consulta'));
 ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS ck_usuarios_org;
 ALTER TABLE usuarios ADD CONSTRAINT ck_usuarios_org CHECK ((rol = 'Maestro') = (organizacion_id IS NULL));
 ALTER TABLE productos DROP CONSTRAINT IF EXISTS ck_producto_venta;

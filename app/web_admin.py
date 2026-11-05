@@ -32,37 +32,68 @@ def _empresa_de_mi_org(eid) -> Empresa:
     return e
 
 
+def _modulos_elegidos(elegidos, del_plan) -> str | None:
+    """Módulos marcados → texto para la BD. Todos los del plan = NULL (también tendrá los que el plan sume después)."""
+    m = sorted({x for x in elegidos if x in del_plan})
+    if not m: raise ValueError("Elija al menos un módulo")
+    return None if set(m) >= set(del_plan) else ",".join(m)
+
+
 @ruta("/admin/usuarios", "admin", ("GET", "POST"))
 def admin_usuarios():
+    from .security import PUESTOS, modulos_usuario
     org_id = g.usuario.organizacion_id
     org = db.session.get(Organizacion, org_id)
+    del_plan = [m for m in MODULOS if m in g.modulos] or list(MODULOS)
+    emps_org = db.session.execute(select(Empresa).where(Empresa.organizacion_id == org_id).order_by(Empresa.razon_social)).scalars().all()
     if request.method == "POST":
         a = F["accion"]
-        def crear():
-            if F["rol"] not in ROLES_CLIENTE: raise ValueError("Rol inválido")
-            activos = db.session.execute(select(func.count()).select_from(Usuario).where(Usuario.organizacion_id == org_id, Usuario.activo.is_(True))).scalar()
-            tope = int((g.licencia or {}).get("max_usuarios") or 0)
-            if activos >= tope: raise ValueError(f"Su licencia permite {tope} usuario(s) activo(s)")
-            email, nombre = F["email"].strip().lower(), F["username"].strip()
-            if "@" not in email: raise ValueError("Correo inválido")
-            if db.session.execute(select(Usuario.id).where((Usuario.username == nombre) | (Usuario.email == email))).first():
-                raise ValueError("El usuario o el correo no están disponibles")
-            u = Usuario(organizacion_id=org_id, username=nombre, email=email, email_verificado=False, rol=F["rol"],
-                        password_hash=hashear(secrets.token_urlsafe(32)), debe_cambiar_clave=False)  # clave inutilizable hasta aceptar la invitación
-            db.session.add(u); db.session.flush()
-            enviar_invitacion(u, org.nombre, g.usuario.username)
-            registrar(g.usuario.username, "USUARIO_INVITADO", f"{nombre} rol={F['rol']}"); db.session.commit()
+        def guardar():
+            """Invita a un usuario nuevo o, si ya existe en la organización, lo mantiene y actualiza su puesto, módulos y empresas."""
+            rol = F["rol"]
+            if rol not in ROLES_CLIENTE: raise ValueError("Puesto inválido")
+            email, nombre = (F.get("email") or "").strip().lower(), (F.get("username") or "").strip()
+            if not nombre or "@" not in email: raise ValueError("Indique el usuario y un correo válido")
+            # Sin la lista de módulos (formularios anteriores o API) se conservan todos los del plan
+            modulos = None if rol == "Administrador" or not F.get("con_modulos") else _modulos_elegidos(F.getlist("modulos"), del_plan)
+            elegidas = {int(x) for x in F.getlist("empresas") if x.isdigit()}
+            if not elegidas <= {e.id for e in emps_org}: raise ValueError("Empresa inexistente")
+            por_nombre = db.session.execute(select(Usuario).where(Usuario.username == nombre)).scalar_one_or_none()
+            por_correo = db.session.execute(select(Usuario).where(Usuario.email == email)).scalar_one_or_none()
+            if por_nombre and por_correo and por_nombre.id != por_correo.id: raise ValueError("Ese usuario y ese correo pertenecen a cuentas distintas")
+            u = por_nombre or por_correo
+            if u is not None and u.organizacion_id != org_id: raise ValueError("El usuario o el correo no están disponibles")
+            if u is None:
+                activos = db.session.execute(select(func.count()).select_from(Usuario).where(Usuario.organizacion_id == org_id, Usuario.activo.is_(True))).scalar()
+                tope = int((g.licencia or {}).get("max_usuarios") or 0)
+                if activos >= tope: raise ValueError(f"Su licencia permite {tope} usuario(s) activo(s)")
+                u = Usuario(organizacion_id=org_id, username=nombre, email=email, email_verificado=False, rol=rol, modulos=modulos,
+                            password_hash=hashear(secrets.token_urlsafe(32)), debe_cambiar_clave=False)  # clave inutilizable hasta aceptar la invitación
+                db.session.add(u); db.session.flush()
+                enviar_invitacion(u, org.nombre, g.usuario.username); nuevo = True
+            else:
+                if u.id == g.usuario.id and rol != "Administrador": raise ValueError("No puede quitarse a sí mismo el puesto de Administrador")
+                if u.rol != rol or (u.modulos or None) != modulos: u.sesion_version += 1   # los permisos nuevos rigen de inmediato
+                u.rol, u.modulos = rol, modulos
+                if not u.email_verificado:
+                    if (u.email or "") != email: u.email = email
+                    enviar_invitacion(u, org.nombre, g.usuario.username)
+                nuevo = False
+            for e in emps_org:   # empresas asignadas = las marcadas
+                ex = db.session.get(UsuarioEmpresa, (u.id, e.id))
+                if e.id in elegidas and ex is None: db.session.add(UsuarioEmpresa(usuario_id=u.id, empresa_id=e.id))
+                if e.id not in elegidas and ex is not None: db.session.delete(ex)
+            registrar(g.usuario.username, "USUARIO_INVITADO" if nuevo else "USUARIO_ACTUALIZADO",
+                      f"{u.username} rol={rol} modulos={modulos or 'todos'} empresas={sorted(elegidas)}"); db.session.commit()
+            return (f"Invitación enviada a {email}." if nuevo else
+                    f"«{u.username}» ya existía: se mantuvo su cuenta y se actualizaron su puesto, módulos y empresas"
+                    + (" (se le reenvió la invitación)." if not u.email_verificado else "."))
         def estado():
             u = _usuario_de_mi_org(int(F["uid"]))
             if u.id == g.usuario.id: raise ValueError("No puede desactivarse a sí mismo")
             u.activo = not u.activo; u.sesion_version += 1
             registrar(g.usuario.username, "USUARIO_ACTIVO" if u.activo else "USUARIO_DESACTIVADO", u.username); db.session.commit()
-        def asignar():
-            u, e = _usuario_de_mi_org(int(F["uid"])), _empresa_de_mi_org(int(F["eid"]))
-            ex = db.session.get(UsuarioEmpresa, (u.id, e.id))
-            if a == "asignar" and ex is None: db.session.add(UsuarioEmpresa(usuario_id=u.id, empresa_id=e.id))
-            if a == "quitar" and ex is not None: db.session.delete(ex)
-            registrar(g.usuario.username, "EMPRESA_" + a.upper(), f"usuario={u.username} empresa={e.rif}"); db.session.commit()
+            return "Usuario " + ("activado" if u.activo else "desactivado: se cerraron sus sesiones")
         def reset():
             u = _usuario_de_mi_org(int(F["uid"]))
             if a == "reset_mfa":
@@ -77,25 +108,41 @@ def admin_usuarios():
                 from .auth.routes import enviar_recuperacion
                 enviar_recuperacion(u, "El administrador de su organización solicitó restablecer la contraseña de su cuenta.")
             registrar(g.usuario.username, a.upper(), u.username); db.session.commit()
-        acciones = {"crear": crear, "estado": estado, "asignar": asignar, "quitar": asignar, "reset_mfa": reset, "reinvitar": reset, "recuperar": reset}
+            return "Hecho"
+        acciones = {"crear": guardar, "guardar": guardar, "estado": estado, "reset_mfa": reset, "reinvitar": reset, "recuperar": reset}
         if a not in acciones: flash("Acción inválida"); return redirect(request.url)
-        intentar(acciones[a], "Hecho"); return redirect(request.url)
+        intentar(acciones[a], lambda msg: msg); return redirect(url_for("web.admin_usuarios"))
     us = db.session.execute(select(Usuario).where(Usuario.organizacion_id == org_id).order_by(Usuario.username)).scalars().all()
     asign = {}
     for ue, e in db.session.execute(select(UsuarioEmpresa, Empresa).join(Empresa, Empresa.id == UsuarioEmpresa.empresa_id).where(Empresa.organizacion_id == org_id)):
-        asign.setdefault(ue.usuario_id, []).append(e.razon_social)
-    emps = [(e.id, e.razon_social) for e in db.session.execute(select(Empresa).where(Empresa.organizacion_id == org_id).order_by(Empresa.razon_social)).scalars()]
-    sel = lambda: campo("uid", "Usuario", "select", opciones=[(u.id, u.username) for u in us])
+        asign.setdefault(ue.usuario_id, []).append(e)
+    sel = lambda: campo("uid", "Usuario", "select", opciones=[(u.id, f"{u.username} · {u.rol}") for u in us])
     estado_u = lambda u: "Activo" if u.activo and u.email_verificado and u.mfa_activo else ("Desactivado" if not u.activo else ("Invitado" if not u.email_verificado else "Sin MFA"))
+    nombres_mod = lambda u: "Todos" if u.rol == "Administrador" or not u.modulos else ", ".join(MODULOS[m] for m in sorted(modulos_usuario(u)))
+    # Editar: ?editar=<id> precarga el formulario con los datos del usuario
+    ed = next((u for u in us if str(u.id) == request.args.get("editar", "")), None)
+    puestos = [(r, r) for r in ROLES_CLIENTE]   # la descripción de cada puesto está en la tabla «Puestos disponibles»
     return pagina("Usuarios", None, [
-        dict(tabla=dict(cols=["Usuario", "Correo", "Rol", "Estado", "Empresas asignadas", "Último acceso"], filas=[
-            dict(cells=[u.username, u.email or "—", u.rol, estado_u(u), ", ".join(asign.get(u.id, [])) or ("Todas" if u.rol == "Administrador" else "—"),
-                        u.ultimo_login.strftime("%Y-%m-%d %H:%M") if u.ultimo_login else "—"]) for u in us])),
-        dict(titulo="Invitar usuario", nota="Se envía un enlace al correo (72 h) para que el usuario cree su propia contraseña; luego deberá activar MFA. Nadie más conoce su clave.",
-             form=dict(action=request.path, boton="Enviar invitación", campos=[h("crear"), campo("username", "Usuario"), campo("email", "Correo", "email"),
-                                                                              campo("rol", "Rol", "select", opciones=[(r, r) for r in ROLES_CLIENTE])])),
-        dict(titulo="Asignar empresa", form=dict(action=request.path, boton="Asignar", campos=[h("asignar"), sel(), campo("eid", "Empresa", "select", opciones=emps)])),
-        dict(titulo="Quitar empresa", form=dict(action=request.path, boton="Quitar", campos=[h("quitar"), sel(), campo("eid", "Empresa", "select", opciones=emps)])),
+        dict(kpis=[("Usuarios", len(us)), ("Activos", sum(estado_u(u) == "Activo" for u in us)), ("Invitados", sum(estado_u(u) == "Invitado" for u in us)),
+                   ("Cupo de la licencia", int((g.licencia or {}).get("max_usuarios") or 0))]),
+        dict(titulo="Usuarios de la organización", nota="Pulse un usuario para cambiar su puesto, sus módulos o sus empresas.",
+             tabla=dict(cols=["Usuario", "Correo", "Puesto", "Módulos", "Estado", "Empresas", "Último acceso"], filas=[
+            dict(cells=[u.username, u.email or "—", u.rol, nombres_mod(u), estado_u(u),
+                        ", ".join(e.razon_social for e in asign.get(u.id, [])) or ("Todas" if u.rol == "Administrador" else "—"),
+                        u.ultimo_login.strftime("%Y-%m-%d %H:%M") if u.ultimo_login else "—"],
+                 url=url_for("web.admin_usuarios", editar=u.id)) for u in us])),
+        dict(titulo=f"Editar a «{ed.username}»" if ed else "Invitar o actualizar usuario", abierto=True,
+             nota="Si el usuario o el correo ya existen en su organización, se mantiene la cuenta y se actualizan su puesto, sus módulos y sus empresas. "
+                  "Si es nuevo, recibe un enlace (72 h) para crear su contraseña y activar la verificación en dos pasos. "
+                  "El puesto fija qué puede hacer; los módulos limitan dónde. El Administrador siempre tiene todo.",
+             form=dict(action=request.path, boton="Guardar cambios" if ed else "Enviar invitación", campos=[h("guardar"), campo("con_modulos", "", "hidden", valor="1"),
+                 campo("username", "Usuario", valor=ed.username if ed else None), campo("email", "Correo", "email", valor=ed.email if ed else None),
+                 campo("rol", "Puesto o tipo de usuario", "select", opciones=puestos, valor=ed.rol if ed else "Auxiliar"),
+                 campo("modulos", "Módulos con acceso", "checks", req=False, opciones=[(m, MODULOS[m]) for m in del_plan],
+                       valor=sorted(modulos_usuario(ed) & set(del_plan)) if ed else del_plan),
+                 campo("empresas", "Empresas asignadas (el Administrador ve todas)", "checks", req=False, opciones=[(e.id, e.razon_social) for e in emps_org],
+                       valor=[e.id for e in asign.get(ed.id, [])] if ed else [])])),
+        dict(titulo="Puestos disponibles", tabla=dict(cols=["Puesto", "Qué puede hacer"], filas=[dict(cells=[r, PUESTOS.get(r, "")]) for r in ROLES_CLIENTE])),
         dict(titulo="Activar / desactivar", nota="Desactivar cierra de inmediato todas sus sesiones.", form=dict(action=request.path, boton="Cambiar estado", campos=[h("estado"), sel()])),
         dict(titulo="Reenviar invitación", form=dict(action=request.path, boton="Reenviar", campos=[h("reinvitar"), sel()])),
         dict(titulo="Enviar enlace de recuperación de contraseña", form=dict(action=request.path, boton="Enviar", campos=[h("recuperar"), sel()])),

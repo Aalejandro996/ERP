@@ -6,7 +6,10 @@ from sqlalchemy.dialects.postgresql import CITEXT
 
 from .extensions import db
 
-ROLES = ("Maestro", "Administrador", "Contador", "Auxiliar", "Auditor Financiero", "Cajero")
+ROLES = ("Maestro", "Administrador", "Contador", "Auxiliar", "Auditor Financiero", "Cajero",
+         # Puestos de una empresa (migración 012). El rol fija los permisos; los módulos de cada usuario los acota aún más.
+         "Gerente General", "Gerente Administrativo", "Analista Fiscal", "Tesorero", "Analista de Cuentas por Cobrar",
+         "Analista de Cuentas por Pagar", "Comprador", "Almacenista", "Facturador", "Vendedor", "Auditor Interno", "Consulta")
 ROLES_CLIENTE = ROLES[1:]  # el Maestro es del proveedor de la plataforma y no pertenece a ninguna organización
 
 
@@ -42,6 +45,7 @@ class Usuario(db.Model):
     activo = db.Column(db.Boolean, nullable=False, default=True)
     debe_cambiar_clave = db.Column(db.Boolean, nullable=False, default=True)
     mfa_activo = db.Column(db.Boolean, nullable=False, default=False)
+    modulos = db.Column(db.Text)                        # módulos con acceso, separados por comas (NULL = todos los del plan)
     mfa_secreto_cifrado = db.Column(db.Text)            # TOTP cifrado con Fernet (nunca en claro)
     mfa_ultimo_contador = db.Column(db.BigInteger, nullable=False, default=0)  # anti-reutilización de códigos
     intentos_fallidos = db.Column(db.Integer, nullable=False, default=0)
