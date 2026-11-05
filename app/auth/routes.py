@@ -290,21 +290,32 @@ def recuperar_token(token):
     if t is None:
         flash("El enlace no es válido o ya venció."); return redirect(url_for("auth.recuperar"))
     u = db.session.get(Usuario, t.usuario_id)
+    if u is None or not u.activo:
+        flash("El enlace no es válido o ya venció."); return redirect(url_for("auth.recuperar"))
     if request.method == "POST":
         c1, c2 = request.form.get("nueva", ""), request.form.get("repetir", "")
         err = politica_clave(c1, u.username, u.email or "") or (None if c1 == c2 else "Las contraseñas no coinciden")
         if not err and clave_reutilizada(u, c1): err = "No puede reutilizar una de sus últimas contraseñas"
+        # Confirmar que es usted: con MFA activo, el enlace del correo no basta; sin un código válido la clave no cambia
+        via = None
+        if not err and u.mfa_activo:
+            via = _mfa_confirmado(u, request.form.get("codigo"))
+            if via is None:
+                registrar(u.username, "RECUPERACION_MFA_FALLIDO", org=u.organizacion_id); db.session.commit()
+                err = "El código de verificación no es correcto. La contraseña no se cambió."
         if err:
             flash(err)
         else:
             consumir_token(token, "recuperar")
             fijar_clave(u, c1); u.debe_cambiar_clave = False
-            registrar(u.username, "CLAVE_RESTABLECIDA_CORREO", org=u.organizacion_id); db.session.commit()
-            correo.enviar_seguro(u.email, "Contraseña cambiada", f"La contraseña de «{u.username}» se cambió y se cerraron todas sus sesiones.")
+            registrar(u.username, "CLAVE_RESTABLECIDA_CORREO", f"confirmada con {via or 'sin MFA'}", org=u.organizacion_id); db.session.commit()
+            correo.enviar_seguro(u.email, "Contraseña cambiada", f"La contraseña de «{u.username}» se cambió desde el enlace de recuperación"
+                                 f"{' y se confirmó con su verificación en dos pasos' if via else ''}. Se cerraron todas sus sesiones.")
             session.clear()
-            flash("Contraseña actualizada. Inicie sesión (se le pedirá su código MFA).")
+            flash("Contraseña actualizada y confirmada. Inicie sesión con la contraseña nueva." if via else
+                  "Contraseña actualizada. Al entrar se le pedirá activar la verificación en dos pasos.")
             return redirect(url_for("auth.login"))
-    return render_template("auth.html", vista="restablecer")
+    return render_template("auth.html", vista="restablecer", usuario=u.username, pide_mfa=u.mfa_activo)
 
 
 @bp.route("/cambiar-clave", methods=["GET", "POST"])
@@ -339,6 +350,17 @@ def _generar_codigos(u) -> list[str]:
         codigos.append(c)
         db.session.add(CodigoRecuperacion(usuario_id=u.id, codigo_hash=sha256(c)))
     return codigos
+
+
+def _mfa_confirmado(u, ingresado) -> str | None:
+    """Código TOTP (sin reutilizar) o código de respaldo de un solo uso. Devuelve cómo se confirmó, o None."""
+    ingresado = (ingresado or "").strip()
+    if not u.mfa_activo or not u.mfa_secreto_cifrado or not ingresado: return None
+    c = totp.verificar(current_app.extensions["cifrador"].descifrar(u.mfa_secreto_cifrado), ingresado, u.mfa_ultimo_contador)
+    if c is not None:
+        u.mfa_ultimo_contador = c; return "totp"
+    if len(ingresado) > 6 and _usar_codigo_respaldo(u, ingresado): return "respaldo"
+    return None
 
 
 def _usar_codigo_respaldo(u, ingresado) -> bool:
