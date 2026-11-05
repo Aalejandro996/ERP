@@ -25,3 +25,11 @@ def test_opcionales_y_huella():
     assert L.texto_plano(c) == L.texto_plano(dict(c)) and L.texto_plano(c) != L.texto_plano(_c())
     assert L.sugerir_opcionales("Integración del bot de WhatsApp con Profit Plus; soporte mensual") == ["whatsapp", "profit", "soporte"]
     assert set(L.PAGINAS) == {"terminos", "privacidad", "cookies"}
+
+
+def test_otros_sistemas_usan_la_normativa_de_contax():
+    contax, cs = L.clausulas(_c()), L.clausulas(_c(sistema="criteriseg"))
+    assert [t for t, _ in contax] == [t for t, _ in cs]                       # mismas cláusulas, mismo orden
+    texto = " ".join(p for _, ps in cs for p in ps)
+    assert "«CriteriSeg» es el sistema de software propiedad de GIGADEVS" in texto and "Contax®" not in texto and "LOCDOFT" in texto
+    assert L.texto_plano(_c(sistema="contax")) == L.texto_plano(_c())          # contratos anteriores: misma huella

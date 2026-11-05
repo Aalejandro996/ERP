@@ -12,6 +12,17 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy import Column, Float, Integer, MetaData, Numeric, String, Table, Text, func, insert, select, update
 
 D2 = Decimal("0.01")
+# Sistemas de Gigadevs que cotizan y contratan. Todos usan el mismo emisor y las mismas cláusulas legales (las de Contax).
+SISTEMAS = {"contax": "Contax®", "criteriseg": "CriteriSeg", "bot_whatsapp": "Enlace MIT", "control_financiero": "Quincena VE"}
+
+
+def sistema_de(valor) -> str:
+    """Sistema válido; los registros anteriores a esta columna (vacíos) son de Contax."""
+    v = str(valor or "contax").strip()
+    if v not in SISTEMAS: raise ValueError("Sistema inválido")
+    return v
+
+
 ESTADOS = ("Emitido", "Enviado", "Aceptado", "Rechazado", "Anulado")
 md = MetaData()
 presupuestos = Table(
@@ -25,7 +36,8 @@ presupuestos = Table(
     Column("subtotal", Numeric(14, 2), nullable=False), Column("iva_pct", Numeric(6, 2), nullable=False),
     Column("iva", Numeric(14, 2), nullable=False), Column("total", Numeric(14, 2), nullable=False),
     Column("condiciones", Text), Column("estado", String(10), nullable=False, default="Emitido"),
-    Column("creado_por", Text), Column("creado_en", Float, nullable=False), Column("correo_enviado_en", Float))
+    Column("creado_por", Text), Column("creado_en", Float, nullable=False), Column("correo_enviado_en", Float),
+    Column("sistema", String(40)))
 
 
 def instalar(eng):
@@ -79,7 +91,7 @@ def crear(con, d: dict, iva_pct, reloj=time.time) -> int:
     numero = (con.execute(select(func.max(presupuestos.c.numero))).scalar() or 0) + 1
     periodo = d.get("periodo") if d.get("periodo") in ("mensual", "anual", "unico") else "anual"
     return con.execute(insert(presupuestos).values(
-        numero=numero, fecha=hoy.isoformat(), valido_hasta=(hoy + timedelta(days=dias)).isoformat(), organizacion_ref=d.get("organizacion_ref"),
+        numero=numero, sistema=sistema_de(d.get("sistema")), fecha=hoy.isoformat(), valido_hasta=(hoy + timedelta(days=dias)).isoformat(), organizacion_ref=d.get("organizacion_ref"),
         cliente_nombre=nombre, **{k: (str(d.get(k) or "").strip()[:300] or None) for k in ("cliente_rif", "cliente_correo", "cliente_direccion", "cliente_telefono", "atencion", "titulo")},
         periodo=periodo, lineas=json.dumps(lineas, ensure_ascii=False), subtotal=q2(subtotal), iva_pct=iva_pct, iva=iva, total=q2(subtotal + iva),
         condiciones=str(d.get("condiciones") or "").strip()[:3000] or None, estado="Emitido", creado_por=str(d.get("autor") or "")[:80], creado_en=reloj())
@@ -90,6 +102,7 @@ def como_dict(fila) -> dict:
     d = {k: (str(v) if isinstance(v, Decimal) else v) for k, v in dict(fila._mapping).items()}
     d["lineas"] = json.loads(d["lineas"])
     d["numero_txt"] = f"P-{int(d['numero']):06d}"
+    d["sistema"] = d.get("sistema") or "contax"; d["sistema_nombre"] = SISTEMAS.get(d["sistema"], d["sistema"])
     return d
 
 
@@ -110,7 +123,7 @@ contratos = Table(
     Column("opcionales", Text), Column("especiales", Text), Column("estado", String(10), nullable=False, default="Borrador"),
     Column("version_legal", Text), Column("creado_por", Text), Column("creado_en", Float, nullable=False), Column("enviado_en", Float),
     Column("firmado_en", Float), Column("firma_nombre", Text), Column("firma_ci", Text), Column("firma_ip", Text), Column("firma_agente", Text),
-    Column("firma_hash", String(64)))
+    Column("firma_hash", String(64)), Column("sistema", String(40)))
 
 
 def crear_contrato(con, d: dict, reloj=time.time) -> int:
@@ -131,7 +144,7 @@ def crear_contrato(con, d: dict, reloj=time.time) -> int:
     numero = (con.execute(select(func.max(contratos.c.numero))).scalar() or 0) + 1
     sop = d.get("soporte_mensual")
     return con.execute(insert(contratos).values(
-        numero=numero, presupuesto_id=p.id, cliente_nombre=t("cliente_nombre", 200) or p.cliente_nombre, cliente_rif=rif or None,
+        numero=numero, presupuesto_id=p.id, sistema=p.sistema or "contax", cliente_nombre=t("cliente_nombre", 200) or p.cliente_nombre, cliente_rif=rif or None,
         cliente_domicilio=t("cliente_domicilio") or p.cliente_direccion, cliente_correo=(t("cliente_correo") or p.cliente_correo or "").lower() or None,
         representante=t("representante"), representante_ci=t("representante_ci", 20), representante_cargo=t("representante_cargo", 80),
         objeto=t("objeto", 2000) or "; ".join(l["descripcion"] for l in lineas), monto=q2(d.get("monto") or p.total),
@@ -146,4 +159,5 @@ def contrato_dict(fila, presupuesto_numero=None) -> dict:
     d["numero_txt"] = f"C-{int(d['numero']):06d}"
     d["opcionales"] = [x for x in (d.get("opcionales") or "").split(",") if x]
     d["presupuesto_txt"] = f"P-{int(presupuesto_numero):06d}" if presupuesto_numero else ""
+    d["sistema"] = d.get("sistema") or "contax"; d["sistema_nombre"] = SISTEMAS.get(d["sistema"], d["sistema"])
     return d

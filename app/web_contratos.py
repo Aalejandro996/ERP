@@ -8,6 +8,7 @@ from markupsafe import escape
 
 from . import legal as L
 from . import plantilla_correo as pc
+from . import sistemas
 from .auditoria import registrar
 from .extensions import db, limiter
 from .web import F, bp, campo, pagina, ruta
@@ -33,6 +34,7 @@ def huella(c) -> str:
 @ruta("/plataforma/contratos", "plataforma", ("GET", "POST"))
 def maestro_contratos():
     from .licensing.admin import ErrorAdmin
+    sid = sistemas.actual(); S = sistemas.SISTEMAS[sid]
     if request.method == "POST":
         try:
             r = _admin().crear_contrato(**{k: F.get(k) for k in ("presupuesto_id", "cliente_nombre", "cliente_rif", "cliente_domicilio", "cliente_correo", "representante",
@@ -45,7 +47,7 @@ def maestro_contratos():
             db.session.rollback(); flash(str(e))
         return redirect(request.url)
     try:
-        adm = _admin(); cts, ps = adm.contratos(), adm.presupuestos()
+        adm = _admin(); cts, ps = adm.contratos(sistema=sid), adm.presupuestos(sistema=sid)
     except (ErrorAdmin, ValueError, OSError) as e:
         flash(str(e)); cts, ps = [], []
     con_contrato = {c["presupuesto_id"] for c in cts if c["estado"] != "Anulado"}
@@ -55,7 +57,7 @@ def maestro_contratos():
     sugeridas = L.sugerir_opcionales(" ".join(l["descripcion"] + " " + (l.get("detalle") or "") for l in p["lineas"]) + " " + (p.get("condiciones") or "")) if p else []
     secs = [dict(kpis=[("Contratos", len(cts)), ("Por firmar", sum(c["estado"] in ("Borrador", "Enviado") for c in cts)), ("Firmados", sum(c["estado"] == "Firmado" for c in cts)),
                        ("Presupuestos aceptados sin contrato", len(aceptados))]),
-            dict(titulo="Contratos", tabla=dict(cols=["N°", "Cliente", "Presupuesto", "Monto USD", "Vigencia", "Estado"], num=[3], filas=[
+            dict(titulo=f"Contratos de {S['nombre']}", tabla=dict(cols=["N°", "Cliente", "Presupuesto", "Monto USD", "Vigencia", "Estado"], num=[3], filas=[
                 dict(cells=[c["numero_txt"], c["cliente_nombre"], c["presupuesto_txt"], c["monto"], f"{c['inicio']} → {c['fin']}", c["estado"]],
                      url=url_for("web.maestro_contrato_ver", cid=c["id"]), clase="anulado" if c["estado"] == "Anulado" else "") for c in cts]))]
     if not aceptados:
@@ -63,10 +65,10 @@ def maestro_contratos():
     else:
         opciones = [(x["id"], f"{x['numero_txt']} · {x['cliente_nombre']} · ${x['total']}") for x in aceptados]
         lineas_txt = "; ".join(l["descripcion"] for l in p["lineas"])
-        secs.append(dict(titulo="Armar contrato", abierto=True, nota="Elija el presupuesto aceptado: el objeto, el monto y el cliente se toman de él. Complete el representante "
+        secs.append(dict(titulo="Armar contrato", abierto=True, nota=f"Las cláusulas legales son las de Contax (versión {L.VERSION}); el sistema contratado es {S['nombre']}. Elija el presupuesto aceptado: el objeto, el monto y el cliente se toman de él. Complete el representante "
                          "legal y marque las cláusulas especiales que apliquen (ya vienen sugeridas según lo cotizado). Las cláusulas fijas cubren pagos y SENIAT, "
                          "LC/FT (LOCDOFT y ONCDOFT), delitos informáticos, datos personales, propiedad intelectual, firma electrónica, responsabilidad y jurisdicción.",
-                         form=dict(action=request.path, boton="Armar contrato", campos=[
+                         form=dict(action=url_for("web.maestro_contratos", sistema=sid), boton="Armar contrato", campos=[campo("sistema", "", "hidden", valor=sid),
                              campo("presupuesto_id", "Presupuesto aceptado", "select", opciones=opciones, valor=p["id"]),
                              campo("cliente_nombre", "Razón social del cliente", valor=p["cliente_nombre"]), campo("cliente_rif", "RIF (J-12345678-9)", valor=p.get("cliente_rif")),
                              campo("cliente_domicilio", "Domicilio fiscal", valor=p.get("cliente_direccion")), campo("cliente_correo", "Correo para notificaciones y firma", "email", valor=p.get("cliente_correo")),
@@ -78,7 +80,7 @@ def maestro_contratos():
                              campo("inicio", "Inicio", "date", valor=date.today().isoformat()), campo("meses", "Duración (meses)", "number", valor=12),
                              campo("opcionales", "Cláusulas especiales", "checks", req=False, opciones=list(L.NOMBRE_OPCIONAL.items()), valor=sugeridas),
                              campo("especiales", "Estipulaciones adicionales (una por línea, opcional)", "textarea", req=False)])))
-    return pagina("Contratos", None, secs, acciones=[dict(url=url_for("web.legal", pagina="terminos"), texto="Ver términos y condiciones")])
+    return pagina(f"Contratos · {S['nombre']}", None, secs, acciones=[dict(url=url_for("web.legal", pagina="terminos"), texto="Ver términos y condiciones")])
 
 
 @ruta("/plataforma/contratos/<int:cid>", "plataforma", ("GET", "POST"))
@@ -105,7 +107,7 @@ def maestro_contrato_ver(cid):
                                                    f'<input type="hidden" name="accion" value="{accion}">{extra}<button style="{st};{estilo}">{texto}</button></form>')
     integro = (c.get("firma_hash") == huella(c)) if c["estado"] == "Firmado" else None
     barra = (f'<div class="no-print" style="max-width:760px;margin:16px auto 0;font-family:sans-serif;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
-             f'<a href="{url_for("web.maestro_contratos")}" style="{st};border:1px solid #ccc;color:#191919;text-decoration:none;background:#fff">← Contratos</a>'
+             f'<a href="{url_for("web.maestro_contratos", sistema=c.get("sistema") or "contax")}" style="{st};border:1px solid #ccc;color:#191919;text-decoration:none;background:#fff">← Contratos</a>'
              f'<button type="button" data-imprimir style="{st};border:1px solid #ccc;background:#fff">Imprimir / PDF</button>'
              + (form("enviar", "Enviar para firma", "border:0;background:#87e64b;color:#1a4200",
                      f'<input name="correo" type="email" placeholder="{escape(c.get("cliente_correo") or "correo del cliente")}" style="padding:9px;border:1px solid #ccc;border-radius:10px;margin-right:4px">')

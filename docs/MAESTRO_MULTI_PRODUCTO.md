@@ -21,3 +21,18 @@ Una licencia de entorno cerrado es un token firmado y limitado por vencimiento. 
 ## Operación
 
 Desde el panel ERP, el rol `plataforma` puede revisar los productos, crear/activar planes, registrar suscripciones, cambiar estado, entorno, fechas y límites, y descargar la licencia firmada. El panel conserva el ERP como producto existente y registra las suscripciones de los otros sistemas en las tablas `lic_productos`, `lic_planes_producto` y `lic_suscripciones` del almacén de licencias.
+
+## Selector de sistemas y módulos por sistema
+
+Al iniciar sesión, el Maestro solo ve el selector de sistemas, sin menú lateral. Al elegir un sistema, el menú lateral muestra solo los módulos de ese sistema (registro en `app/sistemas.py`), y la elección queda en la sesión.
+
+- **Contax** (central): clientes, licencias, cobros y precios, presupuestos, contratos, facturación, Gigadevs en Contax, normativa legal y plataforma.
+- **CriteriSeg, Enlace MIT y Quincena VE**: suscripciones y planes, presupuestos, contratos y facturación propios, y la normativa de Contax.
+
+Cada sistema emite **sus propios** presupuestos, contratos y facturas (columna `sistema` en `lic_presupuestos`, `lic_contratos` y `lic_facturas`; los registros anteriores son de Contax). Todos usan el mismo emisor (Gigadevs Corp), la misma serie y los mismos números de control, y las mismas cláusulas legales de Contax, que nombran el sistema contratado.
+
+## Gigadevs en Contax
+
+Contax lleva la contabilidad, la administración y la parte fiscal de Gigadevs con una licencia **All in One de pago único** (10 años, el máximo del servidor, renovable sin costo). Configure en `erp-web` la variable `GIGADEVS_USUARIO` con el nombre de usuario o correo responsable; luego emita la licencia desde **Contax → Gigadevs en Contax**.
+
+El logo de Enlace MIT se toma de `app/static/marca/enlace-mit.svg` (o `.png`) cuando exista; si no, se muestra el monograma «EM».

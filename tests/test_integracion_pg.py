@@ -173,7 +173,12 @@ def test_flujo_completo(entorno):
     r = root.post("/login", data={"usuario": "root", "clave": CLAVE}); assert r.headers["Location"].endswith("/mfa/verificar")
     r = root.post("/mfa/verificar", data={"codigo": "000000"}); assert b"incorrecto" in r.data
     r = root.post("/mfa/verificar", data={"codigo": totp.codigo(sec_root)}); assert r.status_code == 302
-    assert root.get("/").headers["Location"].endswith("/plataforma")
+    assert root.get("/").headers["Location"].endswith("/plataforma/sistemas")
+    # al entrar, el Maestro solo ve el selector de sistemas: sin menú lateral hasta elegir uno
+    sel = root.get("/plataforma/sistemas").get_data(as_text=True)
+    assert "app-maestro-selector" in sel and "¿Qué sistema quieres gestionar?" in sel and "Cobros y precios" not in sel
+    for nombre in ("Contax", "CriteriSeg", "Enlace MIT", "Quincena VE", "Planificación de auditoría", "Envío de mensajes"):
+        assert nombre in sel, nombre
     # Un redespliegue con eventos del Maestro en la bitácora NO debe inventar una «Organización principal»
     import pathlib as _pl
     with owner.connect() as c:
@@ -851,6 +856,40 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     assert "ACEPTADO ELECTRÓNICAMENTE" in r.get_data(as_text=True) and "Aceptación electrónica" not in r.get_data(as_text=True)
     assert "coincide con la huella firmada" in root.get(ct_url).get_data(as_text=True)
     assert cli.get(firma[:-4] + "abcd").status_code == 404
+
+    # --- Cada sistema tiene sus módulos en el menú lateral y sus propios presupuestos, contratos y facturas (normativa de Contax)
+    contax = root.get("/plataforma").get_data(as_text=True)
+    assert "app-maestro-selector" not in contax and "Cobros y precios" in contax and "Gigadevs en Contax" in contax and "Suscripciones y planes" not in contax
+    cs = root.get("/plataforma/suscripciones?producto=criteriseg").get_data(as_text=True)
+    assert "Suscripciones y planes" in cs and "Cobros y precios" not in cs and "Normativa (Contax)" in cs
+    t = root.get("/plataforma/presupuestos").get_data(as_text=True)          # el sistema elegido queda en la sesión
+    assert "Presupuestos de CriteriSeg" in t and "P-000001" not in t and "Precios vigentes" not in t
+    assert "plan:ALL_IN_ONE" not in root.get("/plataforma/presupuestos/nuevo").get_data(as_text=True)
+    r = root.post("/plataforma/presupuestos", data={"accion": "crear", "sistema": "criteriseg", "cliente_nombre": "Banco Llanero", "cliente_correo": "ti@llanero.test",
+                                                    "periodo": "anual", "items": ["plan:ALL_IN_ONE"], "l1_desc": "Licencia CriteriSeg institucional", "l1_cant": "1",
+                                                    "l1_precio": "500", "l1_alic": "G"})
+    cs_px = r.headers["Location"]
+    assert "Banco Llanero" in root.get("/plataforma/presupuestos?sistema=criteriseg").get_data(as_text=True)
+    assert "Banco Llanero" not in root.get("/plataforma/presupuestos?sistema=contax").get_data(as_text=True)
+    assert "580,00" in root.get(cs_px).get_data(as_text=True)                 # solo el servicio cotizado (+ IVA): el catálogo de Contax no aplica
+    root.post(cs_px, data={"accion": "Aceptado"})
+    r = root.post("/plataforma/contratos?sistema=criteriseg", data={"sistema": "criteriseg", "presupuesto_id": re.search(r"/presupuestos/(\d+)", cs_px).group(1),
+                  "cliente_nombre": "Banco Llanero, C.A.", "cliente_rif": "J-30000000-1", "cliente_domicilio": "San Juan de los Morros", "cliente_correo": "ti@llanero.test",
+                  "representante": "Luis Mora", "representante_ci": "V-11111111", "representante_cargo": "Presidente", "objeto": "Licencia CriteriSeg",
+                  "forma_pago": "100% al firmar", "inicio": "2026-11-01", "meses": "12"})
+    t = root.get(r.headers["Location"]).get_data(as_text=True)
+    assert "«CriteriSeg» es el sistema de software propiedad de GIGADEVS" in t and "LOCDOFT" in t and "Contax®" not in t.split("PRIMERA", 1)[1].split("Forman parte")[0]
+    assert "Banco Llanero" not in root.get("/plataforma/contratos?sistema=contax").get_data(as_text=True)
+    r = root.post("/plataforma/facturas?sistema=criteriseg", data={"accion": "crear", "sistema": "criteriseg", "cliente_nombre": "Banco Llanero, C.A.",
+                                                                  "cliente_rif": "J-30000000-1", "moneda": "USD", "tasa": "36.5",
+                                                                  "l1_desc": "Licencia CriteriSeg", "l1_cant": "1", "l1_precio": "100", "l1_alic": "G"})
+    fs_cs = root.get("/plataforma/facturas?sistema=criteriseg").get_data(as_text=True)
+    assert "Facturas de CriteriSeg" in fs_cs and "Banco Llanero" in fs_cs and "J-30000000-1" in fs_cs and "Emitida" in fs_cs and "Datos fiscales de Gigadevs" not in fs_cs
+    assert "Licencia CriteriSeg" not in root.get("/plataforma/facturas?sistema=contax").get_data(as_text=True)
+    assert root.post("/plataforma/facturas?sistema=criteriseg", data={"accion": "rango", "desde": "60", "hasta": "70", "fecha": "2026-10-01"},
+                     follow_redirects=True).get_data(as_text=True).count("se administran en Contax") == 1
+    giga = root.get("/plataforma/gigadevs").get_data(as_text=True)
+    assert "Gigadevs dentro de Contax" in giga and "GIGADEVS_USUARIO" in giga and "Cobros y precios" in giga
     # portada pública de Contax: funciones, planes con los precios vigentes del catálogo y enlaces legales
     portada = _cliente(app).get("/").get_data(as_text=True)
     for txt in ("Factura, lleva tu contabilidad y vende por WhatsApp", "Bot de WhatsApp", "Planes", "All in One", "$69", "Iniciar sesión", "/legal/terminos"):

@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% block contenido %}
-<div class="cabecera"><div><div class="ruta">Consola Maestro · Presupuestos</div><h1>Nuevo presupuesto</h1></div>
-<div class="acciones"><a class="btn sec" href="{{ url_for('web.maestro_presupuestos') }}">← Presupuestos</a></div></div>
+<div class="cabecera"><div><div class="ruta">{{ sistema_nombre }} · Presupuestos</div><h1>Nuevo presupuesto</h1></div>
+<div class="acciones"><a class="btn sec" href="{{ url_for('web.maestro_presupuestos', sistema=sistema) }}">← Presupuestos</a></div></div>
 <script type="application/json" id="datos-presupuesto">{{ datos_js|safe }}</script>
-<form method="post" action="{{ url_for('web.maestro_presupuestos') }}" id="form-presupuesto" class="px">
-<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="accion" value="crear">
+<form method="post" action="{{ url_for('web.maestro_presupuestos', sistema=sistema) }}" id="form-presupuesto" class="px">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="accion" value="crear"><input type="hidden" name="sistema" value="{{ sistema }}">
 <div class="px-cuerpo">
   <section><h2><span class="px-n">1</span> Cliente</h2>
     <label class="px-ancho">Cliente registrado en Contax
@@ -23,9 +23,10 @@
       {% for v, t, s in [('anual', 'Anual', '12 meses · 2 de regalo'), ('mensual', 'Mensual', 'pago mes a mes'), ('unico', 'Pago único', 'servicios e implementación')] %}
       <label><input type="radio" name="periodo" value="{{ v }}" {{ 'checked' if loop.first }}><span><b>{{ t }}</b><small>{{ s }}</small></span></label>{% endfor %}
     </div>
-    <label class="px-ancho">Título del presupuesto<input name="titulo" maxlength="200" placeholder="Implementación de Contax® All in One"></label></section>
+    <label class="px-ancho">Título del presupuesto<input name="titulo" maxlength="200" placeholder="{{ 'Implementación de Contax® All in One' if sistema == 'contax' else 'Implementación de ' ~ sistema_nombre }}"></label></section>
 
   <section><h2><span class="px-n">3</span> Del catálogo <small class="peq">precio vigente · IVA incluido</small></h2>
+    {% if not catalogo|selectattr(1)|list %}<p class="peq">{{ sistema_nombre }} cotiza a la medida: cargue los servicios en el paso 4. Condiciones, IVA y emisor son los de Contax.</p>{% endif %}
     {% for grupo, items in catalogo %}{% if items %}<div class="px-subt">{{ grupo }}</div>
     <div class="px-cards">{% for it in items %}
       <label class="px-card"><input type="checkbox" name="items" value="{{ it.clave }}">

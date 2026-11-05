@@ -35,6 +35,9 @@ class Config:
     RATELIMIT_STORAGE_URI = os.environ.get("RATELIMIT_STORAGE_URI", "memory://")
 
     # Correo (verificación, invitaciones, recuperación, alertas). APP_BASE_URL fija el dominio de los enlaces.
+    # Usuario (nombre o correo) que llevará la contabilidad, administración y parte fiscal de Gigadevs dentro de Contax.
+    # Su organización recibe la licencia All in One de pago único y será el destino contable de los demás sistemas.
+    GIGADEVS_USUARIO = os.environ.get("GIGADEVS_USUARIO", "").strip()
     APP_NOMBRE = os.environ.get("APP_NOMBRE", "Contax")
     APP_LEMA = os.environ.get("APP_LEMA", "Tu empresa en orden. Tu fisco al día.")
     APP_BASE_URL = _req("APP_BASE_URL")

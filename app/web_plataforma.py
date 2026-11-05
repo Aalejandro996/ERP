@@ -15,6 +15,7 @@ from .contabilidad.validadores import a_decimal, parsear_fecha
 from .extensions import db
 from .models import AuditLog, Organizacion, Usuario
 from .models2 import AlicuotaImpuesto, ConceptoRetencionISLR, IndiceINPC, TarifaISLR, TasaCambio, UnidadTributaria
+from . import sistemas
 from .planes import nombre_plan
 from .security import hashear
 from .web import F, campo, hoy, intentar, pagina, ruta, validar_rif
@@ -328,6 +329,72 @@ def maestro_licencias():
     return pagina("Licencias", None, secs)
 
 
+# Licencia de Gigadevs en Contax: pago único, sin vencimiento práctico (10 años, el máximo del servidor, renovable sin costo).
+DIAS_PAGO_UNICO = 3650
+
+
+def _usuario_gigadevs():
+    """(usuario, organización) responsables de Gigadevs en Contax según GIGADEVS_USUARIO, o (None, None) si falta."""
+    ref = (current_app.config.get("GIGADEVS_USUARIO") or "").strip()
+    if not ref: return None, None
+    u = db.session.execute(select(Usuario).where((Usuario.username == ref) | (Usuario.email == ref.lower()))).scalar_one_or_none()
+    if u is None or u.organizacion_id is None: return u, None
+    return u, db.session.get(Organizacion, u.organizacion_id)
+
+
+@ruta("/plataforma/gigadevs", "plataforma", ("GET", "POST"))
+def maestro_gigadevs():
+    """Contax lleva la contabilidad, la administración y la parte fiscal de Gigadevs con una licencia All in One de pago único."""
+    from .licensing.admin import ErrorAdmin
+    from .planes import MODULOS
+    ref = (current_app.config.get("GIGADEVS_USUARIO") or "").strip()
+    u, org = _usuario_gigadevs()
+    lics = []
+    if org is not None:
+        try: lics = _admin().licencias(org=str(org.id))
+        except (ErrorAdmin, ValueError, OSError) as e: flash(str(e)[:200])
+    vigente = next((l for l in lics if l["plan"] == "ALL_IN_ONE" and l["estado"] == "activa" and l["vence_en"] > time.time()), None)
+    if request.method == "POST":
+        try:
+            if F.get("accion") != "emitir": raise ValueError("Acción inválida")
+            if org is None: raise ValueError("Primero configure GIGADEVS_USUARIO con el usuario que llevará Gigadevs en Contax")
+            if vigente: raise ValueError(f"Gigadevs ya tiene su licencia All in One vigente (#{vigente['id']})")
+            r = _admin().crear_licencia(cliente=org.nombre, correo=(u.email or org.correo_contacto or "").strip().lower(), organizacion_ref=str(org.id),
+                                        plan="ALL_IN_ONE", dias=DIAS_PAGO_UNICO, max_usuarios=int(F.get("usuarios") or 10), max_empresas=int(F.get("empresas") or 5),
+                                        max_equipos=int(F.get("equipos") or 10), max_instancias=int(F.get("equipos") or 10), autor=g.usuario.username)
+            registrar(g.usuario.username, "LICENCIA_GIGADEVS", f"licencia={r['id']} org={org.rif} plan=ALL_IN_ONE pago_unico", org=None); db.session.commit()
+            flash("Licencia All in One de pago único emitida para Gigadevs. La clave se envió por correo al usuario responsable.")
+        except (ErrorAdmin, ValueError, OSError) as e:
+            db.session.rollback(); flash(str(e)[:250])
+        return redirect(url_for("web.maestro_gigadevs"))
+    if not ref: estado = "Pendiente: falta el usuario"
+    elif u is None: estado = f"El usuario «{ref}» no existe todavía"
+    elif org is None: estado = f"«{ref}» no pertenece a una organización"
+    else: estado = f"{u.username} · {org.nombre} ({org.rif})"
+    secs = [dict(kpis=[("Usuario responsable", u.username if u else "Pendiente"), ("Organización", org.nombre if org else "—"),
+                       ("Licencia", "All in One · pago único" if vigente else "Sin emitir"), ("Vence", _fecha(vigente["vence_en"]) if vigente else "—")]),
+            dict(titulo="Gigadevs dentro de Contax", clase="maestro-hero",
+                 nota="Contax lleva la contabilidad, la administración, la parte fiscal y la normativa legal de Gigadevs Corp con una licencia "
+                      "All in One de pago único. CriteriSeg, Enlace MIT y Quincena VE emiten sus propios presupuestos, contratos y facturas con el "
+                      "emisor, la numeración fiscal y las cláusulas legales de Contax; esas operaciones se llevarán a la contabilidad de esta organización."),
+            dict(titulo="Vínculo", clase="maestro-contexto", pares=[("Estado", estado), ("Variable", "GIGADEVS_USUARIO (servicio erp-web en Render)"),
+                 ("Módulos de la licencia", ", ".join(MODULOS.values())), ("Modalidad", f"Pago único · {DIAS_PAGO_UNICO // 365} años, renovable sin costo")])]
+    if org is not None and not vigente:
+        secs.append(dict(titulo="Emitir licencia All in One de pago único", clase="maestro-form",
+                         nota="La clave se envía una sola vez al correo del usuario responsable. No genera factura: es la licencia interna de Gigadevs.",
+                         form=dict(action=request.path, boton="Emitir licencia de Gigadevs", campos=[h("emitir"),
+                             campo("usuarios", "Usuarios", "number", valor=10), campo("empresas", "Empresas", "number", valor=5),
+                             campo("equipos", "Equipos", "number", valor=10)])))
+    elif org is None:
+        secs.append(dict(titulo="Qué falta", nota="Cree (o invite) al usuario que manejará Gigadevs en Contax y cargue su nombre de usuario o correo en la "
+                         "variable GIGADEVS_USUARIO. Al volver aquí podrá emitir la licencia All in One de pago único."))
+    if lics:
+        secs.append(dict(titulo="Licencias de la organización", tabla=dict(cols=["#", "Plan", "Estado", "Usuarios", "Empresas", "Vence"], num=[3, 4], filas=[
+            dict(cells=[l["id"], nombre_plan({"plan": l["plan"]}) if l["plan"] else "Legado", l["estado"], l["max_usuarios"], l["max_empresas"], _fecha(l["vence_en"])])
+            for l in lics])))
+    return pagina("Gigadevs en Contax", None, secs)
+
+
 @ruta("/plataforma/suscripciones", "plataforma", ("GET", "POST"))
 def maestro_suscripciones():
     from .licensing.admin import ErrorAdmin
@@ -386,7 +453,7 @@ def maestro_suscripciones():
     opciones_modulos = [(m["codigo"], m["nombre"]) for m in producto.get("modulos", [])]
     modulos_todos = [codigo for codigo, _ in opciones_modulos]
     descripciones = {
-        "criteriseg": "Tecnología y operaciones seguras · licencias por organización · nube o entorno privado",
+        "criteriseg": "Auditoría y cumplimiento · licencias por organización · nube o entorno privado",
         "bot_whatsapp": "Mensajería para organizaciones · opción de instalación cerrada · cotización por organización",
         "control_financiero": "Finanzas personales por quincena · cuenta individual · titular con correo verificado",
     }
@@ -424,7 +491,7 @@ def maestro_suscripciones():
                         num=[8, 9], filas=filas, ancha=True)),
         dict(titulo=f"Planes de {producto['nombre']}", clase="maestro-panel", nota="Precios internos sin publicar. Todo producto nuevo conserva «Cotizar» hasta definir sus condiciones comerciales.",
              tabla=dict(cols=["Código", "Plan", "Precio", "Estado"], filas=planes_filas, accion=True)),
-        dict(clase="maestro-form", asistente=dict(action=action_url, boton="Crear suscripción y preparar licencia", titulo="Nueva suscripción", ocultos=[("accion", "crear")],
+        dict(clase="maestro-form", asistente=dict(action=action_url, boton="Crear suscripción", titulo="Nueva suscripción", ocultos=[("accion", "crear")],
             pasos=[dict(titulo="Titular y organización", campos=[campo("producto", "", "hidden", valor=producto_sel),
                 campo("cliente", "Cliente / organización"), campo("correo", "Correo de contacto", "email"),
                 campo("referencia", "Correo verificado del titular" if producto_sel == "control_financiero" else "Referencia de la organización",
@@ -877,11 +944,14 @@ def maestro_facturas():
     from .licensing.admin import ErrorAdmin
     from .tasas import tasa_vigente
     from .tiempo import hoy_ve
+    sid = sistemas.actual(); S = sistemas.SISTEMAS[sid]
     orgs = db.session.execute(select(Organizacion).order_by(Organizacion.nombre)).scalars().all()
     if request.method == "POST":
         a, autor = F["accion"], g.usuario.username
         try:
             adm = _admin()
+            if sid != "contax" and a in ("emisor", "rango", "cliente", "orden"):
+                raise ValueError("Los datos fiscales, la numeración y las ventas de licencias se administran en Contax")
             if a == "emisor":
                 adm.fx_guardar(**{k: F.get(k) for k in ("razon_social", "rif", "domicilio", "telefono", "correo", "contribuyente_especial", "iva_pct", "serie",
                                                        "control_prefijo", "imprenta_razon_social", "imprenta_rif", "imprenta_providencia")}); msg = "Datos del emisor guardados"
@@ -904,8 +974,8 @@ def maestro_facturas():
                                descuento_pct="0", alicuota=F.get(f"l{i}_alic") or "G") for i in range(1, 6) if (F.get(f"l{i}_desc") or "").strip()]
                 if not lineas: raise ValueError("Agregue al menos una línea")
                 r = adm.crear_factura(cliente_nombre=nombre, cliente_rif=rif, cliente_direccion=F.get("cliente_direccion"), cliente_correo=correo_cli,
-                                      moneda=moneda, tasa_bcv=str(tasa) if tasa else None, lineas=lineas, forma_pago=F.get("forma_pago"), autor=autor)
-                registrar(autor, "FACTURA_GIGADEVS_EMITIDA", f"id={r['id']} cliente={rif}", org=None); db.session.commit()
+                                      moneda=moneda, tasa_bcv=str(tasa) if tasa else None, lineas=lineas, forma_pago=F.get("forma_pago"), autor=autor, sistema=sid)
+                registrar(autor, "FACTURA_GIGADEVS_EMITIDA", f"id={r['id']} sistema={sid} cliente={rif}", org=None); db.session.commit()
                 return redirect(url_for("web.maestro_factura_ver", fid=r["id"]))
             elif a == "reenviar": adm.reenviar_factura(int(F["fid"])); msg = "Factura reenviada al cliente"
             elif a == "anular": adm.anular_factura(int(F["fid"]), F.get("motivo", "")); msg = "Factura anulada (conserva su número y control)"
@@ -917,21 +987,40 @@ def maestro_facturas():
             db.session.rollback(); flash(str(e))
         return redirect(request.url)
     try:
-        adm = _admin(); cfgf, fs, pend = adm.fx_config(), adm.facturas(), adm.pendientes_factura()
+        adm = _admin(); cfgf, fs = adm.fx_config(), adm.facturas(sistema=sid)
+        pend = adm.pendientes_factura() if sid == "contax" else []
     except (ErrorAdmin, ValueError, OSError) as e:
         flash(str(e)); cfgf, fs, pend = {"config": {}, "cadena_integra": True}, [], []
     c = cfgf["config"]
     por_id = {str(o.id): o for o in orgs}
     disponibles = max(int(c.get("control_hasta") or 0) - int(c.get("control_siguiente") or 1) + 1, 0)
     secs = [dict(kpis=[("Facturas emitidas", sum(f["estado"] == "Emitida" for f in fs)), ("Números de control disponibles", disponibles),
-                       ("Ventas sin facturar", len(pend)), ("Cadena de facturas", "Íntegra" if cfgf.get("cadena_integra") else "ROTA")])]
+                       ("Ventas sin facturar", len(pend)) if sid == "contax" else ("Emisor", c.get("razon_social") or "Gigadevs Corp"),
+                       ("Cadena de facturas", "Íntegra" if cfgf.get("cadena_integra") else "ROTA")])]
+    if sid != "contax":
+        secs.append(dict(titulo=f"Facturación de {S['nombre']} con la normativa de Contax", clase="maestro-contexto",
+                         nota=f"Las facturas de {S['nombre']} salen con el emisor Gigadevs Corp, la misma serie y los mismos números de control asignados por la "
+                              "imprenta (Providencia SNAT/2011/00071). Los datos fiscales y los rangos se cargan una sola vez en Contax → Facturación."))
     if not c.get("rif") or not disponibles:
         secs.append(dict(titulo="Falta configurar", nota="Para emitir facturas cargue los datos fiscales de Gigadevs y un rango de números de control asignado por su imprenta. "
                                                         "Mientras tanto las licencias se entregan igual y quedan «sin facturar»."))
-    secs.append(dict(titulo="Facturas", tabla=dict(cols=["Número", "Control", "Fecha", "Cliente", "RIF", "Moneda", "Total Bs", "Estado", "Correo"], num=[6], filas=[
+    secs.append(dict(titulo=f"Facturas de {S['nombre']}", tabla=dict(cols=["Número", "Control", "Fecha", "Cliente", "RIF", "Moneda", "Total Bs", "Estado", "Correo"], num=[6], filas=[
         dict(cells=[f["numero_completo"], f["numero_control"], f["fecha"], f["cliente_nombre"], f["cliente_rif"], f["moneda"], f["total"], f["estado"],
                     "Enviado" if f.get("correo_enviado_en") else "—"], url=url_for("web.maestro_factura_ver", fid=f["id"]),
              clase="anulado" if f["estado"] == "Anulada" else "") for f in fs])))
+    alic = [("G", f"IVA {str(c.get('iva_pct', '16')).rstrip('0').rstrip('.')}%"), ("E", "Exento (E)")]
+    lineas = sum([[campo(f"l{i}_desc", f"Descripción {i}", req=i == 1), campo(f"l{i}_cant", "Cant.", "number", req=False, valor="1" if i == 1 else None),
+                   campo(f"l{i}_precio", "Precio sin IVA", "number", req=i == 1), campo(f"l{i}_alic", "IVA", "select", opciones=alic)] for i in range(1, 6)], [])
+    if sid != "contax":
+        secs.append(dict(titulo=f"Emitir factura de {S['nombre']}", abierto=True, nota="Líneas con precio sin IVA. Si el cliente es una organización registrada, sus datos se toman de ella.",
+                         form=dict(action=url_for("web.maestro_facturas", sistema=sid), boton="Emitir y enviar factura", campos=[h("crear"), campo("sistema", "", "hidden", valor=sid),
+                             campo("org", "Cliente registrado", "select", req=False, opciones=[("", "— Cliente no registrado —")] + [(o.id, f"{o.nombre} ({o.rif})") for o in orgs]),
+                             campo("cliente_nombre", "Razón social (si no está registrado)", req=False), campo("cliente_rif", "RIF (si no está registrado)", req=False),
+                             campo("cliente_direccion", "Domicilio fiscal", req=False), campo("cliente_correo", "Correo del cliente", "email", req=False),
+                             campo("moneda", "Moneda", "select", opciones=[("USD", "Dólares (USD)"), ("VES", "Bolívares"), ("EUR", "Euros"), ("USDT", "USDT")]),
+                             campo("forma_pago", "Forma de pago", req=False)] + lineas)))
+        return pagina(f"Facturación · {S['nombre']}", None, secs,
+                      acciones=[dict(url=url_for("web.maestro_factura_ejemplo"), texto="Ver factura de ejemplo")])
     con_pend = {}
     for p_ in pend: con_pend[p_["organizacion_ref"]] = con_pend.get(p_["organizacion_ref"], 0) + 1
     secs.append(dict(titulo="Construir una factura", nota="Elija el cliente: el sistema arma la factura de cada venta suya pendiente (licencia, plan, tiempo, monto, "
@@ -943,9 +1032,6 @@ def maestro_facturas():
         secs.append(dict(titulo="Ventas pendientes de factura (Licencias pagadas sin factura)", tabla=dict(cols=["Cliente", "Concepto", "Moneda", "Monto (IVA incluido)", "Origen"], num=[3], filas=[
             dict(cells=[por_id[p_["organizacion_ref"]].nombre if p_["organizacion_ref"] in por_id else p_["cliente"], p_["concepto"], p_["moneda"], p_["monto"],
                         "Tienda (orden " + p_["ref"] + ")" if p_["tipo"] == "orden" else "Emitida por el Maestro"]) for p_ in pend])))
-    alic = [("G", f"IVA {str(c.get('iva_pct', '16')).rstrip('0').rstrip('.')}%"), ("E", "Exento (E)")]
-    lineas = sum([[campo(f"l{i}_desc", f"Descripción {i}", req=i == 1), campo(f"l{i}_cant", "Cant.", "number", req=False, valor="1" if i == 1 else None),
-                   campo(f"l{i}_precio", "Precio sin IVA", "number", req=i == 1), campo(f"l{i}_alic", "IVA", "select", opciones=alic)] for i in range(1, 6)], [])
     secs += [
         dict(titulo="Datos fiscales de Gigadevs (emisor)", form=dict(action=request.path, boton="Guardar", campos=[h("emisor"),
              campo("razon_social", "Razón social", valor=c.get("razon_social")), campo("rif", "RIF", valor=c.get("rif")), campo("domicilio", "Domicilio fiscal", valor=c.get("domicilio")),
@@ -957,7 +1043,7 @@ def maestro_facturas():
         dict(titulo="Nuevo rango de números de control", nota=f"Próximo número de control: {c.get('control_prefijo', '00')}-{int(c.get('control_siguiente') or 1):08d}.",
              form=dict(action=request.path, boton="Registrar rango", campos=[h("rango"), campo("desde", "Desde", "number"), campo("hasta", "Hasta", "number"),
                        campo("fecha", "Fecha de asignación", "date", valor=hoy()), campo("providencia", "Providencia (si cambió)", req=False)]))]
-    return pagina("Facturación Gigadevs", None, secs, acciones=[dict(url=url_for("web.maestro_factura_ejemplo"), texto="Ver factura de ejemplo", primaria=True)])
+    return pagina("Facturación · Contax (Gigadevs)", None, secs, acciones=[dict(url=url_for("web.maestro_factura_ejemplo"), texto="Ver factura de ejemplo", primaria=True)])
 
 
 @ruta("/plataforma/facturas/ejemplo", "plataforma", ("GET",))
@@ -1064,23 +1150,27 @@ def _lineas_catalogo(cat, periodo, elegidos, iva):
 def maestro_presupuestos():
     from .licensing.admin import ErrorAdmin
     from .planes import MODULOS, PLANES
+    sid = sistemas.actual(); S = sistemas.SISTEMAS[sid]
     orgs = db.session.execute(select(Organizacion).order_by(Organizacion.nombre)).scalars().all()
     if request.method == "POST":
         a, autor = F["accion"], g.usuario.username
         try:
             adm = _admin()
+            if sid != "contax" and a != "crear": raise ValueError("Los precios del catálogo son de Contax")
             if a == "crear":
                 datos = adm.px_catalogo()
                 periodo = F.get("periodo") if F.get("periodo") in ("mensual", "anual", "unico") else "anual"
-                lineas = _lineas_catalogo(datos["catalogo"], "anual" if periodo == "unico" else periodo, F.getlist("items"), datos["iva_pct"])
+                elegidos = F.getlist("items") if sid == "contax" else []   # el catálogo con precio es el de Contax; los demás sistemas cotizan
+                lineas = _lineas_catalogo(datos["catalogo"], "anual" if periodo == "unico" else periodo, elegidos, datos["iva_pct"])
                 lineas += [dict(descripcion=F.get(f"l{i}_desc"), detalle=F.get(f"l{i}_det"), cantidad=F.get(f"l{i}_cant") or "1",
                                 precio=F.get(f"l{i}_precio") or "0", alicuota=F.get(f"l{i}_alic") or "G") for i in range(1, 7) if (F.get(f"l{i}_desc") or "").strip()]
                 org = next((o for o in orgs if str(o.id) == F.get("org")), None)
                 cli = dict(cliente_nombre=F.get("cliente_nombre") or (org.nombre if org else ""), cliente_rif=F.get("cliente_rif") or (org.rif if org else ""),
                            cliente_correo=F.get("cliente_correo") or (org.correo_contacto if org else ""), organizacion_ref=str(org.id) if org else None)
                 r = adm.crear_presupuesto(**cli, cliente_direccion=F.get("cliente_direccion"), cliente_telefono=F.get("cliente_telefono"), atencion=F.get("atencion"),
-                                          titulo=F.get("titulo"), periodo=periodo, lineas=lineas, validez_dias=F.get("validez") or 15, condiciones=F.get("condiciones"), autor=autor)
-                registrar(autor, "PRESUPUESTO_EMITIDO", f"id={r['id']} cliente={cli['cliente_nombre'][:60]}", org=None); db.session.commit()
+                                          titulo=F.get("titulo"), periodo=periodo, lineas=lineas, validez_dias=F.get("validez") or 15, condiciones=F.get("condiciones"),
+                                          autor=autor, sistema=sid)
+                registrar(autor, "PRESUPUESTO_EMITIDO", f"id={r['id']} sistema={sid} cliente={cli['cliente_nombre'][:60]}", org=None); db.session.commit()
                 return redirect(url_for("web.maestro_presupuesto_ver", pid=r["id"]))
             if a == "precio":
                 cat = adm.px_catalogo()["catalogo"]
@@ -1096,7 +1186,7 @@ def maestro_presupuestos():
             db.session.rollback(); flash(str(e))
         return redirect(request.url)
     try:
-        adm = _admin(); ps, datos = adm.presupuestos(), adm.px_catalogo()
+        adm = _admin(); ps, datos = adm.presupuestos(sistema=sid), adm.px_catalogo()
     except (ErrorAdmin, ValueError, OSError) as e:
         flash(str(e)); ps, datos = [], {"catalogo": {"planes": [], "combos": [], "modulos": []}, "iva_pct": "16"}
     cat = datos["catalogo"]
@@ -1108,7 +1198,7 @@ def maestro_presupuestos():
     planes_sel = [(k, v["nombre"]) for k, v in PLANES.items() if k not in ("PERSONALIZADO", "DEMO")]
     secs = [dict(kpis=[("Presupuestos", len(ps)), ("Enviados", sum(p["estado"] == "Enviado" for p in ps)), ("Aceptados", sum(p["estado"] == "Aceptado" for p in ps)),
                        ("Monto aceptado USD", f"{sum(float(p['total']) for p in ps if p['estado'] == 'Aceptado'):,.2f}")]),
-            dict(titulo="Presupuestos emitidos", tabla=dict(cols=["N°", "Fecha", "Cliente", "Período", "Total USD", "Válido hasta", "Estado"], num=[4], filas=[
+            dict(titulo=f"Presupuestos de {S['nombre']}", tabla=dict(cols=["N°", "Fecha", "Cliente", "Período", "Total USD", "Válido hasta", "Estado"], num=[4], filas=[
                 dict(cells=[p["numero_txt"], p["fecha"], p["cliente_nombre"], p["periodo"], p["total"], p["valido_hasta"], p["estado"]],
                      url=url_for("web.maestro_presupuesto_ver", pid=p["id"])) for p in ps])),
             dict(titulo="Precios vigentes (mensual y anual)", nota="Son los que usan los presupuestos nuevos y la tienda en línea. Precios en USD con IVA incluido.",
@@ -1119,8 +1209,12 @@ def maestro_presupuestos():
                  campo("meses", "Período", "select", opciones=[(1, "Mensual"), (12, "Anual")]), campo("monto", "Precio USD (IVA incluido)", "number")])),
             dict(titulo="Actualizar precio mensual de un módulo", form=dict(action=request.path, boton="Actualizar", campos=[h("precio_modulo"),
                  campo("modulo", "Módulo", "select", opciones=list(MODULOS.items())), campo("monto", "USD por mes", "number")]))]
-    return pagina("Presupuestos", None, secs, acciones=[dict(url=url_for("web.maestro_presupuesto_nuevo"), texto="+ Nuevo presupuesto", primaria=True),
-                                                         dict(url=url_for("web.maestro_contratos"), texto="Contratos")])
+    acciones = [dict(url=url_for("web.maestro_presupuesto_nuevo", sistema=sid), texto="+ Nuevo presupuesto", primaria=True),
+                dict(url=url_for("web.maestro_contratos", sistema=sid), texto="Contratos")]
+    if sid != "contax":
+        secs = secs[:2] + [dict(titulo="Precios", clase="maestro-contexto", nota=f"Los planes de {S['nombre']} siguen en modalidad «Cotizar»: cada presupuesto se arma con "
+                                "servicios a la medida. Las condiciones, el IVA y el emisor son los de Contax (Gigadevs Corp).")]
+    return pagina(f"Presupuestos · {S['nombre']}", None, secs, acciones=acciones)
 
 
 @ruta("/plataforma/presupuestos/nuevo", "plataforma")
@@ -1135,7 +1229,8 @@ def maestro_presupuesto_nuevo():
         datos = _admin().px_catalogo()
     except (ErrorAdmin, ValueError, OSError) as e:
         flash(str(e)); return redirect(url_for("web.maestro_presupuestos"))
-    cat, items = datos["catalogo"], {}
+    sid = sistemas.actual(); S = sistemas.SISTEMAS[sid]
+    cat, items = (datos["catalogo"] if sid == "contax" else {"planes": [], "combos": [], "modulos": []}), {}
     planes = []
     for x in cat["planes"]:
         k = f"plan:{x['plan']}"; items[k] = {"mensual": x.get("mensual"), "anual": x.get("anual")}
@@ -1152,7 +1247,7 @@ def maestro_presupuesto_nuevo():
         mods.append(dict(clave=k, nombre=f"Módulo {MODULOS.get(m['modulo'], m['modulo'])}", detalle="Para armar a la medida"))
     orgs = db.session.execute(select(Organizacion).order_by(Organizacion.nombre)).scalars().all()
     datos_js = _json.dumps({"items": items, "iva": datos["iva_pct"]}).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-    return render_template("presupuesto_nuevo.html", titulo="Nuevo presupuesto", empresa=None, orgs=orgs, iva=str(datos["iva_pct"]).rstrip("0").rstrip("."),
+    return render_template("presupuesto_nuevo.html", titulo="Nuevo presupuesto", empresa=None, orgs=orgs, sistema=sid, sistema_nombre=S["nombre"], iva=str(datos["iva_pct"]).rstrip("0").rstrip("."),
                            catalogo=[("Planes", planes), ("Combos", combos), ("Módulos sueltos", mods)], condiciones=CONDICIONES_PX, datos_js=datos_js)
 
 
@@ -1175,17 +1270,18 @@ def maestro_presupuesto_ver(pid):
     except (ErrorAdmin, ValueError, OSError) as e:
         flash(str(e)); return redirect(url_for("web.maestro_presupuestos"))
     p = r["presupuesto"]
+    sp = p.get("sistema") or "contax"
     st = "padding:10px 14px;border-radius:10px;font-weight:700;cursor:pointer"
     form = lambda accion, texto, estilo, extra="": (f'<form method="post" action="{url_for("web.maestro_presupuesto_ver", pid=pid)}"><input type="hidden" name="csrf_token" value="{csrf_token_seguro()}">'
                                                    f'<input type="hidden" name="accion" value="{accion}">{extra}<button style="{st};{estilo}">{texto}</button></form>')
     barra = (f'<div class="no-print" style="max-width:720px;margin:16px auto 0;font-family:sans-serif;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
-             f'<a href="{url_for("web.maestro_presupuestos")}" style="{st};border:1px solid #ccc;color:#191919;text-decoration:none;background:#fff">← Volver</a>'
+             f'<a href="{url_for("web.maestro_presupuestos", sistema=sp)}" style="{st};border:1px solid #ccc;color:#191919;text-decoration:none;background:#fff">← Volver</a>'
              f'<button type="button" data-imprimir style="{st};border:1px solid #ccc;background:#fff">Imprimir / PDF</button>'
              + form("enviar", "Enviar por correo", "border:0;background:#87e64b;color:#1a4200",
                     f'<input name="correo" type="email" placeholder="{escape(p.get("cliente_correo") or "correo del cliente")}" style="padding:9px;border:1px solid #ccc;border-radius:10px;margin-right:4px">')
              + (form("Aceptado", "Marcar aceptado", "border:0;background:#191919;color:#fff") + form("Rechazado", "Rechazado", "border:1px solid #ccc;background:#fff")
                 if p["estado"] in ("Emitido", "Enviado") else "")
-             + (f'<a href="{url_for("web.maestro_contratos", presupuesto=pid)}" style="{st};border:0;background:#191919;color:#fff;text-decoration:none">Armar contrato →</a>'
+             + (f'<a href="{url_for("web.maestro_contratos", presupuesto=pid, sistema=sp)}" style="{st};border:0;background:#191919;color:#fff;text-decoration:none">Armar contrato →</a>'
                 if p["estado"] == "Aceptado" else "")
              + '</div>' + "".join(f'<div class="no-print" role="alert" style="max-width:720px;margin:10px auto 0;padding:10px 14px;border-radius:10px;background:#eef9e6;font-family:sans-serif">{escape(m)}</div>'
                                   for m in get_flashed_messages())

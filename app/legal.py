@@ -154,6 +154,11 @@ class _Seguro(dict):
     def __missing__(self, k): return "________"
 
 
+# Sistema contratado → nombre en el contrato (None = Contax, texto original). Una sola normativa para todos.
+SISTEMA_CONTRATADO = {"contax": None, "criteriseg": "CriteriSeg", "bot_whatsapp": "Enlace MIT", "control_financiero": "Quincena VE"}
+DEF_CONTAX = "«Contax®» es la plataforma de gestión empresarial propiedad de GIGADEVS, marca registrada de Gigadevs Corp"
+
+
 def clausulas(c: dict) -> list[tuple[str, list[str]]]:
     """Cláusulas numeradas del contrato con los datos rellenados. c: datos del contrato (dict del servidor de licencias)."""
     fmt = lambda f: date.fromisoformat(f).strftime("%d/%m/%Y") if f else "________"
@@ -164,12 +169,15 @@ def clausulas(c: dict) -> list[tuple[str, list[str]]]:
                 objeto=c.get("objeto") or "________", monto="$" + _monto(c.get("monto")), forma_pago=c.get("forma_pago") or "________",
                 inicio=fmt(c.get("inicio")), fin=fmt(c.get("fin")), soporte_mensual="$" + _monto(c.get("soporte_mensual") or "0"),
                 jurisdiccion=JURISDICCION_ARBITRAJE if "arbitraje" in (c.get("opcionales") or []) else JURISDICCION_TRIBUNALES)
-    lista = [(t, [p.format_map(v) for p in ps]) for k, t, ps in CLAUSULAS_BASE]
+    sistema = SISTEMA_CONTRATADO.get(c.get("sistema") or "contax")
+    # Los demás sistemas de Gigadevs usan las mismas cláusulas de Contax; solo cambia el software contratado.
+    nombrar = (lambda p: p) if sistema is None else (lambda p: p.replace(DEF_CONTAX, f"«{sistema}» es el sistema de software propiedad de GIGADEVS").replace("Contax®", sistema))
+    lista = [(t, [nombrar(p.format_map(v)) for p in ps]) for k, t, ps in CLAUSULAS_BASE]
     pos = len(lista) - 1   # las opcionales van antes de «Ley aplicable»
     for k in c.get("opcionales") or []:
         if k in CLAUSULAS_OPCIONALES and k != "arbitraje":
             t, ps = CLAUSULAS_OPCIONALES[k]
-            lista.insert(pos, (t, [p.format_map(v) for p in ps])); pos += 1
+            lista.insert(pos, (t, [nombrar(p.format_map(v)) for p in ps])); pos += 1
     if (c.get("especiales") or "").strip():
         lista.insert(pos, ("Estipulaciones especiales", [x.strip() for x in c["especiales"].splitlines() if x.strip()]))
     return [(f"{ORDINALES[i]}: {t}", ps) for i, (t, ps) in enumerate(lista)]

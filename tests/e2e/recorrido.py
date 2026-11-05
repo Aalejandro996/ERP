@@ -7,6 +7,7 @@ desplazamiento horizontal y campos de formulario alineados (misma altura y misma
 en tests/e2e/capturas/ y termina con código 1 si algo falla.
 """
 import json
+import os
 import pathlib
 import re
 import sys
@@ -104,7 +105,7 @@ def main():
     DIR.mkdir(exist_ok=True)
     problemas = []
     with sync_playwright() as p:
-        nav = p.chromium.launch()
+        nav = p.chromium.launch(executable_path=os.environ.get("PW_CHROMIUM") or None)   # PW_CHROMIUM: navegador ya instalado
         for usuario, inicio in (("demo", f"/e/{ACC['eid']}/cuentas"), ("root", "/plataforma")):
             ctx = nav.new_context(viewport=VISTAS["escritorio"]); pag = ctx.new_page()
             errores = []
@@ -112,8 +113,14 @@ def main():
             pag.on("pageerror", lambda e: errores.append(str(e)))
             entrar(pag, usuario)
             if usuario == "demo": problemas += [f"demo interacciones: {f}" for f in interacciones(pag)]
-            pag.goto(BASE + inicio)
-            rutas = [inicio] + [r for r in enlaces(pag) if r != inicio] + (["/plataforma/facturas/ejemplo"] if usuario == "root" else [])
+            rutas = []
+            # El Maestro entra al selector (sin menú lateral) y recorre el menú de cada sistema
+            inicios = [inicio] if usuario == "demo" else ["/plataforma", "/plataforma/suscripciones?producto=criteriseg",
+                                                           "/plataforma/suscripciones?producto=bot_whatsapp", "/plataforma/suscripciones?producto=control_financiero"]
+            for ini in inicios:
+                pag.goto(BASE + ini)
+                rutas += [r for r in [ini] + enlaces(pag) if r not in rutas]
+            if usuario == "root": rutas = ["/plataforma/sistemas"] + rutas + ["/plataforma/facturas/ejemplo"]
             for vista, tam in VISTAS.items():
                 pag.set_viewport_size(tam)
                 for ruta in rutas:
