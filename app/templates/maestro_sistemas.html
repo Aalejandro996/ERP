@@ -1,22 +1,63 @@
 {% extends "base.html" %}
 {% block contenido %}
-<section class="sistemas-portada">
-  <p class="sistemas-eyebrow">GIGADEVS · CONSOLA MAESTRA</p>
-  <h1>¿Qué sistema quieres gestionar?</h1>
-  <p class="sistemas-intro">Elige un sistema para abrir sus módulos. El menú lateral aparece al entrar.</p>
-  <div class="sistemas-grid">
-    {% for sid, S in SISTEMAS.items() %}
-    <a class="sistema-card marca-{{ sid }}{{ ' sistema-central' if sid == 'contax' }}" href="{{ inicio_sistema(sid) }}">
-      <span class="sistema-cabeza">
-        <span class="sistema-logo{{ ' quincena-logo' if S.en_desarrollo }}">{% if S.logo %}<img src="{{ url_for('static', filename=S.logo) }}" alt="">{% else %}<span class="sistema-monograma" aria-hidden="true">{{ S.monograma }}</span>{% endif %}</span>
-        <span class="sistema-texto"><b>{{ S.nombre }}{% if sid == 'contax' %} <span class="sistema-insignia">Central</span>{% endif %}</b><small>{{ S.lema }}</small>
-          {% if S.en_desarrollo %}<span class="trabajando"><i aria-hidden="true"></i>Trabajando en ello<span class="puntos-carga" aria-hidden="true"><b>.</b><b>.</b><b>.</b></span></span>{% endif %}</span>
-        <span class="sistema-ir">Abrir <b>→</b></span>
-      </span>
-      <span class="sistema-modulos" aria-label="Módulos de {{ S.nombre }}">{% for m in S.modulos_licencia %}<span>{{ m }}</span>{% endfor %}</span>
+{% set productos = SISTEMAS.items()|rejectattr(0, 'equalto', 'contax')|list %}
+{% set C = SISTEMAS['contax'] %}
+<div class="sel">
+  <header class="sel-cabeza">
+    <div><p class="sistemas-eyebrow">GIGADEVS · CONSOLA MAESTRA</p>
+      <h1>¿Qué sistema quieres gestionar?</h1>
+      <p class="sel-intro">Al entrar en un sistema verás solo sus módulos en el menú lateral.</p></div>
+    <dl class="sel-resumen">
+      <div><dt>Sistemas</dt><dd>{{ SISTEMAS|length }}</dd></div>
+      <div><dt>Productos</dt><dd>{{ productos|length }}</dd></div>
+      <div><dt>En desarrollo</dt><dd>{{ productos|selectattr('1.en_desarrollo')|list|length }}</dd></div>
+    </dl>
+  </header>
+
+  <h2 class="sel-titulo">Sistema central</h2>
+  <article class="sel-central marca-contax">
+    <a class="sel-central-principal" href="{{ inicio_sistema('contax') }}">
+      <span class="sistema-logo"><img src="{{ url_for('static', filename=C.logo) }}" alt=""></span>
+      <span class="sel-central-texto"><b>Contax <span class="sistema-insignia">Central</span></b>
+        <small>{{ C.lema }}</small></span>
+      <span class="sel-abrir">Abrir Contax <b aria-hidden="true">→</b></span>
     </a>
+    <div class="sel-central-pie">
+      <span class="sel-etiqueta">{{ C.licencia }}</span>
+      <nav class="sel-accesos" aria-label="Accesos de Contax">
+        <a href="{{ url_for('web.plataforma') }}">Clientes</a><a href="{{ url_for('web.maestro_licencias') }}">Licencias</a>
+        <a href="{{ url_for('web.maestro_pagos') }}">Cobros</a><a href="{{ url_for('web.maestro_facturas', sistema='contax') }}">Facturación</a>
+        <a href="{{ url_for('web.maestro_gigadevs') }}">Gigadevs</a></nav>
+    </div>
+  </article>
+
+  <h2 class="sel-titulo">Productos <span>{{ productos|length }}</span></h2>
+  <div class="sel-grid">
+    {% for sid, S in productos %}
+    <article class="sel-tarjeta marca-{{ sid }}">
+      <a class="sel-principal" href="{{ inicio_sistema(sid) }}">
+        <span class="sel-fila">
+          <span class="sistema-logo{{ ' quincena-logo' if S.en_desarrollo }}">{% if S.logo %}<img src="{{ url_for('static', filename=S.logo) }}" alt="">{% else %}<span class="sistema-monograma" aria-hidden="true">{{ S.monograma }}</span>{% endif %}</span>
+          <span class="sel-nombre"><b>{{ S.nombre }}</b>
+            {% if S.en_desarrollo %}<span class="trabajando"><i aria-hidden="true"></i>En desarrollo<span class="puntos-carga" aria-hidden="true"><b>.</b><b>.</b><b>.</b></span></span>
+            {% else %}<span class="sel-estado">Disponible</span>{% endif %}</span>
+          <span class="sel-flecha" aria-hidden="true">→</span>
+        </span>
+        <span class="sel-lema">{{ S.lema }}</span>
+        <span class="sel-modulos" aria-label="Módulos de {{ S.nombre }}">{% for m in S.modulos_licencia[:3] %}<span>{{ m }}</span>{% endfor %}{% if S.modulos_licencia|length > 3 %}<span class="sel-mas" title="{{ S.modulos_licencia[3:]|join(', ') }}">+{{ S.modulos_licencia|length - 3 }}</span>{% endif %}</span>
+      </a>
+      <div class="sel-pie">
+        <span class="sel-etiqueta">{{ S.licencia }}</span>
+        <nav class="sel-accesos" aria-label="Accesos de {{ S.nombre }}">
+          <a href="{{ url_for('web.maestro_suscripciones', producto=sid) }}">Suscripciones</a>
+          <a href="{{ url_for('web.maestro_presupuestos', sistema=sid) }}">Presupuestos</a>
+          <a href="{{ url_for('web.maestro_contratos', sistema=sid) }}">Contratos</a>
+          <a href="{{ url_for('web.maestro_facturas', sistema=sid) }}">Facturas</a></nav>
+      </div>
+    </article>
     {% endfor %}
   </div>
-  <p class="sistemas-nota">Contax concentra la contabilidad, la administración, la parte fiscal y la normativa legal de Gigadevs. Cada sistema emite sus propios presupuestos, contratos y facturas con el mismo emisor, la misma numeración fiscal y las mismas cláusulas legales de Contax.</p>
-</section>
+
+  <p class="sistemas-nota">Contax concentra la contabilidad, la administración, la parte fiscal y la normativa legal de Gigadevs. Cada producto emite sus propios presupuestos, contratos y facturas, y envía sus correos con su propia marca, con el mismo emisor, la misma numeración fiscal y las mismas cláusulas legales de Contax.</p>
+</div>
 {% endblock %}

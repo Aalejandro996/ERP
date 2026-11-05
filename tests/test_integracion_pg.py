@@ -87,18 +87,18 @@ def crear_entorno():
     import tempfile
     from app.licensing.admin import ClienteAdmin
     from licensing_server.server import create_app as crear_srv
-    correos_lic = []
+    correos_lic, correos_html = [], []      # (destino, texto) y (destino, asunto, html) de los correos del servidor de licencias
     from tests.test_licencias import AvilaFalsa
     avila = AvilaFalsa(); avila.caida = True        # sin configurar en la consola, Ávila Pay no se usa
     srv = crear_srv("sqlite:///" + os.path.join(tempfile.mkdtemp(), "lic.db"), Ed25519PrivateKey.generate(), secreto_admin="z" * 40,
-                    correo=lambda d, a, t, **k: correos_lic.append((d, t)), config={"pago_movil": "Banco Prueba 0414-0000000", "url_publica": "https://lic.test"},
+                    correo=lambda d, a, t, **k: (correos_lic.append((d, t)), correos_html.append((d, a, k.get("html") or ""))), config={"pago_movil": "Banco Prueba 0414-0000000", "url_publica": "https://lic.test"},
                     avilapay_transporte=avila.transporte)
     cli_srv = srv.test_client()
     def transporte(metodo, url, cuerpo, cab):
         r = cli_srv.open(url.split("lic.test", 1)[1], method=metodo, data=cuerpo, headers=cab); return r.status_code, r.data
     app.config["PAGO_MOVIL_INSTRUCCIONES"] = "Banco Prueba 0414-0000000, RIF J-00000000-0."
     app.extensions["admin_licencias"] = lambda: ClienteAdmin("https://lic.test", "z" * 40, transporte=transporte)
-    return dict(app=app, owner=owner, planes=planes, app_owner=app_owner, correos_lic=correos_lic, avila=avila)
+    return dict(app=app, owner=owner, planes=planes, app_owner=app_owner, correos_lic=correos_lic, correos_html=correos_html, avila=avila)
 
 
 def _consulta(motor, *args):
@@ -177,7 +177,7 @@ def test_flujo_completo(entorno):
     # al entrar, el Maestro solo ve el selector de sistemas: sin menú lateral hasta elegir uno
     sel = root.get("/plataforma/sistemas").get_data(as_text=True)
     assert "app-maestro-selector" in sel and "¿Qué sistema quieres gestionar?" in sel and "Cobros y precios" not in sel
-    for nombre in ("Contax", "CriteriSeg", "Enlace MIT", "Quincena VE", "Planificación de auditoría", "Envío de mensajes"):
+    for nombre in ("Contax", "CriteriSeg", "Enlace MIT", "Quincena VE", "Surtia", "Planificación de auditoría", "Envío de mensajes", "Bot de pedidos por WhatsApp"):
         assert nombre in sel, nombre
     # Un redespliegue con eventos del Maestro en la bitácora NO debe inventar una «Organización principal»
     import pathlib as _pl
@@ -912,6 +912,20 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     assert "Licencia CriteriSeg" not in root.get("/plataforma/facturas?sistema=contax").get_data(as_text=True)
     assert root.post("/plataforma/facturas?sistema=criteriseg", data={"accion": "rango", "desde": "60", "hasta": "70", "fecha": "2026-10-01"},
                      follow_redirects=True).get_data(as_text=True).count("se administran en Contax") == 1
+    # Surtia: su propio espacio (suscripciones por RIF y módulos) y sus correos con su plantilla
+    su = root.get("/plataforma/suscripciones?producto=surtia").get_data(as_text=True)
+    assert "Maestro · Surtia" in su and "RIF de la empresa en Surtia" in su and "Lectura de órdenes de compra (PDF)" in su and "marca/surtia.svg" in su
+    r = root.post("/plataforma/suscripciones?producto=surtia", data={"accion": "crear", "producto": "surtia", "cliente": "General de Suministros Orituco",
+                  "correo": "ti@orituco.test", "referencia": "J-12345678-0", "plan": "empresa", "dias": "365", "entorno": "nube",
+                  "modulos": ["bot_pedidos", "presupuestos"]}, follow_redirects=True)
+    assert re.search(r"Suscripción #\d+ creada", r.get_data(as_text=True)), r.get_data(as_text=True)[-400:]
+    r = root.post("/plataforma/presupuestos", data={"accion": "crear", "sistema": "surtia", "cliente_nombre": "Suministros Orituco", "cliente_correo": "compras@orituco.test",
+                                                    "periodo": "anual", "l1_desc": "Licencia Surtia por empresa", "l1_cant": "1", "l1_precio": "300", "l1_alic": "G"})
+    n = len(entorno["correos_lic"])
+    root.post(r.headers["Location"], data={"accion": "enviar"})
+    _, asunto_su, html_su = entorno["correos_html"][-1]
+    assert len(entorno["correos_lic"]) == n + 1 and asunto_su.endswith("· Surtia") and "surtia-192.png" in html_su and "#16C79A" in html_su
+    assert "icono-192.png" not in html_su                                                             # nada del logo de Contax
     giga = root.get("/plataforma/gigadevs").get_data(as_text=True)
     assert "Gigadevs dentro de Contax" in giga and "GIGADEVS_USUARIO" in giga and "Cobros y precios" in giga
     # Gigadevs en Contax: su organización recibe la licencia All in One sin cobro y el enlace para configurar la empresa;

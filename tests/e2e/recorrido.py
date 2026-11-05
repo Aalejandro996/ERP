@@ -116,7 +116,8 @@ def main():
             rutas = []
             # El Maestro entra al selector (sin menú lateral) y recorre el menú de cada sistema
             inicios = [inicio] if usuario == "demo" else ["/plataforma", "/plataforma/suscripciones?producto=criteriseg",
-                                                           "/plataforma/suscripciones?producto=bot_whatsapp", "/plataforma/suscripciones?producto=control_financiero"]
+                                                           "/plataforma/suscripciones?producto=bot_whatsapp", "/plataforma/suscripciones?producto=control_financiero",
+                                                           "/plataforma/suscripciones?producto=surtia"]
             for ini in inicios:
                 pag.goto(BASE + ini)
                 rutas += [r for r in [ini] + enlaces(pag) if r not in rutas]

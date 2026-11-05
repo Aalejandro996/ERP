@@ -13,7 +13,7 @@ from sqlalchemy import Column, Float, Integer, MetaData, Numeric, String, Table,
 
 D2 = Decimal("0.01")
 # Sistemas de Gigadevs que cotizan y contratan. Todos usan el mismo emisor y las mismas cláusulas legales (las de Contax).
-SISTEMAS = {"contax": "Contax®", "criteriseg": "CriteriSeg", "bot_whatsapp": "Enlace MIT", "control_financiero": "Quincena VE"}
+SISTEMAS = {"contax": "Contax®", "criteriseg": "CriteriSeg", "bot_whatsapp": "Enlace MIT", "control_financiero": "Quincena VE", "surtia": "Surtia"}
 
 
 def sistema_de(valor) -> str:

@@ -33,3 +33,12 @@ def test_otros_sistemas_usan_la_normativa_de_contax():
     texto = " ".join(p for _, ps in cs for p in ps)
     assert "«CriteriSeg» es el sistema de software propiedad de GIGADEVS" in texto and "Contax®" not in texto and "LOCDOFT" in texto
     assert L.texto_plano(_c(sistema="contax")) == L.texto_plano(_c())          # contratos anteriores: misma huella
+
+
+def test_cada_sistema_envia_su_propia_plantilla_de_correo():
+    from app import plantilla_correo as pc
+    for sid, (nombre, logo, color, _lema, _tinta) in pc.MARCAS.items():
+        h = pc.html("Aviso", ["Hola"], "https://x.test", sistema=sid, boton=("Abrir", "https://x.test/a"))
+        assert f"/static/marca/{logo}" in h and color in h and nombre in h, sid
+        if sid != "contax": assert "icono-192.png" not in h and "normativa legal de Contax" in h, sid
+    assert "Contax</strong>® · una marca de Gigadevs Corp" in pc.html("Aviso", ["Hola"], "https://x.test")   # sin sistema: Contax, como antes
