@@ -629,3 +629,30 @@ def test_ajuste_por_forma_de_pago_cubre_la_comision(e):
     sk = o["checkout_url"].rsplit("/", 1)[1]
     e.av.sesiones[sk].update(status="PAID", amount=8760.0)
     assert e.admin.verificar(o["ref"])["estado"] == "por_verificar"
+
+
+def test_modulos_por_usuario_acotan_los_permisos_del_puesto():
+    from types import SimpleNamespace
+    from flask import Flask, g
+    from app.security import PERMISOS, PUESTOS, tiene_permiso
+    from app.models import ROLES_CLIENTE
+    assert set(ROLES_CLIENTE) <= set(PERMISOS) and set(ROLES_CLIENTE) == set(PUESTOS)   # todo puesto tiene permisos y descripción
+    with Flask(__name__).app_context():
+        g.modulos = frozenset({"contabilidad", "administrativo", "facturacion", "inventario", "auditoria"})
+        fact = SimpleNamespace(rol="Facturador", modulos="facturacion")
+        assert tiene_permiso(fact, "facturacion.emitir") and not tiene_permiso(fact, "inventario.ver")   # inventario: fuera de sus módulos
+        assert not tiene_permiso(SimpleNamespace(rol="Facturador", modulos=None), "asientos.ver")         # fuera de su puesto
+        assert tiene_permiso(SimpleNamespace(rol="Facturador", modulos=None), "inventario.ver")           # NULL = todos los del plan
+        assert tiene_permiso(SimpleNamespace(rol="Administrador", modulos="facturacion"), "asientos.crear")  # el Administrador, siempre todo
+        assert not tiene_permiso(SimpleNamespace(rol="Consulta", modulos=None), "facturacion.emitir")
+        g.modulos = frozenset({"facturacion"})
+        assert not tiene_permiso(SimpleNamespace(rol="Contador", modulos=None), "asientos.ver")           # el plan sigue mandando
+
+
+def test_las_migraciones_que_corren_en_cada_despliegue_aceptan_todos_los_puestos():
+    import pathlib, re
+    from app.models import ROLES
+    for m in ("002_multicliente_facturacion.sql", "012_puestos_y_modulos_usuario.sql"):
+        sql = pathlib.Path("migrations", m).read_text(encoding="utf-8")
+        lista = re.search(r"ck_usuarios_rol CHECK \(rol IN \(([^)]*)\)", sql).group(1)
+        assert set(re.findall(r"'([^']+)'", lista)) == set(ROLES), m

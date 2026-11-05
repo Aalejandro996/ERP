@@ -68,7 +68,7 @@ def crear_entorno():
     with app_owner.app_context():
         db.session.execute(text("CREATE EXTENSION IF NOT EXISTS citext")); db.session.commit()
         db.create_all()
-        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql", "011_whatsapp_openwa.sql"):
+        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql", "011_whatsapp_openwa.sql", "012_puestos_y_modulos_usuario.sql"):
             db.session.execute(text(pathlib.Path("migrations", m).read_text(encoding="utf-8"))); db.session.commit()
     with owner.connect() as c:
         c.execute(text("GRANT USAGE ON SCHEMA public TO erp_app"))
@@ -326,6 +326,30 @@ def test_flujo_completo(entorno):
     assert re.search(r'class="area bloq" title="No incluido en su plan"><span[^>]*>[^<]*</span>Contabilidad', menu_b)  # área bloqueada por plan
     assert "Libro diario" not in menu_b and "Documentos de venta" in menu_b                                            # la barra lateral: solo el área activa
     assert root.get(f"/e/{eid_a}/asientos").status_code == 403                                      # el Maestro no ve libros
+    # --- Usuarios del cliente: puesto, módulos y empresas; si ya existe se mantiene la cuenta y se actualiza
+    from markupsafe import Markup
+    alerta = lambda r: [str(Markup(x).unescape()) for x in re.findall(r'role="alert">([^<]+)', r.get_data(as_text=True))]
+    usu = a.get("/admin/usuarios").get_data(as_text=True)
+    assert "Puesto o tipo de usuario" in usu and "Analista de Cuentas por Cobrar" in usu and "Módulos con acceso" in usu
+    r = a.post("/admin/usuarios", data={"accion": "guardar", "con_modulos": "1", "username": "ana", "email": "ana@alfa.test", "rol": "Facturador",
+                                        "modulos": ["facturacion", "inventario"], "empresas": [str(eid_a)]}, follow_redirects=True)
+    assert any("Invitación enviada a ana@alfa.test" in m for m in alerta(r)), alerta(r)
+    assert dueño("SELECT rol || '|' || modulos FROM usuarios WHERE username='ana'") == "Facturador|facturacion,inventario"
+    r = a.post("/admin/usuarios", data={"accion": "guardar", "con_modulos": "1", "username": "ana", "email": "ana@alfa.test", "rol": "Tesorero",
+                                        "modulos": ["administrativo"], "empresas": []}, follow_redirects=True)
+    assert any("ya existía: se mantuvo su cuenta" in m for m in alerta(r)), alerta(r)
+    assert dueño("SELECT count(*) FROM usuarios WHERE username='ana'") == 1
+    assert dueño("SELECT rol || '|' || modulos FROM usuarios WHERE username='ana'") == "Tesorero|administrativo"
+    assert dueño("SELECT count(*) FROM usuario_empresa ue JOIN usuarios u ON u.id = ue.usuario_id WHERE u.username='ana'") == 0
+    r = a.post("/admin/usuarios", data={"accion": "guardar", "con_modulos": "1", "username": "ana", "email": "ana@alfa.test", "rol": "Tesorero", "modulos": []},
+               follow_redirects=True)
+    assert any("al menos un módulo" in m for m in alerta(r))
+    r = a.post("/admin/usuarios", data={"accion": "guardar", "username": "adminB", "email": "x@alfa.test", "rol": "Contador"}, follow_redirects=True)
+    assert any("no están disponibles" in m for m in alerta(r))                                       # cuenta de otra organización
+    r = a.post("/admin/usuarios", data={"accion": "guardar", "username": "adminA", "email": "a@alfa.test", "rol": "Contador"}, follow_redirects=True)
+    assert any("puesto de Administrador" in m for m in alerta(r))                                    # no se degrada a sí mismo
+    uid_ana = dueño("SELECT id FROM usuarios WHERE username='ana'")
+    assert "Editar a «ana»" in a.get(f"/admin/usuarios?editar={uid_ana}").get_data(as_text=True)
     assert a.get("/plataforma").status_code == 403
 
     # --- RLS: la base de datos misma filtra por organización (rol erp_app, no dueño) ---

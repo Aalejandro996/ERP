@@ -83,6 +83,44 @@ PERMISOS = {
                            "auditoria.ver", "auditoria.crear", "compras.ver", "presupuestos.ver"},  # solo lectura + hallazgos (segregación de funciones)
     "Cajero": {"facturacion.ver", "facturacion.emitir", "inventario.ver", "whatsapp.ver", "whatsapp.operar", "presupuestos.ver", "presupuestos.emitir"},
 }
+_VER = {"asientos.ver", "reportes.ver", "cartera.ver", "inventario.ver", "fiscal.ver", "facturacion.ver", "compras.ver",
+        "presupuestos.ver", "auditoria.ver", "whatsapp.ver"}
+PERMISOS.update({
+    "Gerente General": _VER | {"presupuestos.emitir"},                     # ve todo; aprueba presupuestos; no registra contabilidad
+    "Gerente Administrativo": {"reportes.ver", "cartera.ver", "cartera.operar", "compras.ver", "compras.operar", "inventario.ver",
+                               "inventario.operar", "facturacion.ver", "facturacion.emitir", "presupuestos.ver", "presupuestos.emitir",
+                               "fiscal.ver", "whatsapp.ver"},
+    "Analista Fiscal": {"asientos.ver", "reportes.ver", "fiscal.ver", "fiscal.operar", "facturacion.ver", "compras.ver", "cartera.ver"},
+    "Tesorero": {"reportes.ver", "cartera.ver", "cartera.operar", "fiscal.ver", "facturacion.ver", "compras.ver"},
+    "Analista de Cuentas por Cobrar": {"reportes.ver", "cartera.ver", "cartera.operar", "facturacion.ver", "presupuestos.ver"},
+    "Analista de Cuentas por Pagar": {"reportes.ver", "cartera.ver", "cartera.operar", "compras.ver", "compras.operar"},
+    "Comprador": {"compras.ver", "compras.operar", "inventario.ver", "cartera.ver"},
+    "Almacenista": {"inventario.ver", "inventario.operar", "compras.ver"},
+    "Facturador": {"facturacion.ver", "facturacion.emitir", "inventario.ver", "presupuestos.ver", "presupuestos.emitir", "cartera.ver"},
+    "Vendedor": {"presupuestos.ver", "presupuestos.emitir", "facturacion.ver", "inventario.ver", "whatsapp.ver", "whatsapp.operar"},
+    "Auditor Interno": PERMISOS["Auditor Financiero"],                     # solo lectura + hallazgos
+    "Consulta": _VER - {"auditoria.ver"},                                  # solo lectura
+})
+# Descripción de cada puesto para la pantalla de usuarios
+PUESTOS = {
+    "Administrador": "Todo, incluida la administración de usuarios y la licencia",
+    "Gerente General": "Consulta todo y aprueba presupuestos",
+    "Gerente Administrativo": "Cobros, pagos, compras, inventario, facturación y presupuestos",
+    "Contador": "Contabilidad completa, cierres, fiscal y facturación",
+    "Auxiliar": "Auxiliar contable: registra asientos, cobros, pagos e inventario",
+    "Analista Fiscal": "IVA, ISLR, retenciones y libros fiscales",
+    "Tesorero": "Bancos, cobros y pagos",
+    "Analista de Cuentas por Cobrar": "Cuentas por cobrar y cobranza",
+    "Analista de Cuentas por Pagar": "Cuentas por pagar, proveedores y compras",
+    "Comprador": "Órdenes de compra y proveedores",
+    "Almacenista": "Entradas, salidas y existencias de inventario",
+    "Facturador": "Emite facturas y presupuestos",
+    "Cajero": "Punto de venta: factura y atiende pedidos de WhatsApp",
+    "Vendedor": "Presupuestos y pedidos por WhatsApp",
+    "Auditor Financiero": "Auditoría externa: solo lectura y hallazgos",
+    "Auditor Interno": "Auditoría interna: solo lectura y hallazgos",
+    "Consulta": "Solo lectura de todo lo permitido",
+}
 MFA_OBLIGATORIO = set(PERMISOS)  # MFA para TODOS los roles (sistema expuesto en Internet)
 
 
@@ -96,7 +134,14 @@ def tiene_permiso(usuario, permiso: str) -> bool:
         return permiso in p
     if permiso == "plataforma":
         return False
-    return ("*" in p or permiso in p) and permiso_habilitado(permiso, modulos_actuales())
+    return ("*" in p or permiso in p) and permiso_habilitado(permiso, modulos_actuales() & modulos_usuario(usuario))
+
+
+def modulos_usuario(usuario) -> frozenset:
+    """Módulos a los que el administrador dio acceso a este usuario (vacío = todos los del plan). El Administrador, siempre todos."""
+    from .planes import MODULOS
+    if usuario.rol == "Administrador" or not getattr(usuario, "modulos", None): return frozenset(MODULOS)
+    return frozenset(m for m in usuario.modulos.split(",") if m in MODULOS)
 
 
 def requiere(permiso: str):

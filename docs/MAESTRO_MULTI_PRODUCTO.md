@@ -36,3 +36,7 @@ Cada sistema emite **sus propios** presupuestos, contratos y facturas (columna `
 Contax lleva la contabilidad, la administración y la parte fiscal de Gigadevs con una licencia **All in One de pago único** (10 años, el máximo del servidor, renovable sin costo). Configure en `erp-web` la variable `GIGADEVS_USUARIO` con el nombre de usuario o correo responsable; luego emita la licencia desde **Contax → Gigadevs en Contax**.
 
 Cada sistema tiene su logo en `app/static/marca/` (SVG para la app y PNG de 192 px para correos y documentos). El de Enlace MIT viene del repositorio bot_whatsapp. Presupuestos, contratos y facturas llevan el logo, el color y el nombre del sistema que vende; el emisor sigue siendo Gigadevs Corp.
+
+## Usuarios del cliente: puestos y módulos
+
+En Organización → Usuarios, el administrador invita a un usuario o, si el usuario o el correo ya existen en su organización, mantiene la cuenta y actualiza su puesto, sus módulos y sus empresas. Hay 17 puestos (Gerente General, Contador, Analista Fiscal, Tesorero, Facturador, Almacenista, Vendedor, Consulta, etc.), cada uno con su matriz de permisos en `app/security.py`. Los módulos marcados por usuario (columna `usuarios.modulos`, migración 012) acotan dónde puede trabajar; el plan de la licencia sigue mandando. El Administrador siempre tiene todo.
