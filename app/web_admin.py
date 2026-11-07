@@ -142,6 +142,11 @@ def admin_usuarios():
                        valor=sorted(modulos_usuario(ed) & set(del_plan)) if ed else del_plan),
                  campo("empresas", "Empresas asignadas (el Administrador ve todas)", "checks", req=False, opciones=[(e.id, e.razon_social) for e in emps_org],
                        valor=[e.id for e in asign.get(ed.id, [])] if ed else [])])),
+        *([dict(titulo="Abogada y Directores Generales", clase="maestro-contexto",
+                nota="Estos roles no se invitan desde aquí: son de la plataforma, no de una empresa. La abogada (con su Inpreabogado y su firma) "
+                     "y los dos Directores Generales se registran desde la consola Maestro → Contax → Legal → Documentos legales, en las "
+                     "secciones «Registrar abogada» y «Registrar Director General». Cada uno recibe su invitación por correo y luego sube su firma.")]
+          if _es_gigadevs(org_id) else []),
         dict(titulo="Puestos disponibles", tabla=dict(cols=["Puesto", "Qué puede hacer"], filas=[dict(cells=[r, PUESTOS.get(r, "")]) for r in ROLES_CLIENTE])),
         dict(titulo="Activar / desactivar", nota="Desactivar cierra de inmediato todas sus sesiones.", form=dict(action=request.path, boton="Cambiar estado", campos=[h("estado"), sel()])),
         dict(titulo="Reenviar invitación", form=dict(action=request.path, boton="Reenviar", campos=[h("reinvitar"), sel()])),
@@ -345,3 +350,13 @@ def admin_licencia():
              dict(titulo="Renovar ahora", nota="Trae de inmediato los cambios de plan o de topes hechos por el proveedor.", form=dict(action=request.path, boton="Renovar", campos=[h("renovar")])),
              dict(titulo="Planes disponibles", tabla=dict(cols=["Plan", "Módulos"], filas=planes))]
     return pagina("Licencia", None, secs)
+
+
+def _es_gigadevs(org_id) -> bool:
+    """¿Es esta la organización de Gigadevs (GIGADEVS_USUARIO)? Solo ahí tiene sentido el aviso del módulo Legal."""
+    try:
+        from .web_plataforma import _usuario_gigadevs
+        _u, org = _usuario_gigadevs()
+        return org is not None and org.id == org_id
+    except Exception:  # noqa: BLE001 — un aviso nunca debe romper la página
+        return False
