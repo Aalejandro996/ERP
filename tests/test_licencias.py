@@ -86,7 +86,7 @@ class Entorno:
         self.app = create_app(url, self.priv, reloj=lambda: self.t[0], secreto_admin=SECRETO, binance=self.binance,
                               correo=lambda d, a, x, **k: self.correos.append((d, a, x)), config={"url_erp": "https://erp.test", "pago_movil": "Banco X 0414", "binance_pay_id": "123456789",
                                       "usdt_red": "TRC20", "usdt_direccion": "TXyz",
-                                      "url_publica": "https://lic.test"}, avilapay_transporte=self.av.transporte,
+                                      "url_publica": "https://lic.test", "sync": {"control_financiero": "q" * 40}}, avilapay_transporte=self.av.transporte,
                               binance_transporte=self.bf.transporte)
         self.st = self.app.extensions["almacen"]
         self.http = self.app.test_client()
@@ -656,3 +656,39 @@ def test_las_migraciones_que_corren_en_cada_despliegue_aceptan_todos_los_puestos
         sql = pathlib.Path("migrations", m).read_text(encoding="utf-8")
         lista = re.search(r"ck_usuarios_rol CHECK \(rol IN \(([^)]*)\)", sql).group(1)
         assert set(re.findall(r"'([^']+)'", lista)) == set(ROLES), m
+
+
+def test_suscripcion_de_quincena_pagada_desde_la_app_con_avila_pay(e):
+    """La app de Quincena VE pide los planes, crea el cobro en Ávila Pay y, pagado, recibe la suscripción firmada (Negocio Plus)."""
+    import json as _j
+    from app.licensing.admin import firma
+    _avila_configurada(e)
+    def sync(metodo, ruta, datos=None, secreto="q" * 40):
+        cuerpo = _j.dumps(datos).encode() if datos is not None else b""
+        return e.http.open(ruta, method=metodo, data=cuerpo, headers={"X-Gigadevs-Firma": firma(secreto, metodo, ruta, cuerpo, t=e.t[0]),
+                                                                      "Content-Type": "application/json"})
+    com = e.app.extensions["comercial"]
+    com.guardar_plan("control_financiero", {"codigo": "plus", "nombre": "Negocio Plus", "precio_mensual": "5", "precio_anual": "50"})
+    assert sync("GET", "/sync/v1/control_financiero/planes", secreto="x" * 40).status_code == 401
+    r = sync("GET", "/sync/v1/control_financiero/planes").get_json()
+    assert r["planes"][0]["precios"] == {"mensual": "5.00", "anual": "50.00"} and [m["codigo"] for m in r["metodos"]["bolivares"]] == ["pago_movil", "debito"]
+    r = sync("POST", "/sync/v1/control_financiero/checkout", {"referencia": "Ana@Correo.test", "nombre": "Ana", "correo": "ana@correo.test",
+              "documento": "v123456780", "plan": "plus", "periodo": "mensual", "metodo": "pago_movil", "tasa_bcv": "40", "retorno": "https://quincena.test/?orden=x"})
+    assert r.status_code == 201, r.get_json()
+    o = r.get_json()
+    assert o["moneda"] == "VES" and o["checkout_url"].startswith("https://comercio.avilapay.com/pay/cs_") and o["ref"].startswith("OP")
+    _, _, enviado = e.av.llamadas[-1]
+    assert enviado["reference"] == o["ref"] and enviado["methods"] == ["pago_movil"] and enviado["return_url"] == "https://quincena.test/?orden=x"
+    assert Decimal(o["monto"]) > Decimal("200")                                       # $5 × 40 Bs + ajuste por comisión
+    est = sync("GET", f"/sync/v1/control_financiero/ordenes/{o['ref']}").get_json()
+    assert est["estado"] == "Pendiente" and "token" not in est
+    sk = o["checkout_url"].rsplit("/", 1)[1]
+    e.av.sesiones[sk]["status"] = "PAID"
+    pago = {"event": "payment.completed", "data": {"session_key": sk, "reference": o["ref"], "amount": float(o["monto"]), "payment_reference": "PM-7"}}
+    assert _aviso_avila(e, pago).status_code == 200                                  # el aviso de Ávila Pay confirma el pago
+    est = sync("GET", f"/sync/v1/control_financiero/ordenes/{o['ref']}").get_json()
+    assert est["estado"] == "Pagada" and est["vence_en"] > e.t[0] and est["token"].count(".") == 1
+    sub = e.st.listar_suscripciones("control_financiero")[0]
+    assert sub["referencia_sujeto"] == "ana@correo.test" and sub["plan"] == "plus" and sub["max_usuarios"] == 1
+    assert _aviso_avila(e, pago).status_code == 200 and len(e.st.listar_suscripciones("control_financiero")) == 1   # un pago, una suscripción
+    assert com.clientes("control_financiero")[0]["documento"] == "V-12345678-0"

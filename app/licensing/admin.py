@@ -70,6 +70,15 @@ class ClienteAdmin:
     def suscripciones(self, producto=None): return self._req("GET", "/admin/v1/suscripciones", params={"producto": producto})["suscripciones"]
     def crear_suscripcion(self, **d): return self._req("POST", "/admin/v1/suscripciones", d)["id"]   # número de la suscripción creada
     def cambiar_suscripcion(self, sid, **d): return self._req("PATCH", f"/admin/v1/suscripciones/{int(sid)}", d)
+    # clientes, planes con precio y órdenes de los demás sistemas (licensing_server/comercial.py)
+    def clientes_producto(self, pid): return self._req("GET", f"/admin/v1/productos/{pid}/clientes")["clientes"]
+    def guardar_cliente_producto(self, pid, **d): return self._req("POST", f"/admin/v1/productos/{pid}/clientes", d)
+    def guardar_plan_producto(self, pid, codigo, **d): return self._req("PUT", f"/admin/v1/productos/{pid}/planes/{codigo}", d)["plan"]
+    def ordenes_producto(self, pid): return self._req("GET", f"/admin/v1/productos/{pid}/ordenes")
+    def crear_orden_producto(self, pid, **d): return self._req("POST", f"/admin/v1/productos/{pid}/ordenes", d)["ref"]
+    def pagar_orden_producto(self, ref, **d): return self._req("POST", f"/admin/v1/productos/ordenes/{ref}/pagar", d)
+    def facturar_orden_producto(self, ref): return self._req("POST", f"/admin/v1/productos/ordenes/{ref}/facturar", {})["factura"]
+    def anular_orden_producto(self, ref, motivo): return self._req("POST", f"/admin/v1/productos/ordenes/{ref}/anular", {"motivo": motivo})
     def token_suscripcion(self, sid): return self._req("GET", f"/admin/v1/suscripciones/{int(sid)}/token")["token"]
     # precios y órdenes
     def precios(self): return self._req("GET", "/admin/v1/precios")["precios"]

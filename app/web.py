@@ -87,7 +87,7 @@ def compactar(form):
     else:
         resto = form.get("campos") or []
     visibles = [c for c in resto if c["t"] != "hidden"]
-    opcionales = [c for c in visibles if not c.get("req") and c["t"] in TIPOS_OPCIONALES]
+    opcionales = [c for c in visibles if not c.get("req") and c["t"] in TIPOS_OPCIONALES and not c.get("fijo")]   # fijo: siempre a la vista
     if len(visibles) > MAX_CAMPOS_A_LA_VISTA and 3 <= len(opcionales) < len(visibles):
         ids = {id(c) for c in opcionales}
         resto, out["opcionales"] = [c for c in resto if id(c) not in ids], opcionales
@@ -853,4 +853,4 @@ def _seccion_bitacora():
                 tabla=dict(cols=["Fecha (UTC)", "Usuario", "IP", "Acción", "Detalle"], filas=[dict(cells=[l.ts.strftime("%Y-%m-%d %H:%M:%S"), l.usuario, l.ip or "", l.accion, (l.detalles or "")[:120]]) for l in logs]))
 
 
-from . import web_admin, web_compras, web_cuadre, web_empresa, web_facturacion, web_fiscal, web_migracion, web_plataforma, web_presupuestos, web_contratos  # noqa: E402,F401  (registran sus rutas en el mismo blueprint)
+from . import web_admin, web_compras, web_cuadre, web_empresa, web_facturacion, web_fiscal, web_migracion, web_plataforma, web_presupuestos, web_contratos, web_productos  # noqa: E402,F401  (registran sus rutas en el mismo blueprint)
