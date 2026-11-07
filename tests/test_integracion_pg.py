@@ -68,7 +68,7 @@ def crear_entorno():
     with app_owner.app_context():
         db.session.execute(text("CREATE EXTENSION IF NOT EXISTS citext")); db.session.commit()
         db.create_all()
-        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql", "011_whatsapp_openwa.sql", "012_puestos_y_modulos_usuario.sql"):
+        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql", "011_whatsapp_openwa.sql", "012_puestos_y_modulos_usuario.sql", "013_rol_abogado.sql", "014_google_drive.sql"):
             db.session.execute(text(pathlib.Path("migrations", m).read_text(encoding="utf-8"))); db.session.commit()
     with owner.connect() as c:
         c.execute(text("GRANT USAGE ON SCHEMA public TO erp_app"))
@@ -95,7 +95,7 @@ def crear_entorno():
                     avilapay_transporte=avila.transporte)
     cli_srv = srv.test_client()
     def transporte(metodo, url, cuerpo, cab):
-        r = cli_srv.open(url.split("lic.test", 1)[1], method=metodo, data=cuerpo, headers=cab); return r.status_code, r.data
+        r = cli_srv.open(url.split("lic.test", 1)[1], method=metodo, data=cuerpo, headers=cab); return r.status_code, r.data, dict(r.headers)
     app.config["PAGO_MOVIL_INSTRUCCIONES"] = "Banco Prueba 0414-0000000, RIF J-00000000-0."
     app.extensions["admin_licencias"] = lambda: ClienteAdmin("https://lic.test", "z" * 40, transporte=transporte)
     return dict(app=app, owner=owner, planes=planes, app_owner=app_owner, correos_lic=correos_lic, correos_html=correos_html, avila=avila, lic_cliente=cli_srv)
@@ -992,6 +992,11 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     assert uno("SELECT correo_contacto FROM organizaciones WHERE rif='J-77777777-7'") == "giga@gigadevs.test"
     giga = root.get("/plataforma/gigadevs").get_data(as_text=True)
     assert "All in One · sin cobro" in giga and "Reenviar enlace" in giga
+    assert "Contabilidad automática" in giga and "4.1.1.01 Ventas SaaS" in giga
+    r = root.post("/plataforma/gigadevs", data={"accion": "contabilidad"}, follow_redirects=True)
+    assert any("asiento(s) nuevo(s)" in m and "cuenta(s) del plan agregada(s)" in m for m in alerta(r)), alerta(r)   # facturas reales del servidor
+    r = root.post("/plataforma/gigadevs", data={"accion": "contabilidad"}, follow_redirects=True)
+    assert any(": 0 asiento(s) nuevo(s), 0 cuenta(s)" in m for m in alerta(r)), alerta(r)                            # la segunda vez no duplica
     assert any("ya tiene su licencia" in m for m in alerta(root.post("/plataforma/gigadevs", data={"accion": "activar", "correo": "giga@gigadevs.test"}, follow_redirects=True)))
     app.config["GIGADEVS_USUARIO"] = ""
     # portada pública de Contax: funciones, planes con los precios vigentes del catálogo y enlaces legales
@@ -1134,3 +1139,226 @@ def test_salud_y_estaticos_no_cuentan_para_el_limite(entorno):
             from flask import request
             request.url_rule = app.url_map.bind("localhost").match(ruta, return_rule=True)[0]
             assert _sin_limite() is exenta, ruta
+
+
+# Va al final: aprueba el contrato de Contax en el servidor de licencias compartido y desde entonces se pide aceptarlo.
+def test_legal_abogada_aprueba_y_el_cliente_acepta(entorno):
+    """Módulo Legal: el Maestro registra a la abogada; ella activa su cuenta, registra su firma y aprueba el contrato con su clave y su
+    código MFA; desde entonces el administrador de cada cliente debe aceptarlo al ingresar, y la aceptación queda registrada."""
+    import io
+    import time as _t
+    from app import totp
+    from app.extensions import db
+    from app.models import Usuario
+    from app.security import hashear
+    app = entorno["app"]
+    with entorno["app_owner"].app_context():
+        sec_m = totp.nuevo_secreto()
+        db.session.add(Usuario(username="root_legal", email="rootl@prov.test", email_verificado=True, rol="Maestro", password_hash=hashear(CLAVE),
+                               debe_cambiar_clave=False, mfa_activo=True, mfa_secreto_cifrado=entorno["app_owner"].extensions["cifrador"].cifrar(sec_m)))
+        db.session.commit()
+    root = _cliente(app)
+    root.post("/login", data={"usuario": "root_legal", "clave": CLAVE}); root.post("/mfa/verificar", data={"codigo": totp.codigo(sec_m)})
+    leg = root.get("/plataforma/legal").get_data(as_text=True)
+    assert "Registrar abogada" in leg and "Contrato de licencia y suscripción" in leg and "Borrador" in leg and "Documentos legales" in leg
+    r = root.post("/plataforma/legal", data={"accion": "abogada", "nombre": "María Pérez", "cedula": "V-12345678", "inpreabogado": "123456",
+                                             "username": "mperez", "email": "mperez@abg.test"}, follow_redirects=True)
+    assert "Abogada registrada" in r.get_data(as_text=True), r.get_data(as_text=True)[-500:]
+    abg = _cliente(app)
+    assert abg.post(_ultimo_enlace("invitacion"), data={"nueva": CLAVE, "repetir": CLAVE}).status_code == 302
+    sec_abg = _login_total(abg, "mperez", CLAVE)
+    assert abg.get("/").headers["Location"].endswith("/plataforma/legal")
+    assert abg.get("/plataforma/sistemas").status_code == 403 and abg.get("/plataforma").status_code == 403    # no ve la consola Maestro
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 40
+    r = abg.post("/plataforma/legal/abogada", data={"accion": "firma", "firma": (io.BytesIO(png), "firma.png")}, content_type="multipart/form-data",
+                 follow_redirects=True)
+    assert "Firma registrada" in r.get_data(as_text=True)
+    with app.app_context():
+        adm = app.extensions["admin_licencias"]()
+        did = next(d["id"] for d in adm.legal_documentos("contax")["documentos"] if d["tipo"] == "contrato")
+    # el Maestro edita y envía a revisión; no puede aprobar
+    doc = root.get(f"/plataforma/legal/{did}").get_data(as_text=True)
+    assert "## Partes, objeto y aceptación" in doc and "Enviar a la abogada" in doc
+    root.post(f"/plataforma/legal/{did}", data={"accion": "revision"})
+    assert root.post(f"/plataforma/legal/{did}", data={"accion": "aprobar", "clave": CLAVE, "codigo": "000000"}).status_code == 403
+    # la abogada: con un código incorrecto no se aprueba; con clave y código correctos, rige
+    r = abg.post(f"/plataforma/legal/{did}", data={"accion": "aprobar", "clave": CLAVE, "codigo": "000000"}, follow_redirects=True)
+    assert "no se aprobó" in r.get_data(as_text=True)
+    # sin los dos Directores Generales registrados (con firma) no se puede aprobar
+    r = abg.post(f"/plataforma/legal/{did}", data={"accion": "aprobar", "clave": CLAVE, "codigo": totp.codigo(sec_abg, _t.time() + 30)}, follow_redirects=True)
+    assert "Directores Generales" in r.get_data(as_text=True)
+    dirs = []
+    for usuario, nombre, ci in (("dgadrian", "Adrián Muñoz", "V-11111111"), ("dgsoranyer", "Soranyer Ávila", "V-10807720")):
+        r = root.post("/plataforma/legal", data={"accion": "director", "nombre": nombre, "cedula": ci, "cargo": "Director General",
+                                                 "username": usuario, "email": f"{usuario}@gigadevs.test"}, follow_redirects=True)
+        assert "Director General registrado" in r.get_data(as_text=True), r.get_data(as_text=True)[-400:]
+        cd = _cliente(app)
+        assert cd.post(_ultimo_enlace("invitacion"), data={"nueva": CLAVE, "repetir": CLAVE}).status_code == 302
+        _login_total(cd, usuario, CLAVE)
+        assert cd.get("/").headers["Location"].endswith("/plataforma/legal") and cd.get("/plataforma/sistemas").status_code == 403
+        r = cd.post("/plataforma/legal/abogada", data={"accion": "firma", "firma": (io.BytesIO(png), "f.png")}, content_type="multipart/form-data", follow_redirects=True)
+        assert "Firma registrada" in r.get_data(as_text=True); dirs.append(usuario)
+    assert "Registrar Director General" not in root.get("/plataforma/legal").get_data(as_text=True)    # ya están los dos
+    from app import correo
+    n = len(correo.ENVIADOS)
+    r = abg.post(f"/plataforma/legal/{did}", data={"accion": "aprobar", "clave": CLAVE, "codigo": totp.codigo(sec_abg, _t.time() + 30)}, follow_redirects=True)
+    assert "rige cuando ambos autoricen" in r.get_data(as_text=True), r.get_data(as_text=True)[-600:]
+    pedidos = [m for m in correo.ENVIADOS[n:] if "Autorización requerida" in m["Subject"]]
+    assert sorted(m["To"] for m in pedidos) == ["dgadrian@gigadevs.test", "dgsoranyer@gigadevs.test"]
+    enlaces = [re.search(r"https://erp\.test(/legal/autorizar/[\w-]+)", m.get_content()).group(1) for m in pedidos]
+    anon = _cliente(app)                                                                              # el director no necesita iniciar sesión
+    ctx = anon.get(enlaces[0]).get_data(as_text=True)
+    assert "Autorizo este documento" in ctx and "Inpreabogado N° 123456" in ctx and "Partes, objeto y aceptación" in ctx
+    assert "/legal/aceptar" not in _org_con_admin(entorno, "Delta Previa", "J-57575757-5", "admin_delta")[1].get("/").headers.get("Location", "")  # aún no rige
+    anon.post(enlaces[0], data={"decision": "autorizar"})
+    assert "ya autorizó" in anon.get(enlaces[0]).get_data(as_text=True)
+    r = anon.post(enlaces[1], data={"decision": "autorizar"}, follow_redirects=True)
+    assert "ya rige" in r.get_data(as_text=True), r.get_data(as_text=True)[-400:]
+    impreso = abg.get(f"/plataforma/legal/{did}/documento").get_data(as_text=True)
+    assert "Aprobado por" in impreso and "Inpreabogado N° 123456" in impreso and impreso.count("data:image/png;base64,") == 3   # abogada + 2 directores
+    assert impreso.count("Autorizado por") == 2 and "Director General" in impreso
+    # el administrador de un cliente debe aceptarlo antes de seguir; queda registrado y recibe la copia del contrato
+    oid, cli = _org_con_admin(entorno, "Gamma Legal", "J-56565656-5", "admin_gamma")
+    r = cli.get("/")
+    assert r.headers["Location"].endswith("/legal/aceptar")
+    t = cli.get("/legal/aceptar").get_data(as_text=True)
+    assert "Antes de continuar" in t, t[t.find("<main"):t.find("<main") + 1500] and "Contrato de licencia y suscripción de Contax®" in t and "Inpreabogado N° 123456" in t
+    assert "Marque la casilla" in cli.post("/legal/aceptar", data={}, follow_redirects=True).get_data(as_text=True)
+    from app import correo
+    n = len(correo.ENVIADOS)
+    r = cli.post("/legal/aceptar", data={"acepto": [str(did)]})
+    assert r.status_code == 302 and r.headers["Location"].endswith("/")
+    assert len(correo.ENVIADOS) == n + 1 and correo.ENVIADOS[-1]["To"] == "admin_gamma@x.test" and "Copia de su contrato" in correo.ENVIADOS[-1]["Subject"]
+    r = cli.get("/")
+    assert "/legal/aceptar" not in r.headers.get("Location", "")                                       # ya pasa la compuerta legal
+    with app.app_context():
+        ac = app.extensions["admin_licencias"]().legal_aceptaciones("contax")
+    assert ac[0]["usuario"] == "admin_gamma" and ac[0]["sujeto"] == "J-56565656-5" and ac[0]["rol"] == "Administrador" and ac[0]["version"] == 1
+    reg = root.get("/plataforma/legal/aceptaciones").get_data(as_text=True)
+    assert "Gamma Legal" in reg and "Íntegra" in reg
+
+
+def test_contabilidad_automatica_de_gigadevs(entorno):
+    """Las facturas de la plataforma se asientan solas en la empresa de Gigadevs con su plan de cuentas: venta, cobro y anulación,
+    sin duplicar nunca un asiento aunque se sincronice varias veces."""
+    from decimal import Decimal
+    from app.contabilidad_gigadevs import PLAN, sincronizar
+    from app.extensions import db
+    from app.models import Empresa, Movimiento, Organizacion, Usuario
+    from app.models_compras import AsientoOrigen
+    oid, _c = _org_con_admin(entorno, "Gigadevs Corp", "J-60606060-6", "giga_conta")
+    fx = lambda i, **k: {"id": 9000 + i, "numero": i, "numero_completo": f"A-{i:08d}", "fecha": "2026-11-05", "cliente_nombre": "Ferretería X",
+                         "cliente_rif": "J-40000000-1", "moneda": "VES", "total": "116.00", "iva": "16.00", "estado": "Emitida",
+                         "forma_pago": "Ávila Pay · Pago Móvil", "orden_ref": f"OP2611{i:06X}", "sistema": "control_financiero", **k}
+    facturas = [fx(1), fx(2, moneda="USD", total="232.00", iva="32.00", forma_pago="Zelle"),
+                fx(3, estado="Anulada", motivo_anulacion="Error de datos", anulada_en=1_793_000_000.0), fx(4, forma_pago="", orden_ref=None)]
+    with entorno["app_owner"].app_context():
+        org = db.session.get(Organizacion, oid)
+        db.session.add(Empresa(organizacion_id=oid, razon_social="Gigadevs Corp, C.A.", rif="J-60606060-6")); db.session.commit()
+        u = db.session.execute(db.select(Usuario).where(Usuario.username == "giga_conta")).scalar_one()
+        r = sincronizar(facturas, u, org)
+        assert r["cuentas_creadas"] == len(PLAN) and r["errores"] == [] and r["asientos"] == 9, r
+        assert sincronizar(facturas, u, org)["asientos"] == 0                                  # idempotente
+        eid = db.session.execute(db.select(Empresa.id).where(Empresa.organizacion_id == oid)).scalar_one()
+        saldo = lambda c: sum((m.debe - m.haber for m in db.session.execute(
+            db.select(Movimiento).where(Movimiento.empresa_id == eid, Movimiento.cuenta_codigo == c)).scalars()), Decimal(0))
+        assert saldo("4.1.1.01") == Decimal("-400.00")              # ventas 100 + 200 + 100 (la anulada se revierte)
+        assert saldo("2.1.2.01") == Decimal("-64.00")               # débito fiscal IVA 16 + 32 + 16
+        assert saldo("1.1.1.03") == Decimal("116.00") and saldo("1.1.1.05") == Decimal("232.00")   # Bancos Bs y pasarela USD
+        assert saldo("1.1.2.01") == Decimal("116.00")               # la factura 4 queda por cobrar
+        assert db.session.execute(db.select(db.func.count()).select_from(AsientoOrigen).where(AsientoOrigen.empresa_id == eid)).scalar() == 9
+    # la sincronización de fondo (sin petición, con candado de PostgreSQL y RLS de la organización) trae las facturas reales del servidor
+    from app.contabilidad_gigadevs import sincronizar_ahora
+    app = entorno["app"]
+    app.config["GIGADEVS_USUARIO"] = "J-60606060-6"
+    try:
+        r = sincronizar_ahora(app)
+        assert r is not None and r["empresa"] == "Gigadevs Corp, C.A." and r["asientos"] > 0 and r["errores"] == [], r
+        assert sincronizar_ahora(app)["asientos"] == 0
+    finally:
+        app.config["GIGADEVS_USUARIO"] = ""
+
+
+def test_google_drive_guarda_documentos_y_facturas(entorno):
+    """El Maestro conecta el Drive de Gigadevs con «Iniciar sesión con Google» (state de un solo uso, permiso drive.file, token cifrado);
+    los documentos legales aprobados y las facturas se guardan ordenados por año/sistema/tipo y nunca se suben dos veces."""
+    import base64
+    import json as _json
+    import urllib.parse as up
+    from app import drive, totp
+    from app.extensions import db
+    from app.models import DriveConexion, Usuario
+    from app.security import hashear
+    app = entorno["app"]
+    app.config.update(GOOGLE_OAUTH_CLIENT_ID="cid.apps.googleusercontent.com", GOOGLE_OAUTH_CLIENT_SECRET="gsecret")
+    b64 = lambda d: base64.urlsafe_b64encode(_json.dumps(d).encode()).decode().rstrip("=")
+    vistos, carpetas, subidos = [], {}, []
+
+    def google(metodo, url, cab, cuerpo):
+        vistos.append((metodo, url))
+        if url == drive.TOKEN:
+            q = dict(up.parse_qsl(cuerpo.decode()))
+            assert q["client_secret"] == "gsecret"
+            if q["grant_type"] == "authorization_code":
+                assert q["code"] == "codigo-ok" and q["redirect_uri"].endswith("/plataforma/drive/google")
+                idt = "x." + b64({"aud": "cid.apps.googleusercontent.com", "iss": "https://accounts.google.com", "email": "Drive@Gigadevs.test",
+                                  "email_verified": True}) + ".y"
+                return 200, _json.dumps({"access_token": "at1", "expires_in": 3599, "refresh_token": "rt-secreto", "id_token": idt,
+                                         "scope": "openid email https://www.googleapis.com/auth/drive.file"}).encode()
+            assert q["refresh_token"] == "rt-secreto"
+            return 200, b'{"access_token": "at2", "expires_in": 3599}'
+        if url == drive.REVOCAR: return 200, b"{}"
+        assert cab["Authorization"].startswith("Bearer at")
+        if url.startswith(drive.API):
+            m = _json.loads(cuerpo); fid = f"c{len(carpetas) + 1}"; carpetas[fid] = (m["name"], (m.get("parents") or [None])[0])
+            assert m["mimeType"] == drive.CARPETA
+            return 200, _json.dumps({"id": fid}).encode()
+        assert url == drive.SUBIR and b"text/html" in cuerpo
+        meta = _json.loads(cuerpo.split(b"\r\n\r\n", 1)[1].split(b"\r\n--", 1)[0])
+        subidos.append((meta["name"], meta["parents"][0])); return 200, _json.dumps({"id": f"f{len(subidos)}"}).encode()
+
+    def ruta_de(fid):
+        partes = []
+        while fid: n, fid = carpetas[fid]; partes.insert(0, n)
+        return "/".join(partes)
+
+    drive.TRANSPORTE = google
+    try:
+        with entorno["app_owner"].app_context():
+            sec = totp.nuevo_secreto()
+            db.session.add(Usuario(username="root_drive", email="rootd@prov.test", email_verificado=True, rol="Maestro", password_hash=hashear(CLAVE),
+                                   debe_cambiar_clave=False, mfa_activo=True, mfa_secreto_cifrado=entorno["app_owner"].extensions["cifrador"].cifrar(sec)))
+            db.session.commit()
+        root = _cliente(app)
+        root.post("/login", data={"usuario": "root_drive", "clave": CLAVE}); root.post("/mfa/verificar", data={"codigo": totp.codigo(sec)})
+        pag = root.get("/plataforma/drive").get_data(as_text=True)
+        assert "Iniciar sesión con Google" in pag and "drive.file" in pag
+        r = root.post("/plataforma/drive", data={"accion": "conectar"})
+        q = dict(up.parse_qsl(up.urlsplit(r.headers["Location"]).query))
+        assert r.headers["Location"].startswith(drive.AUTORIZAR) and q["access_type"] == "offline" and "drive.file" in q["scope"] and "auth/drive " not in q["scope"] + " "
+        r = root.get(f"/plataforma/drive/google?state=otro&code=codigo-ok", follow_redirects=True)
+        assert "venció o no corresponde" in r.get_data(as_text=True) and not any(u == drive.TOKEN for _, u in vistos)   # state falso: ni se canjea
+        r = root.post("/plataforma/drive", data={"accion": "conectar"})
+        state = dict(up.parse_qsl(up.urlsplit(r.headers["Location"]).query))["state"]
+        r = root.get(f"/plataforma/drive/google?state={state}&code=codigo-ok", follow_redirects=True)
+        assert "Google Drive conectado con drive@gigadevs.test" in r.get_data(as_text=True)
+        with entorno["app_owner"].app_context():
+            fila = db.session.get(DriveConexion, 1)
+            assert fila.correo == "drive@gigadevs.test" and "rt-secreto" not in fila.refresh_token_cifrado     # cifrado en reposo
+        r = root.post("/plataforma/drive", data={"accion": "pendientes"}, follow_redirects=True)
+        assert "Drive al día" in r.get_data(as_text=True), r.get_data(as_text=True)[-800:]
+        rutas = [ruta_de(p) + "/" + n for n, p in subidos]
+        assert any(x.startswith("Gigadevs Corp · Contax/Legal/") and "/Contax/Documentos aprobados/Contrato" in x for x in rutas), rutas
+        assert any(x.startswith("Gigadevs Corp · Contax/Facturas/2026/") and "/Factura " in x for x in rutas), rutas
+        n_sub, n_carp = len(subidos), len(carpetas)
+        assert len({ruta_de(c) for c in carpetas}) == n_carp                          # cada carpeta se crea una sola vez
+        root.post("/plataforma/drive", data={"accion": "pendientes"})
+        assert len(subidos) == n_sub and len(carpetas) == n_carp                      # idempotente
+        assert "Guardado recientemente" in root.get("/plataforma/drive").get_data(as_text=True)
+        r = root.post("/plataforma/drive", data={"accion": "desconectar"}, follow_redirects=True)
+        assert "desconectado" in r.get_data(as_text=True) and vistos[-1] == ("POST", drive.REVOCAR)
+        with entorno["app_owner"].app_context():
+            assert db.session.get(DriveConexion, 1) is None
+    finally:
+        drive.TRANSPORTE = None
+        app.config.update(GOOGLE_OAUTH_CLIENT_ID="", GOOGLE_OAUTH_CLIENT_SECRET="")

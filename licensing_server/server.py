@@ -21,7 +21,7 @@ import time
 from collections import defaultdict, deque
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
 from sqlalchemy import (Column, Float, ForeignKey, Integer, MetaData, Numeric, String, Table, Text, create_engine, func, or_,
                         insert, select, update)
 from sqlalchemy.exc import IntegrityError
@@ -555,11 +555,31 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         q.append(ahora)
         return len(q) > n
 
+    historial_sync = defaultdict(deque)
+
+    @app.before_request
+    def limitar_sync():
+        """API de los sistemas: máximo 120 peticiones por minuto por IP (las firmas inválidas también cuentan)."""
+        if not request.path.startswith("/sync/"): return None
+        ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "?").split(",")[0].strip()
+        q, ahora = historial_sync[ip], reloj()
+        while q and q[0] < ahora - 60: q.popleft()
+        q.append(ahora)
+        if len(q) > 120: return jsonify(message="Demasiadas solicitudes"), 429
+        if request.method == "POST" and not (request.mimetype or "").endswith("json"): return jsonify(message="Se espera JSON"), 415
+        return None
+
     @app.after_request
     def cabeceras(resp):
         resp.headers["Cache-Control"] = "no-store"
         resp.headers["X-Content-Type-Options"] = "nosniff"
-        resp.headers["Strict-Transport-Security"] = "max-age=63072000"
+        resp.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        firma = getattr(g, "firma_respuesta", None)          # petición firmada (Maestro o un sistema): la respuesta también va firmada
+        if firma:
+            from .comercial import firma_respuesta
+            resp.headers["X-Gigadevs-Respuesta"] = firma_respuesta(firma[0], firma[1], resp.status_code, resp.get_data(), reloj())
         return resp
 
     @app.get("/salud")
@@ -672,7 +692,9 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         if abs(reloj() - int(t)) > TOLERANCIA_FIRMA_S: return False
         base = "\n".join([t, n, request.method, request.full_path.rstrip("?"), hashlib.sha256(request.get_data()).hexdigest()])
         if not hmac.compare_digest(hmac.new(secreto_admin.encode(), base.encode(), hashlib.sha256).hexdigest(), f): return False
-        return st.usar_nonce(n)  # cada firma sirve una sola vez
+        if not st.usar_nonce(n): return False  # cada firma sirve una sola vez
+        g.firma_respuesta = (secreto_admin, n)
+        return True
 
     @app.before_request
     def proteger_admin():
@@ -696,6 +718,11 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
     com = CM.Comercial(st, PRODUCTOS)
     app.extensions["comercial"] = com
     CM.registrar_rutas(app, st, com, cfg.get("sync") or {}, clave_privada, lambda con, **k: _fx.emitir(con, reloj=reloj, **k), cuerpo)
+    # Documentos legales: versiones aprobadas por la abogada y registro de aceptaciones (licensing_server/legal.py)
+    from . import legal as LG
+    lg = LG.Legal(st)
+    app.extensions["legal"] = lg
+    LG.registrar_rutas(app, st, lg, cuerpo, lambda pid: CM.autenticar_sistema(st, cfg.get("sync") or {}, pid))
 
     @app.get("/admin/v1/productos")
     def a_productos():

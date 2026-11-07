@@ -102,6 +102,12 @@ def create_app(config_obj=None):
         return render_template("error.html", codigo=402, titulo="Licencia no válida",
                                mensaje="Su organización no tiene una licencia vigente. Contacte al administrador."), 402
 
+    @app.before_request
+    def compuerta_legal():
+        """Documentos legales vigentes (aprobados por la abogada) que el usuario aún no aceptó: se aceptan antes de seguir."""
+        from .web_legal import compuerta
+        return compuerta()
+
     from .tiempo import a_hora_ve
     app.add_template_filter(a_hora_ve, "hora_ve")
 
@@ -142,4 +148,7 @@ def create_app(config_obj=None):
     from . import publico
     publico.instalar(app, db)  # robots, sitemap, filtro de rastreos, mantenimiento y páginas de error
 
+    if not app.config.get("TESTING") and app.extensions.get("admin_licencias") and app.config.get("GIGADEVS_USUARIO"):
+        from .contabilidad_gigadevs import iniciar_en_fondo
+        iniciar_en_fondo(app, app.config.get("CONTABILIDAD_GIGADEVS_MIN", 10))
     return app

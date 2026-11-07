@@ -6,11 +6,12 @@ from sqlalchemy.dialects.postgresql import CITEXT
 
 from .extensions import db
 
-ROLES = ("Maestro", "Administrador", "Contador", "Auxiliar", "Auditor Financiero", "Cajero",
+ROLES = ("Maestro", "Abogado", "Director", "Administrador", "Contador", "Auxiliar", "Auditor Financiero", "Cajero",
          # Puestos de una empresa (migración 012). El rol fija los permisos; los módulos de cada usuario los acota aún más.
          "Gerente General", "Gerente Administrativo", "Analista Fiscal", "Tesorero", "Analista de Cuentas por Cobrar",
          "Analista de Cuentas por Pagar", "Comprador", "Almacenista", "Facturador", "Vendedor", "Auditor Interno", "Consulta")
-ROLES_CLIENTE = ROLES[1:]  # el Maestro es del proveedor de la plataforma y no pertenece a ninguna organización
+ROLES_PLATAFORMA = ("Maestro", "Abogado", "Director")   # de Gigadevs: no pertenecen a ninguna organización cliente
+ROLES_CLIENTE = tuple(r for r in ROLES if r not in ROLES_PLATAFORMA)  # el Maestro es del proveedor de la plataforma y no pertenece a ninguna organización
 
 
 def _ahora():
@@ -55,7 +56,7 @@ class Usuario(db.Model):
     empresas = db.relationship("UsuarioEmpresa", back_populates="usuario", cascade="all, delete-orphan")
     organizacion = db.relationship("Organizacion")
     __table_args__ = (CheckConstraint(f"rol IN {ROLES}", name="ck_usuarios_rol"),
-                      CheckConstraint("(rol = 'Maestro') = (organizacion_id IS NULL)", name="ck_usuarios_org"))
+                      CheckConstraint("(rol IN ('Maestro', 'Abogado', 'Director')) = (organizacion_id IS NULL)", name="ck_usuarios_org"))
 
 
 class Empresa(db.Model):  # = clientes_contables del sistema original
@@ -132,6 +133,26 @@ class Movimiento(db.Model):
         ForeignKeyConstraint(["asiento_id", "empresa_id"], ["asientos.id", "asientos.empresa_id"]),
         ForeignKeyConstraint(["empresa_id", "cuenta_codigo"], ["cuentas.empresa_id", "cuentas.codigo"]),
     )
+
+
+class DriveConexion(db.Model):
+    """Google Drive de Gigadevs (una sola fila, la conecta el Maestro con «Iniciar sesión con Google»). El token de
+    actualización va cifrado (Fernet); el permiso pedido es drive.file: Contax solo ve los archivos y carpetas que él crea."""
+    __tablename__ = "drive_conexion"
+    id = db.Column(db.Integer, primary_key=True, default=1)
+    correo = db.Column(db.Text, nullable=False)
+    refresh_token_cifrado = db.Column(db.Text, nullable=False)
+    conectado_por = db.Column(db.Text, nullable=False)
+    conectado_en = db.Column(db.DateTime(timezone=True), default=_ahora, nullable=False)
+
+
+class DriveArchivo(db.Model):
+    """Lo que Contax ya guardó en Drive (carpetas y documentos), por clave estable: nunca se sube dos veces lo mismo."""
+    __tablename__ = "drive_archivos"
+    clave = db.Column(db.Text, primary_key=True)        # carpeta:Legal/2026/Contax · legal:12 · aceptacion:12:ana:… · factura:31
+    archivo_id = db.Column(db.Text, nullable=False)
+    ruta = db.Column(db.Text, nullable=False)
+    subido_en = db.Column(db.DateTime(timezone=True), default=_ahora, nullable=False)
 
 
 class PeriodoCerrado(db.Model):

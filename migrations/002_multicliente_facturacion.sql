@@ -26,7 +26,7 @@ BEGIN
   -- Solo datos de NEGOCIO sin organización indican una instalación anterior. La bitácora NO cuenta: los eventos del
   -- Maestro (plataforma) se guardan a propósito sin organización.
   IF EXISTS (SELECT 1 FROM empresas WHERE organizacion_id IS NULL)
-     OR EXISTS (SELECT 1 FROM usuarios WHERE organizacion_id IS NULL AND rol <> 'Maestro')
+     OR EXISTS (SELECT 1 FROM usuarios WHERE organizacion_id IS NULL AND rol NOT IN ('Maestro','Abogado','Director'))
      OR EXISTS (SELECT 1 FROM tramos_provision WHERE organizacion_id IS NULL) THEN
     SELECT id INTO org FROM organizaciones ORDER BY id LIMIT 1;
     IF org IS NULL THEN
@@ -35,7 +35,7 @@ BEGIN
       RAISE NOTICE 'Creada la Organización principal (id %). Actualice su nombre y RIF.', org;
     END IF;
     UPDATE empresas SET organizacion_id = org WHERE organizacion_id IS NULL;
-    UPDATE usuarios SET organizacion_id = org WHERE organizacion_id IS NULL AND rol <> 'Maestro';
+    UPDATE usuarios SET organizacion_id = org WHERE organizacion_id IS NULL AND rol NOT IN ('Maestro','Abogado','Director');
     UPDATE tramos_provision SET organizacion_id = org WHERE organizacion_id IS NULL;
     -- La bitácora es de solo-inserción: se suspende el trigger SOLO para asignar la organización (no cambia el hash).
     -- Solo en una instalación anterior a la plataforma (sin ningún Maestro): ahí toda la bitácora era del único cliente.
@@ -64,11 +64,11 @@ DO $$ BEGIN
 END $$;
 ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS ck_usuarios_rol;
 -- Lista completa de puestos (ampliada en la 012): esta migración corre en cada despliegue y no debe rechazar los puestos nuevos.
-ALTER TABLE usuarios ADD CONSTRAINT ck_usuarios_rol CHECK (rol IN ('Maestro','Administrador','Contador','Auxiliar','Auditor Financiero','Cajero',
+ALTER TABLE usuarios ADD CONSTRAINT ck_usuarios_rol CHECK (rol IN ('Maestro','Abogado','Director','Administrador','Contador','Auxiliar','Auditor Financiero','Cajero',
   'Gerente General','Gerente Administrativo','Analista Fiscal','Tesorero','Analista de Cuentas por Cobrar','Analista de Cuentas por Pagar',
   'Comprador','Almacenista','Facturador','Vendedor','Auditor Interno','Consulta'));
 ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS ck_usuarios_org;
-ALTER TABLE usuarios ADD CONSTRAINT ck_usuarios_org CHECK ((rol = 'Maestro') = (organizacion_id IS NULL));
+ALTER TABLE usuarios ADD CONSTRAINT ck_usuarios_org CHECK ((rol IN ('Maestro','Abogado','Director')) = (organizacion_id IS NULL));
 ALTER TABLE productos DROP CONSTRAINT IF EXISTS ck_producto_venta;
 ALTER TABLE productos ADD CONSTRAINT ck_producto_venta CHECK (alicuota_iva IN ('G','R','A','E') AND precio_venta >= 0);
 

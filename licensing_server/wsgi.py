@@ -39,7 +39,10 @@ app = create_app(_url, _priv,
                  config={"url_publica": os.environ.get("PUBLIC_URL", "").rstrip("/"), "url_erp": os.environ.get("ERP_URL", "").rstrip("/"),
                          "pago_movil": os.environ.get("PAGO_MOVIL_INSTRUCCIONES", ""),
                          # secreto con que cada sistema (p. ej. la consola de Surtia) firma el envío de sus clientes
-                         "sync": {pid: os.environ[f"SYNC_SECRET_{pid.upper()}"] for pid in ("surtia", "criteriseg", "bot_whatsapp", "control_financiero")
+                         # rotación: SYNC_SECRET_<SISTEMA>_ANTERIOR se sigue aceptando mientras el sistema cambia al nuevo
+                         "sync": {pid: [x for x in (os.environ.get(f"SYNC_SECRET_{pid.upper()}", ""), os.environ.get(f"SYNC_SECRET_{pid.upper()}_ANTERIOR", ""))
+                                        if len(x) >= 32]
+                                  for pid in ("surtia", "criteriseg", "bot_whatsapp", "control_financiero")
                                   if len(os.environ.get(f"SYNC_SECRET_{pid.upper()}", "")) >= 32}, "binance_pay_id": os.environ.get("BINANCE_PAY_ID", "").strip(),
                          "usdt_red": os.environ.get("BINANCE_USDT_RED", "").strip(), "usdt_direccion": os.environ.get("BINANCE_USDT_DIRECCION", "").strip(),
                          "binance_relay": _rele})
