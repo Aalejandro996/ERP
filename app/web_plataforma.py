@@ -333,6 +333,18 @@ def maestro_licencias():
 ANIOS_GIGADEVS = 5
 
 
+def _clientes_de(sid):
+    """Clientes con los que trabaja el sistema: en Contax, las organizaciones; en los demás, sus propios clientes
+    (con la misma forma: id, nombre, rif, correo_contacto). El id lleva «c» para no confundirse con una organización."""
+    from types import SimpleNamespace
+    if sid == "contax": return db.session.execute(select(Organizacion).order_by(Organizacion.nombre)).scalars().all()
+    from .licensing.admin import ErrorAdmin
+    try: cs = _admin().clientes_producto(sid)
+    except (ErrorAdmin, ValueError, OSError): cs = []
+    return [SimpleNamespace(id=f"c{c['id']}", nombre=c["nombre"], rif=c["referencia"], correo_contacto=c.get("correo"), direccion=c.get("direccion"))
+            for c in cs if c["estado"] == "activo"]
+
+
 def _usuario_gigadevs():
     """(administrador, organización) de Gigadevs en Contax según GIGADEVS_USUARIO: usuario, correo o RIF de la organización."""
     ref = (current_app.config.get("GIGADEVS_USUARIO") or "").strip()
@@ -456,12 +468,16 @@ def maestro_suscripciones():
         try:
             adm = _admin()
             if accion == "crear":
-                sid = adm.crear_suscripcion(producto_id=F["producto"], cliente=F["cliente"], correo=F["correo"],
-                    referencia_sujeto=F["referencia"], plan=F["plan"], dias=int(F["dias"]), entorno=F["entorno"],
+                cli = next((c for c in adm.clientes_producto(producto_sel) if str(c["id"]) == F.get("cliente_id")), None) if F.get("cliente_id") else None
+                nombre_cli = cli["nombre"] if cli else F.get("cliente")
+                correo_cli = (cli.get("correo") or (cli["referencia"] if "@" in cli["referencia"] else "")) if cli else F.get("correo")
+                ref_cli = cli["referencia"] if cli else F.get("referencia")
+                sid = adm.crear_suscripcion(producto_id=F["producto"], cliente=nombre_cli, correo=correo_cli,
+                    referencia_sujeto=ref_cli, plan=F["plan"], dias=int(F["dias"]), entorno=F["entorno"],
                     max_usuarios=int(F.get("usuarios") or 1), max_instancias=int(F.get("instancias") or 1),
                     max_empresas=int(F.get("empresas") or 1), max_equipos=int(F.get("equipos") or 1), notas=F.get("notas") or "",
                     modulos=F.getlist("modulos"), autor=autor)
-                registrar(autor, "SUSCRIPCION_CREADA", f"id={sid} producto={F['producto']} sujeto={F['referencia']}", org=None)
+                registrar(autor, "SUSCRIPCION_CREADA", f"id={sid} producto={F['producto']} sujeto={ref_cli}", org=None)
                 flash(f"Suscripción #{sid} creada. Descargue su licencia firmada desde la tabla.")
             elif accion == "modificar":
                 cambios = adm.cambiar_suscripcion(int(F["sid"]), estado=F.get("estado") or None,
@@ -497,6 +513,8 @@ def maestro_suscripciones():
                     "tipo_sujeto": "cuenta" if producto_sel == "control_financiero" else "organizacion", "entornos": ["nube"] if producto_sel in ("control_financiero", "surtia") else ["nube", "cerrado"],
                     "primario": "#0B6B4D" if producto_sel == "control_financiero" else "#17365D", "acento": "#4FC79C" if producto_sel == "control_financiero" else "#2F6FAD", "planes": []}
     subs = [s for s in todas_subs if s["producto_id"] == producto_sel]
+    try: clientes_sel = _admin().clientes_producto(producto_sel)
+    except (ErrorAdmin, ValueError, OSError): clientes_sel = []
     opciones_plan = [(plan["codigo"], f"{plan['nombre']} · {plan['precio_estado']}") for plan in producto["planes"] if plan["activo"]]
     opciones_entorno = [(e, {"nube": "Nube conectada", "cerrado": "Entorno cerrado"}.get(e, e)) for e in producto["entornos"]]
     opciones_modulos = [(m["codigo"], m["nombre"]) for m in producto.get("modulos", [])]
@@ -541,14 +559,16 @@ def maestro_suscripciones():
         dict(clase="maestro-panel", nota="Las licencias llevan el plan, el titular, los límites y la vigencia. En entornos cerrados, la suspensión se aplica al renovar o al vencer el archivo instalado.",
              tabla=dict(cols=["Cliente", "Producto", "Sujeto", "Identificador", "Plan", "Módulos", "Estado", "Entorno", "Usuarios", "Instalaciones", "Vence", "Archivo"],
                         num=[8, 9], filas=filas, ancha=True)),
-        dict(titulo=f"Planes de {producto['nombre']}", clase="maestro-panel", nota="Precios internos sin publicar. Todo producto nuevo conserva «Cotizar» hasta definir sus condiciones comerciales.",
+        dict(titulo=f"Planes de {producto['nombre']}", clase="maestro-panel", nota="Los planes, sus precios, módulos y límites se crean y editan en «Precios y planes» (no necesitan cliente).",
              tabla=dict(cols=["Código", "Plan", "Precio", "Estado"], filas=planes_filas, accion=True)),
         dict(clase="maestro-form", asistente=dict(action=action_url, boton="Crear suscripción", titulo="Nueva suscripción", ocultos=[("accion", "crear")],
-            pasos=[dict(titulo="Titular y organización", campos=[campo("producto", "", "hidden", valor=producto_sel),
-                campo("cliente", "Cliente / organización"), campo("correo", "Correo de contacto", "email"),
+            pasos=[dict(titulo="Cliente", sub="de la lista del sistema, o escriba sus datos", campos=[campo("producto", "", "hidden", valor=producto_sel),
+                campo("cliente_id", "Cliente registrado", "select", req=False,
+                      opciones=[("", "— Escribir los datos abajo —")] + [(c["id"], f"{c['nombre']} ({c['referencia']})") for c in clientes_sel]),
+                campo("cliente", "Cliente / organización (si no está en la lista)", req=False), campo("correo", "Correo de contacto", "email", req=False),
                 campo("referencia", "Correo verificado del titular" if producto_sel == "control_financiero" else
                       ("RIF de la empresa en Surtia" if producto_sel == "surtia" else "Referencia de la organización"),
-                      "email" if producto_sel == "control_financiero" else "text",
+                      "email" if producto_sel == "control_financiero" else "text", req=False,
                       ph="" if producto_sel == "control_financiero" else ("J-12345678-9" if producto_sel == "surtia" else "Ej.: identificador asignado por el sistema"))]),
                 dict(titulo="Plan, módulos y entorno", nota="El sistema queda fijado por el selector. Los módulos elegidos quedan asociados al registro y al token firmado.",
                      campos=[campo("plan", "Plan", "select", opciones=opciones_plan), campo("entorno", "Entorno", "select", opciones=opciones_entorno),
@@ -559,9 +579,6 @@ def maestro_suscripciones():
                     campo("notas", "Notas internas", "textarea", req=False)]),
             ], resumen=dict(titulo=producto["nombre"], eco=[("Sistema", "producto"), ("Cliente", "cliente"),
                 ("Sujeto", "referencia"), ("Plan", "plan"), ("Entorno", "entorno"), ("Vigencia", "dias")]))),
-        dict(titulo="Agregar plan para cotizar", clase="maestro-form", nota="El código se usa en la licencia firmada. No cargue un precio hasta que esté aprobado.",
-             form=dict(action=action_url, boton="Agregar plan", campos=[h("crear_plan"), campo("producto_plan", "", "hidden", valor=producto_sel),
-                 campo("codigo_plan", "Código corto"), campo("nombre_plan", "Nombre del plan")])) ,
         dict(titulo="Modificar suscripción", clase="maestro-form", nota="Solo cambia los campos que complete. Los tokens instalados fuera de línea aplican cambios cuando se renuevan o vencen.",
              form=dict(action=action_url, boton="Guardar cambios", campos=[h("modificar"), campo("sid", "Suscripción", "select", opciones=ids),
                  campo("estado", "Estado", "select", req=False, opciones=[("", "Sin cambio"), ("activa", "Activa"), ("suspendida", "Suspendida"), ("revocada", "Revocada")]),
@@ -569,7 +586,9 @@ def maestro_suscripciones():
                  campo("entorno", "Cambiar entorno", "select", req=False, opciones=[("", "Sin cambio")] + opciones_entorno),
                  campo("max_usuarios", "Usuarios", "number", req=False), campo("max_instancias", "Instalaciones", "number", req=False),
                  campo("max_empresas", "Empresas", "number", req=False), campo("max_equipos", "Equipos", "number", req=False),
-                 campo("dias_extra", "Extender vigencia (días)", "number", req=False), campo("notas", "Reemplazar notas internas", "textarea", req=False)]))])
+                 campo("dias_extra", "Extender vigencia (días)", "number", req=False), campo("notas", "Reemplazar notas internas", "textarea", req=False)]))],
+        acciones=[dict(url=url_for("web.maestro_producto_planes", pid=producto_sel), texto="Precios y planes"),
+                  dict(url=url_for("web.maestro_producto_clientes", pid=producto_sel), texto="Clientes", primaria=True)])
 
 
 @ruta("/plataforma/suscripciones/<int:sid>/licencia", "plataforma")
@@ -999,7 +1018,7 @@ def maestro_facturas():
     from .tasas import tasa_vigente
     from .tiempo import hoy_ve
     sid = sistemas.actual(); S = sistemas.SISTEMAS[sid]
-    orgs = db.session.execute(select(Organizacion).order_by(Organizacion.nombre)).scalars().all()
+    orgs = _clientes_de(sid)   # Contax: sus organizaciones; los demás sistemas: sus clientes
     if request.method == "POST":
         a, autor = F["accion"], g.usuario.username
         try:
@@ -1205,7 +1224,7 @@ def maestro_presupuestos():
     from .licensing.admin import ErrorAdmin
     from .planes import MODULOS, PLANES
     sid = sistemas.actual(); S = sistemas.SISTEMAS[sid]
-    orgs = db.session.execute(select(Organizacion).order_by(Organizacion.nombre)).scalars().all()
+    orgs = _clientes_de(sid)   # Contax: sus organizaciones; los demás sistemas: sus clientes
     if request.method == "POST":
         a, autor = F["accion"], g.usuario.username
         try:
@@ -1299,7 +1318,7 @@ def maestro_presupuesto_nuevo():
     for m in cat["modulos"]:
         k = f"mod:{m['modulo']}"; items[k] = {"mensual": m["mensual"], "anual": m["anual"]}
         mods.append(dict(clave=k, nombre=f"Módulo {MODULOS.get(m['modulo'], m['modulo'])}", detalle="Para armar a la medida"))
-    orgs = db.session.execute(select(Organizacion).order_by(Organizacion.nombre)).scalars().all()
+    orgs = _clientes_de(sid)   # Contax: sus organizaciones; los demás sistemas: sus clientes
     datos_js = _json.dumps({"items": items, "iva": datos["iva_pct"]}).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     return render_template("presupuesto_nuevo.html", titulo="Nuevo presupuesto", empresa=None, orgs=orgs, sistema=sid, sistema_nombre=S["nombre"], iva=str(datos["iva_pct"]).rstrip("0").rstrip("."),
                            catalogo=[("Planes", planes), ("Combos", combos), ("Módulos sueltos", mods)], condiciones=CONDICIONES_PX, datos_js=datos_js)

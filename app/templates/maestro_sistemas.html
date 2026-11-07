@@ -10,7 +10,6 @@
     <dl class="sel-resumen">
       <div><dt>Sistemas</dt><dd>{{ SISTEMAS|length }}</dd></div>
       <div><dt>Productos</dt><dd>{{ productos|length }}</dd></div>
-      <div><dt>En desarrollo</dt><dd>{{ productos|selectattr('1.en_desarrollo')|list|length }}</dd></div>
     </dl>
   </header>
 
@@ -49,9 +48,10 @@
       <div class="sel-pie">
         <span class="sel-etiqueta">{{ S.licencia }}</span>
         <nav class="sel-accesos" aria-label="Accesos de {{ S.nombre }}">
+          <a href="{{ url_for('web.maestro_producto_clientes', pid=sid) }}">Clientes</a>
+          <a href="{{ url_for('web.maestro_producto_planes', pid=sid) }}">Planes</a>
+          <a href="{{ url_for('web.maestro_producto_ordenes', pid=sid) }}">Órdenes</a>
           <a href="{{ url_for('web.maestro_suscripciones', producto=sid) }}">Suscripciones</a>
-          <a href="{{ url_for('web.maestro_presupuestos', sistema=sid) }}">Presupuestos</a>
-          <a href="{{ url_for('web.maestro_contratos', sistema=sid) }}">Contratos</a>
           <a href="{{ url_for('web.maestro_facturas', sistema=sid) }}">Facturas</a></nav>
       </div>
     </article>

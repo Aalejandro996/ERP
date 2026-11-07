@@ -91,14 +91,14 @@ def crear_entorno():
     from tests.test_licencias import AvilaFalsa
     avila = AvilaFalsa(); avila.caida = True        # sin configurar en la consola, Ávila Pay no se usa
     srv = crear_srv("sqlite:///" + os.path.join(tempfile.mkdtemp(), "lic.db"), Ed25519PrivateKey.generate(), secreto_admin="z" * 40,
-                    correo=lambda d, a, t, **k: (correos_lic.append((d, t)), correos_html.append((d, a, k.get("html") or ""))), config={"pago_movil": "Banco Prueba 0414-0000000", "url_publica": "https://lic.test"},
+                    correo=lambda d, a, t, **k: (correos_lic.append((d, t)), correos_html.append((d, a, k.get("html") or ""))), config={"pago_movil": "Banco Prueba 0414-0000000", "url_publica": "https://lic.test", "sync": {"surtia": "s" * 40}},
                     avilapay_transporte=avila.transporte)
     cli_srv = srv.test_client()
     def transporte(metodo, url, cuerpo, cab):
         r = cli_srv.open(url.split("lic.test", 1)[1], method=metodo, data=cuerpo, headers=cab); return r.status_code, r.data
     app.config["PAGO_MOVIL_INSTRUCCIONES"] = "Banco Prueba 0414-0000000, RIF J-00000000-0."
     app.extensions["admin_licencias"] = lambda: ClienteAdmin("https://lic.test", "z" * 40, transporte=transporte)
-    return dict(app=app, owner=owner, planes=planes, app_owner=app_owner, correos_lic=correos_lic, correos_html=correos_html, avila=avila)
+    return dict(app=app, owner=owner, planes=planes, app_owner=app_owner, correos_lic=correos_lic, correos_html=correos_html, avila=avila, lic_cliente=cli_srv)
 
 
 def _consulta(motor, *args):
@@ -177,6 +177,7 @@ def test_flujo_completo(entorno):
     # al entrar, el Maestro solo ve el selector de sistemas: sin menú lateral hasta elegir uno
     sel = root.get("/plataforma/sistemas").get_data(as_text=True)
     assert "app-maestro-selector" in sel and "¿Qué sistema quieres gestionar?" in sel and "Cobros y precios" not in sel
+    assert "En desarrollo" not in sel                                                                   # Quincena ya está integrada
     for nombre in ("Contax", "CriteriSeg", "Enlace MIT", "Quincena VE", "Surtia", "Planificación de auditoría", "Envío de mensajes", "Bot de pedidos por WhatsApp"):
         assert nombre in sel, nombre
     # Un redespliegue con eventos del Maestro en la bitácora NO debe inventar una «Organización principal»
@@ -893,9 +894,9 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
 
     # --- Cada sistema tiene sus módulos en el menú lateral y sus propios presupuestos, contratos y facturas (normativa de Contax)
     contax = root.get("/plataforma").get_data(as_text=True)
-    assert "app-maestro-selector" not in contax and "Cobros y precios" in contax and "Gigadevs en Contax" in contax and "Suscripciones y planes" not in contax
+    assert "app-maestro-selector" not in contax and "Cobros y precios" in contax and "Gigadevs en Contax" in contax and "Órdenes y pagos" not in contax
     cs = root.get("/plataforma/suscripciones?producto=criteriseg").get_data(as_text=True)
-    assert "Suscripciones y planes" in cs and "Cobros y precios" not in cs and "Normativa (Contax)" in cs
+    assert "Precios y planes" in cs and "Órdenes y pagos" in cs and "Gigadevs en Contax" not in cs and "Normativa (Contax)" in cs
     t = root.get("/plataforma/presupuestos").get_data(as_text=True)          # el sistema elegido queda en la sesión
     assert "Presupuestos de CriteriSeg" in t and "P-000001" not in t and "Precios vigentes" not in t
     assert "plan:ALL_IN_ONE" not in root.get("/plataforma/presupuestos/nuevo").get_data(as_text=True)
@@ -936,6 +937,46 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     _, asunto_su, html_su = entorno["correos_html"][-1]
     assert len(entorno["correos_lic"]) == n + 1 and asunto_su.endswith("· Surtia") and "surtia-192.png" in html_su and "#16C79A" in html_su
     assert "icono-192.png" not in html_su                                                             # nada del logo de Contax
+    # --- Módulos comerciales de cada sistema, como en Contax: clientes, planes con precio (sin cliente) y órdenes que activan la suscripción
+    menu_su = root.get("/plataforma/sistemas/surtia/planes").get_data(as_text=True)
+    for txt in ("Clientes", "Precios y planes", "Órdenes y pagos", "Suscripciones", "Presupuestos", "Nuevo plan", "Bot de pedidos por WhatsApp"):
+        assert txt in menu_su, txt
+    r = root.post("/plataforma/sistemas/surtia/planes", data={"accion": "guardar", "nombre": "Surtia Pyme", "codigo": "pyme", "precio_mensual": "35",
+                  "precio_anual": "350", "max_usuarios": "5", "max_empresas": "1", "modulos": ["bot_pedidos", "presupuestos", "conversaciones"]}, follow_redirects=True)
+    assert any("«Surtia Pyme» creado (Publicado)" in m for m in alerta(r)), alerta(r)
+    assert "$35.00" in r.get_data(as_text=True) and "$350.00" in r.get_data(as_text=True)
+    # la consola de Surtia envía su empresa (firma propia del sistema); una firma ajena se rechaza
+    import json as _js
+    from app.licensing.admin import firma as _firma
+    srv_cli = entorno["lic_cliente"]
+    def sync(metodo, ruta, datos=None, secreto="s" * 40):
+        cuerpo = _js.dumps(datos).encode() if datos is not None else b""
+        return srv_cli.open(ruta, method=metodo, data=cuerpo, headers={"X-Gigadevs-Firma": _firma(secreto, metodo, ruta, cuerpo), "Content-Type": "application/json"})
+    datos_emp = {"referencia": "j-40000000-1", "nombre": "Ferretería Los Llanos, C.A.", "correo": "admin@llanos.test", "externo_id": "7"}
+    assert sync("POST", "/sync/v1/surtia/clientes", datos_emp, secreto="x" * 40).status_code == 401
+    r = sync("POST", "/sync/v1/surtia/clientes", datos_emp)
+    assert r.status_code == 201 and r.get_json()["cliente"]["referencia"] == "J-40000000-1"
+    assert sync("POST", "/sync/v1/surtia/clientes", {**datos_emp, "nombre": "Ferretería Los Llanos 2022, C.A."}).status_code == 200   # se actualiza
+    assert sync("GET", "/sync/v1/surtia/licencia?referencia=J-40000000-1").status_code == 404           # aún sin suscripción
+    cl = root.get("/plataforma/sistemas/surtia/clientes").get_data(as_text=True)
+    assert "Ferretería Los Llanos 2022, C.A." in cl and "Sin suscripción" in cl
+    cid = re.search(r"/plataforma/sistemas/surtia/clientes\?editar=(\d+)", cl).group(1)
+    r = root.post("/plataforma/sistemas/surtia/ordenes", data={"accion": "crear", "cliente_id": cid, "plan": "pyme", "periodo": "anual", "moneda": "USD"},
+                  follow_redirects=True)
+    ref_o = re.search(r"Orden (OP\d{4}[0-9A-F]{6}) creada", " ".join(alerta(r))).group(1)
+    assert "USD 350.00" in r.get_data(as_text=True)                                                    # precio anual del plan
+    dest, asunto, html_o = entorno["correos_html"][-1]
+    assert dest == "admin@llanos.test" and asunto == f"Orden de compra {ref_o} · Surtia" and "surtia-192.png" in html_o   # le llega su orden de compra
+    r = root.post("/plataforma/sistemas/surtia/ordenes", data={"accion": "pagar", "ref": ref_o, "forma_pago": "Zelle", "referencia_pago": "ZL-991"},
+                  follow_redirects=True)
+    assert any("suscripción #" in m and "creada" in m and "Factura" in m for m in alerta(r)), alerta(r)
+    dest, asunto, html_f = entorno["correos_html"][-1]
+    assert dest == "admin@llanos.test" and asunto.startswith("Factura N°") and asunto.endswith("· Surtia") and "surtia-192.png" in html_f   # y su factura
+    assert "Ferretería Los Llanos 2022, C.A." in root.get("/plataforma/suscripciones?producto=surtia").get_data(as_text=True)
+    lic = sync("GET", "/sync/v1/surtia/licencia?referencia=J-40000000-1")
+    assert lic.status_code == 200 and lic.get_json()["token"].count(".") == 1                          # Surtia trae su licencia firmada
+    assert "Ferretería Los Llanos 2022" in root.get("/plataforma/facturas?sistema=surtia").get_data(as_text=True)   # factura con la marca de Surtia
+    assert "Ferretería Los Llanos 2022" in root.get("/plataforma/presupuestos/nuevo?sistema=surtia").get_data(as_text=True)   # cliente elegible
     giga = root.get("/plataforma/gigadevs").get_data(as_text=True)
     assert "Gigadevs dentro de Contax" in giga and "GIGADEVS_USUARIO" in giga and "Cobros y precios" in giga
     # Gigadevs en Contax: su organización recibe la licencia All in One sin cobro y el enlace para configurar la empresa;

@@ -7,7 +7,7 @@
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="accion" value="crear"><input type="hidden" name="sistema" value="{{ sistema }}">
 <div class="px-cuerpo">
   <section><h2><span class="px-n">1</span> Cliente</h2>
-    <label class="px-ancho">Cliente registrado en Contax
+    <label class="px-ancho">Cliente registrado
       <select name="org" id="px-org"><option value="">— Cliente nuevo: escriba sus datos —</option>{% for o in orgs %}<option value="{{ o.id }}" data-nombre="{{ o.nombre }}" data-rif="{{ o.rif }}" data-correo="{{ o.correo_contacto or '' }}">{{ o.nombre }} ({{ o.rif }})</option>{% endfor %}</select></label>
     <div class="px-grid2">
       <label>Razón social<input name="cliente_nombre" id="px-nombre" maxlength="200" placeholder="General de Suministros Orituco, C.A."></label>

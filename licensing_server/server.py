@@ -173,7 +173,11 @@ planes_producto = Table(
     "lic_planes_producto", md,
     Column("producto_id", String(40), ForeignKey("lic_productos.id"), primary_key=True),
     Column("codigo", String(32), primary_key=True), Column("nombre", String(100), nullable=False),
-    Column("precio_estado", String(20), nullable=False, default="Cotizar"), Column("activo", Integer, nullable=False, default=1))
+    Column("precio_estado", String(20), nullable=False, default="Cotizar"), Column("activo", Integer, nullable=False, default=1),
+    # precios (USD, IVA incluido), límites y módulos del plan; las bases anteriores los reciben en comercial.instalar()
+    Column("descripcion", Text), Column("precio_mensual", Numeric(18, 2)), Column("precio_anual", Numeric(18, 2)), Column("precio_unico", Numeric(18, 2)),
+    Column("max_usuarios", Integer), Column("max_empresas", Integer), Column("max_equipos", Integer), Column("max_instancias", Integer),
+    Column("modulos", Text))
 suscripciones = Table(
     "lic_suscripciones", md,
     Column("id", Integer, primary_key=True), Column("producto_id", String(40), ForeignKey("lic_productos.id"), nullable=False),
@@ -686,6 +690,13 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
     @app.errorhandler(LookupError)
     def _nf(e): return jsonify(message=str(e)[:200]), 404
 
+    # Clientes, planes con precio y órdenes de los demás sistemas, y la API firmada de cada sistema (licensing_server/comercial.py)
+    from . import comercial as CM
+    from . import facturas as _fx
+    com = CM.Comercial(st, PRODUCTOS)
+    app.extensions["comercial"] = com
+    CM.registrar_rutas(app, st, com, cfg.get("sync") or {}, clave_privada, lambda con, **k: _fx.emitir(con, reloj=reloj, **k), cuerpo)
+
     @app.get("/admin/v1/productos")
     def a_productos():
         return jsonify(productos=st.listar_productos())
@@ -1105,7 +1116,127 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
                 if verificar_avilapay(ref).get("estado") == "entregada": n += 1
             except Exception as e:  # noqa: BLE001 — Ávila Pay caído o correo caído: se reintenta en la próxima vuelta
                 avila_error(f"revisión {ref}: {e}")
+        for ref in com.pendientes_avila(reloj() - VIGENCIA_ORDEN_AVILA_USD_S - 3600):   # suscripciones de los demás sistemas
+            try:
+                if verificar_avila_producto(ref).get("estado") == "Pagada": n += 1
+            except Exception as e:  # noqa: BLE001
+                avila_error(f"revisión {ref}: {e}")
         return n
+
+    # ------------------------------------------------------------------ suscripciones de los sistemas pagadas con Ávila Pay
+    # (p. ej. Negocio Plus de Quincena VE: la persona elige su plan y paga desde la app; aquí se cobra, se crea o renueva la
+    # suscripción y se factura con la marca del sistema; la app consulta el resultado y activa la cuenta)
+    def checkout_producto(pid, d):
+        if PRODUCTOS[pid]["tipo_sujeto"] == "cuenta" and not d.get("nombre"): d = {**d, "nombre": d.get("referencia")}
+        cli, _ = com.guardar_cliente(pid, {k: d.get(k) for k in ("referencia", "nombre", "correo", "documento")}, origen="sistema")
+        metodo = str(d.get("metodo") or "")
+        usd = metodo in AV.METODOS_USD
+        if not usd and metodo not in AV.METODOS: raise ValueError("Elija la forma de pago")
+        if usd:
+            av, conf = avila_cliente(solo_activa=False)
+            if av is None or conf is None or not conf.activa_usd or metodo not in ((conf.metodos_usd or "").split(",")):
+                raise ValueError(f"El pago con {AV.METODOS_USD[metodo][1]} no está habilitado")
+        else:
+            av, conf = avila_cliente(solo_activa=True)
+            if av is None: raise ValueError("El pago en bolívares con Ávila Pay no está habilitado")
+            if metodo not in ([m for m in (conf.metodos or "").split(",") if m in AV.METODOS] or list(AV.METODOS)):
+                raise ValueError("Esa forma de pago no está habilitada")
+        ref = com.crear_orden(pid, {"cliente_id": cli["id"], "plan": d.get("plan"), "periodo": d.get("periodo"), "moneda": "USD",
+                                    "forma_pago": "Ávila Pay", "autor": "app"})
+        o = com.orden(ref)
+        precio = Decimal(o["monto"])
+        desc = f"Suscripción {PRODUCTOS[pid]['nombre']} · {o['plan']} · orden {ref}"
+        retorno = str(d.get("retorno") or "")[:300] or None
+        if retorno and not retorno.startswith("https://"): raise ValueError("Dirección de regreso inválida")
+        try:
+            if usd:
+                total, ajuste = ajustar(precio, [metodo])
+                pg = av.crear_pago_usd(total, ref, desc, [metodo], correo=cli.get("correo"), return_url=retorno, cancel_url=retorno)
+                com.marcar_cobro(ref, proveedor="avilapay_usd", metodo=metodo, prepay_id=pg["id"], checkout_url=pg["url"], monto=total, moneda="USD",
+                                 precio_usd=precio, ajuste=ajuste, expira_en=reloj() + VIGENCIA_ORDEN_AVILA_USD_S, forma_pago=f"{AV.METODOS_USD[metodo][1]} (Ávila Pay)")
+                return {"ref": ref, "checkout_url": pg["url"], "monto": str(total), "moneda": "USD"}
+            tasa = _tasa(d.get("tasa_bcv"))
+            total, ajuste = ajustar((precio * tasa).quantize(Decimal("0.01"), ROUND_HALF_UP), [metodo])
+            url_pub = cfg.get("url_publica") or ""
+            ses = av.crear_sesion(total, ref, desc, correo=cli.get("correo"), nombre=cli["nombre"], return_url=retorno, cancel_url=retorno,
+                                  webhook_url=f"{url_pub}/v1/avilapay/aviso" if url_pub else None, metodos=[metodo])
+            com.marcar_cobro(ref, proveedor="avilapay", metodo=metodo, prepay_id=ses["session_key"], checkout_url=ses["url"], monto=total, moneda="VES",
+                             tasa=tasa, precio_usd=precio, ajuste=ajuste, expira_en=reloj() + VIGENCIA_ORDEN_AVILA_S, forma_pago=f"{AV.METODOS[metodo]} (Ávila Pay)")
+            return {"ref": ref, "checkout_url": ses["url"], "monto": str(total), "moneda": "VES"}
+        except AV.ErrorAvila as e:
+            avila_error(f"crear cobro {ref}: {e}"); com.anular(ref, f"Ávila Pay no respondió: {e}")
+            raise ValueError(f"Ávila Pay no respondió; intente de nuevo en unos minutos ({e})") from e
+
+    def verificar_avila_producto(ref, referencia_bancaria=None):
+        """Igual que con las órdenes de Contax: el pago se confirma LEYENDO a Ávila Pay, por el monto y la moneda exactos, y cada
+        cobro de Ávila Pay paga una sola orden."""
+        o = com.orden(ref)
+        if o["estado"] != "Pendiente" or o.get("proveedor") not in PROVEEDORES_AVILA: return {"estado": o["estado"]}
+        av, _ = avila_cliente(solo_activa=False)
+        if av is None: raise ValueError("Ávila Pay no está configurado en la consola Maestro")
+        usd = o["proveedor"] == "avilapay_usd"
+        s_ = av.pago_usd(o["prepay_id"]) if usd else av.sesion(o["prepay_id"])
+        if s_["estado"] == ("SUCCEEDED" if usd else "PAID"):
+            if s_["moneda"] != ("USD" if usd else "VES") or s_["monto"] != Decimal(o["monto"]).quantize(Decimal("0.01")):
+                com.marcar_cobro(ref, nota=f"Ávila Pay informó {s_['moneda']} {s_['monto']}; la orden es {o['moneda']} {o['monto']}: revisar y confirmar a mano")
+                with st.eng.begin() as c: st.log(c, None, "avilapay_monto_distinto", f"orden={ref} {s_['moneda']} {s_['monto']}")
+                return {"estado": "Pendiente", "avilapay": "monto distinto: Gigadevs lo revisará"}
+            clave_pago = f"{o['proveedor']}:{o['prepay_id']}"
+            try:
+                with st.eng.begin() as c:
+                    c.execute(insert(pagos_usados).values(pago_id=clave_pago, orden_ref=ref, monto=s_["monto"], registrado_en=reloj()))
+            except IntegrityError:
+                with st.eng.connect() as c:
+                    if c.execute(select(pagos_usados.c.orden_ref).where(pagos_usados.c.pago_id == clave_pago)).scalar() != ref:
+                        return {"estado": "Pendiente", "avilapay": "ese cobro ya pagó otra orden"}
+            r = com.pagar(ref, {"forma_pago": o.get("forma_pago"), "referencia_pago": referencia_bancaria or o["prepay_id"], "tasa": o.get("tasa")},
+                          lambda con, **k: _fx_emitir(con, reloj=reloj, **k))
+            with st.eng.begin() as c: st.log(c, None, "avilapay_pago_confirmado", f"orden={ref} suscripción #{r['suscripcion_id']} {r['suscripcion']}")
+            return {"estado": "Pagada", **r}
+        if s_["estado"] == "EXPIRED" or (s_["estado"] in ("PENDING", "FAILED") and o.get("expira_en") and reloj() > o["expira_en"] + 600):
+            com.anular(ref, "El pago con Ávila Pay venció o no se completó")
+            return {"estado": "Anulada"}
+        return {"estado": "Pendiente", "avilapay": (AV.ESTADOS_USD if usd else AV.ESTADOS).get(s_["estado"], s_["estado"])}
+
+    from . import facturas as _fx_mod
+    _fx_emitir = _fx_mod.emitir
+
+    def metodos_habilitados():
+        _, conf = avila_cliente(solo_activa=False)
+        if conf is None: return {"bolivares": [], "dolares": []}
+        ves = ([m for m in (conf.metodos or "").split(",") if m in AV.METODOS] or list(AV.METODOS)) if conf.activa else []
+        usd = [m for m in (conf.metodos_usd or "").split(",") if m in AV.METODOS_USD] if conf.activa_usd else []
+        return {"bolivares": [{"codigo": m, "nombre": AV.METODOS[m]} for m in ves], "dolares": [{"codigo": m, "nombre": AV.METODOS_USD[m][1]} for m in usd]}
+
+    def _sync_ok(pid):
+        return pid in PRODUCTOS and CM.autenticar_sistema(st, cfg.get("sync") or {}, pid)
+
+    @app.get("/sync/v1/<pid>/planes")
+    def s_planes(pid):
+        if not _sync_ok(pid): return jsonify(message="No autorizado"), 401
+        return jsonify(planes=com.planes_publicos(pid), metodos=metodos_habilitados())
+
+    @app.post("/sync/v1/<pid>/checkout")
+    def s_checkout(pid):
+        if not _sync_ok(pid): return jsonify(message="No autorizado"), 401
+        r = checkout_producto(pid, cuerpo())
+        with st.eng.begin() as c: st.log(c, None, "checkout_producto", f"{pid} orden={r['ref']} {r['moneda']} {r['monto']}")
+        return jsonify(r), 201
+
+    @app.get("/sync/v1/<pid>/ordenes/<ref>")
+    def s_orden(pid, ref):
+        if not _sync_ok(pid): return jsonify(message="No autorizado"), 401
+        if not CM.RE_ORDEN.match(ref): raise LookupError("Orden inexistente")
+        o = com.orden(ref)
+        if o["producto_id"] != pid: raise LookupError("Orden inexistente")
+        r = verificar_avila_producto(ref) if o["estado"] == "Pendiente" and o.get("proveedor") else {"estado": o["estado"]}
+        o = com.orden(ref)
+        resp = {"ref": ref, "estado": o["estado"], "plan": o["plan"], "avilapay": r.get("avilapay")}
+        if o["estado"] == "Pagada" and o.get("suscripcion_id"):
+            sub = next((x for x in st.listar_suscripciones(pid) if x["id"] == o["suscripcion_id"]), None)
+            if sub and sub["estado"] == "activa":
+                resp.update(vence_en=int(sub["vence_en"]), token=st.token_suscripcion(sub["id"], clave_privada))
+        return jsonify(resp)
 
     @app.post("/v1/avilapay/aviso")
     def avila_aviso():
@@ -1125,6 +1256,15 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         avila_marcar(ultimo_aviso_en=reloj(), ultimo_aviso=f"{ev} {ref}"[:200])
         with st.eng.connect() as c:
             o = c.execute(select(ordenes).where(ordenes.c.ref == ref)).first() if RE_REF.match(ref) else None
+        if o is None and CM.RE_ORDEN.match(ref):          # orden de otro sistema de Gigadevs (p. ej. Negocio Plus de Quincena VE)
+            try:
+                op = com.orden(ref)
+                if op.get("proveedor") != "avilapay" or not hmac.compare_digest(sk, op.get("prepay_id") or ""): raise LookupError
+                return jsonify(ok=True, estado=verificar_avila_producto(ref, str(d.get("payment_reference") or "")[:60] or None).get("estado"))
+            except LookupError:
+                pass
+            except Exception as e:  # noqa: BLE001 — Ávila Pay reintenta el aviso
+                avila_error(f"aviso {ref}: {e}"); return jsonify(message="Reintente"), 503
         if o is None or o.proveedor != "avilapay" or not hmac.compare_digest(sk, o.prepay_id or ""):
             with st.eng.begin() as c: st.log(c, None, "avilapay_aviso_ignorado", f"{ev} orden={ref[:40]} (no corresponde a una orden de Contax)")
             return jsonify(ok=True, ignorado=True)
@@ -1155,6 +1295,15 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         avila_marcar(ultimo_aviso_en=reloj(), ultimo_aviso=f"USD {ev} {ref}"[:200])
         with st.eng.connect() as c:
             o = c.execute(select(ordenes).where(ordenes.c.ref == ref)).first() if RE_REF.match(ref) else None
+        if o is None and CM.RE_ORDEN.match(ref):
+            try:
+                op = com.orden(ref)
+                if op.get("proveedor") != "avilapay_usd" or not hmac.compare_digest(pid, op.get("prepay_id") or ""): raise LookupError
+                return jsonify(ok=True, estado=verificar_avila_producto(ref).get("estado"))
+            except LookupError:
+                pass
+            except Exception as e:  # noqa: BLE001
+                avila_error(f"aviso USD {ref}: {e}"); return jsonify(message="Reintente"), 503
         if o is None or o.proveedor != "avilapay_usd" or not hmac.compare_digest(pid, o.prepay_id or ""):
             with st.eng.begin() as c: st.log(c, None, "avilapay_aviso_ignorado", f"USD {ev} orden={ref[:40]} (no corresponde a una orden de Contax)")
             return jsonify(ok=True, ignorado=True)
@@ -1518,6 +1667,26 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
         with st.eng.begin() as c:
             c.execute(update(fx.facturas).where(fx.facturas.c.id == fid).values(correo_enviado_en=reloj()))
         return f
+
+    def enviar_orden_producto(ref):
+        """Orden de compra de un sistema (CriteriSeg, Surtia…) con la plantilla y la marca de ese sistema."""
+        o, cli = None, None
+        o = com.orden(ref); cli = com.cliente(o["cliente_id"])
+        if not cli.get("correo") or correo is None: return False
+        nombre = pc.MARCAS.get(o["producto_id"], pc.MARCAS["contax"])[0]
+        periodo = {"mensual": "Mensual", "anual": "Anual (12 meses)", "unico": "Pago único"}.get(o["periodo"], o["periodo"])
+        titulo = f"Orden de compra {o['ref']}"
+        parrafos = [f"Estimado(a) {cli['nombre']}:", f"Registramos su orden de compra de {nombre}. Al confirmarse el pago se activa su suscripción "
+                    "y le enviamos la factura a este correo."]
+        filas = [("Orden", o["ref"]), ("Plan", o["plan"]), ("Período", periodo), ("Monto", f"{o['moneda']} {Decimal(o['monto']):,.2f}"), ("Estado", "Pendiente de pago")]
+        nota = (f"Datos de pago: {cfg['pago_movil']}" if cfg.get("pago_movil") else "Gigadevs le indicará los datos de pago.") + f" Indique la orden {o['ref']} al pagar."
+        correo(cli["correo"], f"{titulo} · {nombre}", pc.texto(titulo, parrafos, filas=filas, nota=nota, nombre=nombre),
+               html=pc.html(titulo, parrafos, cfg.get("url_erp") or "", filas=filas, nota=nota, sistema=o["producto_id"]))
+        with st.eng.begin() as c: st.log(c, None, "orden_producto_enviada", f"{ref} a {cli['correo']}")
+        return True
+
+    com.al_crear_orden = enviar_orden_producto
+    com.al_facturar = lambda fid: enviar_factura(fid)
 
     def fx_texto(f, intro): return intro + "\n\n" + pc.factura_texto(f)
 

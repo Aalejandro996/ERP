@@ -53,7 +53,7 @@ SISTEMAS = {
     "control_financiero": {
         "licencia": "Cuenta individual · nube",
         "nombre": "Quincena VE", "marca": "Quincena VE", "color": "#19b37d", "logo": "marca/quincena.svg",
-        "lema": "Finanzas personales · cuenta individual", "en_desarrollo": True,
+        "lema": "Finanzas personales y Negocio Plus · suscripción por cuenta, pagada en la app con Ávila Pay",
         "modulos_licencia": ["Panel de finanzas", "Ingresos y gastos", "Deudas y compromisos", "Pagos programados", "Herramientas de negocio"],
     },
 }
@@ -65,6 +65,8 @@ SOLO_CONTAX = {
 }
 # Páginas de un sistema concreto, que llevan el sistema en el parámetro «producto».
 POR_PRODUCTO = {"web.maestro_suscripciones", "web.maestro_suscripcion_token"}
+# Módulos comerciales de cada sistema, con el sistema en la ruta (/plataforma/sistemas/<pid>/…)
+POR_RUTA = {"web.maestro_producto_clientes", "web.maestro_producto_planes", "web.maestro_producto_ordenes"}
 
 
 def valido(sid) -> bool:
@@ -87,6 +89,8 @@ def _resolver():
     sid = None
     if ep in POR_PRODUCTO and valido(request.args.get("producto")):
         sid = request.args["producto"]
+    elif ep in POR_RUTA and valido((request.view_args or {}).get("pid")):
+        sid = request.view_args["pid"]
     elif valido(request.args.get("sistema")):
         sid = request.args["sistema"]
     elif ep in SOLO_CONTAX:
@@ -107,7 +111,7 @@ def actual() -> str:
 
 
 def inicio(sid) -> str:
-    return url_for("web.plataforma") if sid == "contax" else url_for("web.maestro_suscripciones", producto=sid)
+    return url_for("web.plataforma") if sid == "contax" else url_for("web.maestro_producto_clientes", pid=sid)
 
 
 def _enlace(texto, endpoint, icono, activos=(), **kw):
@@ -143,8 +147,12 @@ def menu(sid):
                 _enlace("Bitácora", "web.plataforma_bitacora", "📚")]},
         ]
     return [
-        {"titulo": "Licencias", "enlaces": [
-            _enlace("Suscripciones y planes", "web.maestro_suscripciones", "🔑", ("web.maestro_suscripcion_token",), producto=sid)]},
+        {"titulo": "Clientes y licencias", "enlaces": [
+            _enlace("Clientes", "web.maestro_producto_clientes", "🏢", pid=sid),
+            _enlace("Suscripciones", "web.maestro_suscripciones", "🔑", ("web.maestro_suscripcion_token",), producto=sid)]},
+        {"titulo": "Cobros y precios", "enlaces": [
+            _enlace("Precios y planes", "web.maestro_producto_planes", "🏷️", pid=sid),
+            _enlace("Órdenes y pagos", "web.maestro_producto_ordenes", "💵", pid=sid)]},
         {"titulo": "Comercial", "enlaces": comercial},
         {"titulo": "Normativa (Contax)", "enlaces": [
             _enlace("Parámetros legales", "web.admin_fiscal", "⚖️"),
