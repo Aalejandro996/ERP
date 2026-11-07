@@ -135,7 +135,7 @@ class Legal:
 
     def vigente(self, sistema, tipo):
         with self.st.eng.connect() as c:
-            fila = c.execute(select(documentos.c.id).where(documentos.c.sistema == sistema, documentos.c.tipo == tipo, documentos.c.estado == "aprobado")
+            fila = c.execute(select(documentos.c.id).where(documentos.c.sistema == sistema, documentos.c.tipo == tipo, documentos.c.estado == "aprobado", documentos.c.abogado_id.isnot(None))
                              .order_by(documentos.c.version.desc()).limit(1)).first()
         return self.documento(fila.id) if fila else None
 
@@ -176,6 +176,7 @@ class Legal:
         ab = self.abogado(usuario_abogado)
         if not ab["activo"]: raise ValueError("La abogada no está activa")
         if not ab["tiene_firma"]: raise ValueError("Registre su firma antes de aprobar documentos")
+        if not RE_INPRE.match(str(ab.get("inpreabogado") or "")): raise ValueError("Registre su número de Inpreabogado antes de aprobar documentos")
         ahora = self.st.reloj()
         with self.st.eng.begin() as c:
             d = c.execute(select(documentos).where(documentos.c.id == int(did)).with_for_update()).first()
@@ -308,7 +309,7 @@ class Legal:
         with self.st.eng.connect() as c:
             for t in REQUERIDOS.get(perfil, REQUERIDOS["usuario"]):
                 v = c.execute(select(documentos.c.id, documentos.c.titulo, documentos.c.version, documentos.c.huella)
-                              .where(documentos.c.sistema == sistema, documentos.c.tipo == t, documentos.c.estado == "aprobado")
+                              .where(documentos.c.sistema == sistema, documentos.c.tipo == t, documentos.c.estado == "aprobado", documentos.c.abogado_id.isnot(None))
                               .order_by(documentos.c.version.desc()).limit(1)).first()
                 if v is None: continue
                 if c.execute(select(aceptaciones.c.id).where(aceptaciones.c.documento_id == v.id, aceptaciones.c.usuario == str(usuario))).first(): continue

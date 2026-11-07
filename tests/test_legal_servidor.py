@@ -94,3 +94,16 @@ def test_si_un_director_no_autoriza_vuelve_a_borrador(lg):
     d = lg.documento(did)
     assert d["estado"] == "borrador" and "Falta la cláusula de arbitraje" in d["observaciones"] and [a["estado"] for a in d["autorizaciones"]] == ["rechazado", "anulado"]
     with pytest.raises(ValueError, match="ya se usó"): lg.autorizar(doc["enlaces"][1]["token"], "autorizado")
+
+
+def test_sin_abogada_con_inpreabogado_ningun_documento_rige(lg):
+    """Defensa adicional: aunque un documento quedara «aprobado» sin abogada (p. ej. por una edición manual de la base), no rige
+    ni se le pide a nadie aceptarlo."""
+    from sqlalchemy import update
+    import licensing_server.legal as LG
+    did = next(d["id"] for d in lg.listar("surtia") if d["tipo"] == "contrato")
+    with lg.st.eng.begin() as c:
+        c.execute(update(LG.documentos).where(LG.documentos.c.id == did).values(estado="aprobado", abogado_id=None))
+    d = lg.documento(did)
+    assert lg.vigente(d["sistema"], d["tipo"]) is None
+    assert all(p["id"] != did for p in lg.pendientes(d["sistema"], "ana@x.test", "responsable"))
