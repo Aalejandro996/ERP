@@ -1341,6 +1341,9 @@ def test_google_drive_guarda_documentos_y_facturas(entorno):
         root.post("/login", data={"usuario": "root_drive", "clave": CLAVE}); root.post("/mfa/verificar", data={"codigo": totp.codigo(sec)})
         pag = root.get("/plataforma/drive").get_data(as_text=True)
         assert "Iniciar sesión con Google" in pag and "drive.file" in pag
+        csp = root.get("/plataforma/drive").headers["Content-Security-Policy"]
+        assert "form-action 'self' https://accounts.google.com" in csp                    # sin esto Chrome bloquea el paso a Google
+        assert "accounts.google.com" not in root.get("/plataforma/legal").headers["Content-Security-Policy"]   # solo en la página de Drive
         r = root.post("/plataforma/drive", data={"accion": "conectar"})
         q = dict(up.parse_qsl(up.urlsplit(r.headers["Location"]).query))
         assert r.headers["Location"].startswith(drive.AUTORIZAR) and q["access_type"] == "offline" and "drive.file" in q["scope"] and "auth/drive " not in q["scope"] + " "

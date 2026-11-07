@@ -490,6 +490,7 @@ def maestro_drive():
     from .licensing.admin import ErrorAdmin
     from .models import DriveArchivo
     autor = g.usuario.username
+    g.csp_form_google = True      # el botón «Iniciar sesión con Google» redirige a accounts.google.com (CSP form-action)
     if request.method == "POST":
         a = F.get("accion")
         try:
