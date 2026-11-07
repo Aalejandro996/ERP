@@ -1247,6 +1247,14 @@ def test_contabilidad_automatica_de_gigadevs(entorno):
     from app.models import Empresa, Movimiento, Organizacion, Usuario
     from app.models_compras import AsientoOrigen
     oid, _c = _org_con_admin(entorno, "Gigadevs Corp", "J-60606060-6", "giga_conta")
+    import re as _re
+    ids = _re.findall(r'name="acepto" value="(\d+)"', _c.get("/legal/aceptar").get_data(as_text=True))
+    if ids: _c.post("/legal/aceptar", data={"acepto": ids})                           # documentos vigentes de pruebas anteriores
+    pag = _c.get("/admin/usuarios").get_data(as_text=True)
+    assert "Puestos disponibles" in pag and "Abogada y Directores Generales" not in pag  # el aviso es solo para la organización de Gigadevs
+    entorno["app"].config["GIGADEVS_USUARIO"] = "J-60606060-6"
+    assert "consola Maestro → Contax → Legal" in _c.get("/admin/usuarios").get_data(as_text=True)
+    entorno["app"].config["GIGADEVS_USUARIO"] = ""
     fx = lambda i, **k: {"id": 9000 + i, "numero": i, "numero_completo": f"A-{i:08d}", "fecha": "2026-11-05", "cliente_nombre": "Ferretería X",
                          "cliente_rif": "J-40000000-1", "moneda": "VES", "total": "116.00", "iva": "16.00", "estado": "Emitida",
                          "forma_pago": "Ávila Pay · Pago Móvil", "orden_ref": f"OP2611{i:06X}", "sistema": "control_financiero", **k}
