@@ -30,12 +30,22 @@ class _SinRedirecciones(urllib.request.HTTPRedirectHandler):
 _ABRIDOR = urllib.request.build_opener(_SinRedirecciones)
 
 
+def url_permitida(url: str) -> bool:
+    """HTTPS siempre; http solo dentro de la red privada de Render (host sin dominio, p. ej. «erp-licencias-ab12:10000», que
+    nunca sale a internet) o en localhost para desarrollo. Las peticiones y respuestas van firmadas en ambos casos."""
+    import urllib.parse
+    if url.startswith("https://"): return True
+    if not url.startswith("http://"): return False
+    host = (urllib.parse.urlsplit(url).hostname or "")
+    return host in ("127.0.0.1", "localhost") or (bool(host) and "." not in host and ":" not in host)
+
+
 def _http(metodo, url, cuerpo, cabeceras, timeout=20):
     """(estado, cuerpo, cabeceras). Solo HTTPS (o localhost en desarrollo), sin seguir redirecciones."""
-    if not (url.startswith("https://") or url.startswith(("http://127.0.0.1", "http://localhost"))): raise ErrorAdmin("El servidor de licencias debe usar HTTPS")
+    if not url_permitida(url): raise ErrorAdmin("El servidor de licencias debe usar HTTPS o la red privada de Render")
     req = urllib.request.Request(url, cuerpo or None, cabeceras, method=metodo)
     try:
-        with _ABRIDOR.open(req, timeout=timeout) as r:  # noqa: S310 (URL de configuración, HTTPS)
+        with _ABRIDOR.open(req, timeout=timeout) as r:  # noqa: S310 (URL de configuración: HTTPS o red privada)
             return r.status, r.read(1024 * 1024 * 8), dict(r.headers)
     except urllib.error.HTTPError as e:
         return e.code, e.read(65536), dict(e.headers or {})

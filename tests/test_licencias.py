@@ -725,3 +725,11 @@ def test_la_api_de_los_sistemas_rechaza_firmas_ajenas_repetidas_y_limita_peticio
                                                                                     "Content-Type": "text/plain"}).status_code == 415
     for _ in range(130): ultima = e.http.get(ruta)
     assert ultima.status_code == 429                                                                  # límite por IP
+
+
+def test_cliente_admin_acepta_https_y_la_red_privada_de_render():
+    from app.licensing.admin import url_permitida
+    for u in ("https://erp-licencias.onrender.com/admin/v1/x", "http://erp-licencias-ab12:10000/admin/v1/x", "http://localhost:5001/x", "http://127.0.0.1:5001/x"):
+        assert url_permitida(u), u
+    for u in ("http://erp-licencias.onrender.com/x", "http://203.0.113.5/x", "ftp://erp/x", "http://[::1]/x", "file:///etc/passwd"):
+        assert not url_permitida(u), u
