@@ -494,13 +494,29 @@ def maestro_drive():
     if request.method == "POST":
         a = F.get("accion")
         try:
+            if a in ("conectar", "desconectar"):
+                # A dónde van los contratos y las facturas de Gigadevs: exige la clave y el código MFA del Maestro (una sesión
+                # abierta o robada no basta para conectar un Drive ajeno ni para cortar el respaldo)
+                from .auth.routes import _mfa_confirmado
+                from .security import verificar_clave
+                if not verificar_clave(F.get("clave", ""), g.usuario.password_hash)[0]:
+                    registrar(autor, "DRIVE_REAUTENTICACION_FALLIDA", f"accion={a}", org=None); db.session.commit()
+                    raise ValueError("Clave incorrecta")
+                if not _mfa_confirmado(g.usuario, F.get("codigo")):
+                    db.session.rollback(); registrar(autor, "DRIVE_REAUTENTICACION_FALLIDA", f"accion={a} mfa", org=None); db.session.commit()
+                    raise ValueError("Código de verificación incorrecto")
+                db.session.commit()                                    # consume el código TOTP (no se puede reutilizar)
             if a == "conectar":
                 if not drive.configurado(): raise ValueError("Configure GOOGLE_OAUTH_CLIENT_ID y GOOGLE_OAUTH_CLIENT_SECRET en erp-web (Render)")
-                session["drive_state"] = {"v": secrets.token_urlsafe(32), "t": time.time(), "u": autor}
-                return redirect(drive.url_autorizacion(session["drive_state"]["v"]))
+                verificador, desafio = drive.pkce()
+                session["drive_state"] = {"v": secrets.token_urlsafe(32), "t": time.time(), "u": autor, "pkce": verificador}
+                registrar(autor, "DRIVE_INICIO_CONEXION", "", org=None); db.session.commit()
+                return redirect(drive.url_autorizacion(session["drive_state"]["v"], desafio))
             if a == "desconectar":
+                cuenta = (drive.conexion().correo if drive.conexion() else "")
                 drive.desconectar(autor)
-                registrar(autor, "DRIVE_DESCONECTADO", "", org=None); db.session.commit()
+                registrar(autor, "DRIVE_DESCONECTADO", f"cuenta={cuenta}", org=None); db.session.commit()
+                _alerta_drive(f"Se desconectó el Google Drive de Gigadevs ({cuenta})", autor)
                 flash("Google Drive desconectado. Lo que ya se guardó sigue en Drive.")
             elif a == "pendientes":
                 adm, n = _admin(), 0
@@ -530,15 +546,17 @@ def maestro_drive():
                          "GOOGLE_OAUTH_CLIENT_SECRET en el servicio erp-web de Render."))
     elif con is None:
         secs.append(dict(titulo="Conectar Google Drive", clase="maestro-form", abierto=True,
-                         nota="Inicie sesión con la cuenta de Google de Gigadevs y autorice el acceso a Drive.",
-                         form=dict(action=request.path, boton="Iniciar sesión con Google", campos=[h("conectar")])))
+                         nota="Confirme con su clave y su código MFA; luego inicie sesión con la cuenta de Google de Gigadevs y autorice el acceso "
+                              "a Drive. " + (f"Solo se aceptan: {current_app.config['DRIVE_CUENTA_PERMITIDA']}." if current_app.config.get("DRIVE_CUENTA_PERMITIDA")
+                                             else "Recomendado: fije DRIVE_CUENTA_PERMITIDA con el correo o el dominio de Gigadevs."),
+                         form=dict(action=request.path, boton="Iniciar sesión con Google", campos=[h("conectar"), campo("clave", "Su clave", "password"), campo("codigo", "Código de verificación (MFA)", ph="123456")])))
     else:
         secs.append(dict(titulo="Subir lo pendiente", clase="maestro-form",
                          nota=f"Conectado como {con.correo} desde el {con.conectado_en:%d/%m/%Y} por {con.conectado_por}. Los documentos se guardan solos; "
                               "esto revisa y sube lo que hubiera quedado pendiente (por ejemplo, si Drive no respondió).",
                          form=dict(action=request.path, boton="Subir pendientes", campos=[h("pendientes")])))
         secs.append(dict(titulo="Desconectar", clase="maestro-form",
-                         form=dict(action=request.path, boton="Desconectar Google Drive", campos=[h("desconectar")])))
+                         form=dict(action=request.path, boton="Desconectar Google Drive", campos=[h("desconectar"), campo("clave", "Su clave", "password"), campo("codigo", "Código de verificación (MFA)", ph="123456")])))
     if recientes:
         secs.append(dict(titulo="Guardado recientemente", tabla=dict(cols=["Documento", "Guardado"], filas=[
             dict(cells=[r.ruta, f"{r.subido_en:%d/%m/%Y %H:%M}"]) for r in recientes])))
@@ -557,12 +575,29 @@ def maestro_drive_google():
             and time.time() - st.get("t", 0) < 600):
         flash("El inicio de sesión con Google venció o no corresponde a esta sesión. Inténtelo de nuevo."); return redirect(url_for("web.maestro_drive"))
     try:
-        correo = drive.completar(request.args.get("code") or "", g.usuario.username)
+        correo = drive.completar(request.args.get("code") or "", g.usuario.username, st.get("pkce") or "")
         registrar(g.usuario.username, "DRIVE_CONECTADO", f"cuenta={correo} permiso=drive.file", org=None); db.session.commit()
+        _alerta_drive(f"Se conectó el Google Drive de Gigadevs a la cuenta {correo}", g.usuario.username)
         flash(f"Google Drive conectado con {correo}. Desde ahora cada documento se guarda solo.")
     except (drive.ErrorDrive, ValueError, OSError) as e:
         db.session.rollback(); flash(str(e)[:250])
+        registrar(g.usuario.username, "DRIVE_CONEXION_RECHAZADA", str(e)[:200], org=None); db.session.commit()
     return redirect(url_for("web.maestro_drive"))
+
+
+def _alerta_drive(mensaje, autor):
+    """Aviso de seguridad a todos los Maestros (y al correo de Gigadevs): si no fue usted, actúe de inmediato."""
+    from . import correo
+    destinos = {u.email for u in db.session.execute(select(Usuario).where(Usuario.rol == "Maestro", Usuario.activo.is_(True))).scalars() if u.email}
+    if current_app.config.get("GIGADEVS_CORREO"): destinos.add(current_app.config["GIGADEVS_CORREO"])
+    ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip()
+    for d in destinos:
+        try:
+            correo.enviar(d, "Alerta de seguridad: Google Drive de Gigadevs",
+                          f"{mensaje}.\n\nSi no fue usted, entre a Contax, desconecte Drive, cambie su clave y revise la bitácora.",
+                          titulo="Alerta de seguridad", filas=[("Acción", mensaje), ("Usuario", autor), ("IP", ip or "—")])
+        except Exception as e:  # noqa: BLE001 — la alerta no debe deshacer la acción ya registrada
+            current_app.logger.warning("Drive: no se envió la alerta a %s: %s", d, e)
 
 
 @ruta("/plataforma/suscripciones", "plataforma", ("GET", "POST"))

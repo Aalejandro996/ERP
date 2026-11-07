@@ -1300,7 +1300,7 @@ def test_google_drive_guarda_documentos_y_facturas(entorno):
     app = entorno["app"]
     app.config.update(GOOGLE_OAUTH_CLIENT_ID="cid.apps.googleusercontent.com", GOOGLE_OAUTH_CLIENT_SECRET="gsecret")
     b64 = lambda d: base64.urlsafe_b64encode(_json.dumps(d).encode()).decode().rstrip("=")
-    vistos, carpetas, subidos = [], {}, []
+    vistos, carpetas, subidos, desafios, cuenta = [], {}, [], [], ["Drive@Gigadevs.test"]
 
     def google(metodo, url, cab, cuerpo):
         vistos.append((metodo, url))
@@ -1309,7 +1309,9 @@ def test_google_drive_guarda_documentos_y_facturas(entorno):
             assert q["client_secret"] == "gsecret"
             if q["grant_type"] == "authorization_code":
                 assert q["code"] == "codigo-ok" and q["redirect_uri"].endswith("/plataforma/drive/google")
-                idt = "x." + b64({"aud": "cid.apps.googleusercontent.com", "iss": "https://accounts.google.com", "email": "Drive@Gigadevs.test",
+                import hashlib as _h
+                assert base64.urlsafe_b64encode(_h.sha256(q["code_verifier"].encode()).digest()).decode().rstrip("=") == desafios[-1]   # PKCE
+                idt = "x." + b64({"aud": "cid.apps.googleusercontent.com", "iss": "https://accounts.google.com", "email": cuenta[0],
                                   "email_verified": True}) + ".y"
                 return 200, _json.dumps({"access_token": "at1", "expires_in": 3599, "refresh_token": "rt-secreto", "id_token": idt,
                                          "scope": "openid email https://www.googleapis.com/auth/drive.file"}).encode()
@@ -1344,15 +1346,39 @@ def test_google_drive_guarda_documentos_y_facturas(entorno):
         csp = root.get("/plataforma/drive").headers["Content-Security-Policy"]
         assert "form-action 'self' https://accounts.google.com" in csp                    # sin esto Chrome bloquea el paso a Google
         assert "accounts.google.com" not in root.get("/plataforma/legal").headers["Content-Security-Policy"]   # solo en la página de Drive
-        r = root.post("/plataforma/drive", data={"accion": "conectar"})
-        q = dict(up.parse_qsl(up.urlsplit(r.headers["Location"]).query))
+        def mfa():                                     # código nuevo (el anterior ya se consumió: no se reutiliza)
+            with entorno["app_owner"].app_context():
+                u = db.session.execute(db.select(Usuario).where(Usuario.username == "root_drive")).scalar_one(); u.mfa_ultimo_contador = 0
+                db.session.commit()
+            return totp.codigo(sec)
+
+        def conectar():
+            r = root.post("/plataforma/drive", data={"accion": "conectar", "clave": CLAVE, "codigo": mfa()})
+            q = dict(up.parse_qsl(up.urlsplit(r.headers["Location"]).query)); desafios.append(q["code_challenge"]); return r, q
+        # una sesión abierta no basta: sin la clave o sin el código MFA no se conecta
+        assert "Clave incorrecta" in root.post("/plataforma/drive", data={"accion": "conectar", "clave": "x", "codigo": mfa()}, follow_redirects=True).get_data(as_text=True)
+        r = root.post("/plataforma/drive", data={"accion": "conectar", "clave": CLAVE, "codigo": "000000"}, follow_redirects=True)
+        assert "Código de verificación incorrecto" in r.get_data(as_text=True)
+        r, q = conectar()
         assert r.headers["Location"].startswith(drive.AUTORIZAR) and q["access_type"] == "offline" and "drive.file" in q["scope"] and "auth/drive " not in q["scope"] + " "
+        assert q["code_challenge_method"] == "S256" and len(q["code_challenge"]) == 43
         r = root.get(f"/plataforma/drive/google?state=otro&code=codigo-ok", follow_redirects=True)
         assert "venció o no corresponde" in r.get_data(as_text=True) and not any(u == drive.TOKEN for _, u in vistos)   # state falso: ni se canjea
-        r = root.post("/plataforma/drive", data={"accion": "conectar"})
-        state = dict(up.parse_qsl(up.urlsplit(r.headers["Location"]).query))["state"]
-        r = root.get(f"/plataforma/drive/google?state={state}&code=codigo-ok", follow_redirects=True)
+        # cuenta fuera de la lista blanca: se rechaza y se revoca su acceso en Google
+        app.config["DRIVE_CUENTA_PERMITIDA"] = "@gigadevs.test"
+        cuenta[0] = "intruso@gmail.test"
+        r, q = conectar()
+        r = root.get(f"/plataforma/drive/google?state={q['state']}&code=codigo-ok", follow_redirects=True)
+        assert "no está autorizada" in r.get_data(as_text=True) and vistos[-1] == ("POST", drive.REVOCAR)
+        with entorno["app_owner"].app_context(): assert db.session.get(DriveConexion, 1) is None
+        cuenta[0] = "Drive@Gigadevs.test"
+        from app import correo as _correo
+        n_alertas = len(_correo.ENVIADOS)
+        r, q = conectar()
+        r = root.get(f"/plataforma/drive/google?state={q['state']}&code=codigo-ok", follow_redirects=True)
         assert "Google Drive conectado con drive@gigadevs.test" in r.get_data(as_text=True)
+        assert any(m["Subject"].startswith("Alerta de seguridad") and m["To"] == "rootd@prov.test" for m in _correo.ENVIADOS[n_alertas:])   # alerta a los Maestros
+        app.config["DRIVE_CUENTA_PERMITIDA"] = ""
         with entorno["app_owner"].app_context():
             fila = db.session.get(DriveConexion, 1)
             assert fila.correo == "drive@gigadevs.test" and "rt-secreto" not in fila.refresh_token_cifrado     # cifrado en reposo
@@ -1366,7 +1392,8 @@ def test_google_drive_guarda_documentos_y_facturas(entorno):
         root.post("/plataforma/drive", data={"accion": "pendientes"})
         assert len(subidos) == n_sub and len(carpetas) == n_carp                      # idempotente
         assert "Guardado recientemente" in root.get("/plataforma/drive").get_data(as_text=True)
-        r = root.post("/plataforma/drive", data={"accion": "desconectar"}, follow_redirects=True)
+        assert "Clave incorrecta" in root.post("/plataforma/drive", data={"accion": "desconectar", "clave": "x", "codigo": mfa()}, follow_redirects=True).get_data(as_text=True)
+        r = root.post("/plataforma/drive", data={"accion": "desconectar", "clave": CLAVE, "codigo": mfa()}, follow_redirects=True)
         assert "desconectado" in r.get_data(as_text=True) and vistos[-1] == ("POST", drive.REVOCAR)
         with entorno["app_owner"].app_context():
             assert db.session.get(DriveConexion, 1) is None
