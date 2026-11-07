@@ -405,6 +405,9 @@ def maestro_gigadevs():
                 facturas = _admin().facturas()
                 fijar_org(db, org.id)
                 r = sincronizar(facturas, u, org)
+                from . import drive
+                try: r["drive"] = drive.subir_facturas(facturas)[0]
+                except drive.ErrorDrive as e: current_app.logger.warning("Drive: %s", e)
                 registrar(autor, "CONTABILIDAD_GIGADEVS", f"org={org.rif} asientos={r['asientos']} cuentas={r['cuentas_creadas']} errores={len(r['errores'])}", org=None)
                 db.session.commit()
                 flash(f"Contabilidad de {r['empresa']}: {r['asientos']} asiento(s) nuevo(s), {r['cuentas_creadas']} cuenta(s) del plan agregada(s)."
@@ -477,6 +480,88 @@ def maestro_gigadevs():
             dict(cells=[l["id"], nombre_plan({"plan": l["plan"]}) if l["plan"] else "Legado", l["estado"], l["max_usuarios"], l["max_empresas"], _fecha(l["vence_en"])])
             for l in lics])))
     return pagina("Gigadevs en Contax", None, secs)
+
+
+@ruta("/plataforma/drive", "plataforma", ("GET", "POST"))
+def maestro_drive():
+    """Google Drive de Gigadevs: conectar con «Iniciar sesión con Google», ver dónde se guarda cada cosa y subir lo pendiente."""
+    from flask import session
+    from . import drive
+    from .licensing.admin import ErrorAdmin
+    from .models import DriveArchivo
+    autor = g.usuario.username
+    if request.method == "POST":
+        a = F.get("accion")
+        try:
+            if a == "conectar":
+                if not drive.configurado(): raise ValueError("Configure GOOGLE_OAUTH_CLIENT_ID y GOOGLE_OAUTH_CLIENT_SECRET en erp-web (Render)")
+                session["drive_state"] = {"v": secrets.token_urlsafe(32), "t": time.time(), "u": autor}
+                return redirect(drive.url_autorizacion(session["drive_state"]["v"]))
+            if a == "desconectar":
+                drive.desconectar(autor)
+                registrar(autor, "DRIVE_DESCONECTADO", "", org=None); db.session.commit()
+                flash("Google Drive desconectado. Lo que ya se guardó sigue en Drive.")
+            elif a == "pendientes":
+                adm, n = _admin(), 0
+                for d in adm.legal_documentos().get("documentos", []):
+                    if d["estado"] in ("aprobado", "reemplazado") and drive.subir_documento_aprobado(adm.legal_documento(d["id"])): n += 1
+                nf, err = drive.subir_facturas(adm.facturas())
+                registrar(autor, "DRIVE_SINCRONIZADO", f"documentos={n} facturas={nf}", org=None); db.session.commit()
+                flash(f"Drive al día: {n} documento(s) legal(es) y {nf} factura(s) nueva(s) revisados." + (f" Error: {err[0]}" if err else ""))
+            else: raise ValueError("Acción inválida")
+        except (drive.ErrorDrive, ErrorAdmin, ValueError, OSError) as e:
+            db.session.rollback(); flash(str(e)[:250])
+        return redirect(url_for("web.maestro_drive"))
+    con = drive.conexion()
+    total = db.session.execute(select(func.count()).select_from(DriveArchivo).where(~DriveArchivo.clave.like("carpeta:%"))).scalar()
+    recientes = db.session.execute(select(DriveArchivo).where(~DriveArchivo.clave.like("carpeta:%")).order_by(DriveArchivo.subido_en.desc()).limit(50)).scalars().all()
+    raiz = current_app.config.get("DRIVE_CARPETA_RAIZ")
+    secs = [dict(kpis=[("Estado", "Conectado" if con else ("Sin conectar" if drive.configurado() else "Falta configurar")),
+                       ("Cuenta", con.correo if con else "—"), ("Documentos guardados", total), ("Permiso", "Solo archivos de Contax")]),
+            dict(titulo="Cómo se ordena", clase="maestro-contexto",
+                 nota=f"Todo queda dentro de la carpeta «{raiz}»: Legal/<año>/<sistema>/Documentos aprobados (al entrar en vigencia, con la firma de "
+                      "la abogada y de los dos Directores Generales), Legal/<año>/<sistema>/Aceptaciones/<RIF> (al aceptar cada cliente) y "
+                      "Facturas/<año>/<mes>/<sistema> (cada factura emitida, y su anulación). Contax pide solo el permiso drive.file: ve "
+                      "únicamente lo que él mismo crea; el resto del Drive de Gigadevs queda fuera de su alcance.")]
+    if not drive.configurado():
+        secs.append(dict(titulo="Qué falta", nota="En Google Cloud Console cree un cliente OAuth de tipo «Aplicación web» con la URI de "
+                         f"redirección {drive.redireccion()} y habilite la API de Google Drive. Cargue GOOGLE_OAUTH_CLIENT_ID y "
+                         "GOOGLE_OAUTH_CLIENT_SECRET en el servicio erp-web de Render."))
+    elif con is None:
+        secs.append(dict(titulo="Conectar Google Drive", clase="maestro-form", abierto=True,
+                         nota="Inicie sesión con la cuenta de Google de Gigadevs y autorice el acceso a Drive.",
+                         form=dict(action=request.path, boton="Iniciar sesión con Google", campos=[h("conectar")])))
+    else:
+        secs.append(dict(titulo="Subir lo pendiente", clase="maestro-form",
+                         nota=f"Conectado como {con.correo} desde el {con.conectado_en:%d/%m/%Y} por {con.conectado_por}. Los documentos se guardan solos; "
+                              "esto revisa y sube lo que hubiera quedado pendiente (por ejemplo, si Drive no respondió).",
+                         form=dict(action=request.path, boton="Subir pendientes", campos=[h("pendientes")])))
+        secs.append(dict(titulo="Desconectar", clase="maestro-form",
+                         form=dict(action=request.path, boton="Desconectar Google Drive", campos=[h("desconectar")])))
+    if recientes:
+        secs.append(dict(titulo="Guardado recientemente", tabla=dict(cols=["Documento", "Guardado"], filas=[
+            dict(cells=[r.ruta, f"{r.subido_en:%d/%m/%Y %H:%M}"]) for r in recientes])))
+    return pagina("Google Drive", None, secs)
+
+
+@ruta("/plataforma/drive/google", "plataforma", ("GET",))
+def maestro_drive_google():
+    """Regreso desde Google: el `state` debe ser el de esta sesión, del mismo usuario y de menos de 10 minutos (un solo uso)."""
+    from flask import session
+    from . import drive
+    st = session.pop("drive_state", None) or {}
+    if request.args.get("error"):
+        flash("No se conectó Google Drive: se canceló el inicio de sesión."); return redirect(url_for("web.maestro_drive"))
+    if not (st.get("v") and secrets.compare_digest(st["v"], request.args.get("state") or "") and st.get("u") == g.usuario.username
+            and time.time() - st.get("t", 0) < 600):
+        flash("El inicio de sesión con Google venció o no corresponde a esta sesión. Inténtelo de nuevo."); return redirect(url_for("web.maestro_drive"))
+    try:
+        correo = drive.completar(request.args.get("code") or "", g.usuario.username)
+        registrar(g.usuario.username, "DRIVE_CONECTADO", f"cuenta={correo} permiso=drive.file", org=None); db.session.commit()
+        flash(f"Google Drive conectado con {correo}. Desde ahora cada documento se guarda solo.")
+    except (drive.ErrorDrive, ValueError, OSError) as e:
+        db.session.rollback(); flash(str(e)[:250])
+    return redirect(url_for("web.maestro_drive"))
 
 
 @ruta("/plataforma/suscripciones", "plataforma", ("GET", "POST"))

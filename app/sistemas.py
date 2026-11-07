@@ -63,6 +63,7 @@ SOLO_CONTAX = {
     "web.plataforma", "web.maestro_licencias", "web.maestro_precios", "web.maestro_pagos", "web.maestro_dolares",
     "web.maestro_avilapay", "web.maestro_whatsapp", "web.maestro_bd", "web.plataforma_bitacora", "web.maestro_gigadevs",
     "web.maestro_legal", "web.maestro_legal_documento", "web.maestro_legal_aceptaciones", "web.maestro_legal_abogada",
+    "web.maestro_drive", "web.maestro_drive_google",
 }
 # Páginas de un sistema concreto, que llevan el sistema en el parámetro «producto».
 POR_PRODUCTO = {"web.maestro_suscripciones", "web.maestro_suscripcion_token"}
@@ -142,7 +143,8 @@ def menu(sid):
             {"titulo": "Legal", "enlaces": [
                 _enlace("Documentos legales", "web.maestro_legal", "📜", ("web.maestro_legal_documento",)),
                 _enlace("Aceptaciones", "web.maestro_legal_aceptaciones", "🗂️"),
-                _enlace("Abogada", "web.maestro_legal_abogada", "✒️")]},
+                _enlace("Abogada", "web.maestro_legal_abogada", "✒️"),
+                _enlace("Google Drive", "web.maestro_drive", "🗄️", ("web.maestro_drive_google",))]},
             {"titulo": "Normativa legal", "enlaces": [
                 _enlace("Parámetros legales", "web.admin_fiscal", "⚖️"),
                 _enlace("Textos legales", "web.legal", "📜", pagina="terminos")]},

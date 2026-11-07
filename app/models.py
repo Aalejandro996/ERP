@@ -135,6 +135,26 @@ class Movimiento(db.Model):
     )
 
 
+class DriveConexion(db.Model):
+    """Google Drive de Gigadevs (una sola fila, la conecta el Maestro con «Iniciar sesión con Google»). El token de
+    actualización va cifrado (Fernet); el permiso pedido es drive.file: Contax solo ve los archivos y carpetas que él crea."""
+    __tablename__ = "drive_conexion"
+    id = db.Column(db.Integer, primary_key=True, default=1)
+    correo = db.Column(db.Text, nullable=False)
+    refresh_token_cifrado = db.Column(db.Text, nullable=False)
+    conectado_por = db.Column(db.Text, nullable=False)
+    conectado_en = db.Column(db.DateTime(timezone=True), default=_ahora, nullable=False)
+
+
+class DriveArchivo(db.Model):
+    """Lo que Contax ya guardó en Drive (carpetas y documentos), por clave estable: nunca se sube dos veces lo mismo."""
+    __tablename__ = "drive_archivos"
+    clave = db.Column(db.Text, primary_key=True)        # carpeta:Legal/2026/Contax · legal:12 · aceptacion:12:ana:… · factura:31
+    archivo_id = db.Column(db.Text, nullable=False)
+    ruta = db.Column(db.Text, nullable=False)
+    subido_en = db.Column(db.DateTime(timezone=True), default=_ahora, nullable=False)
+
+
 class PeriodoCerrado(db.Model):
     __tablename__ = "periodos_cerrados"
     id = db.Column(db.Integer, primary_key=True)

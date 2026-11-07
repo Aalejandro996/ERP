@@ -68,7 +68,7 @@ def crear_entorno():
     with app_owner.app_context():
         db.session.execute(text("CREATE EXTENSION IF NOT EXISTS citext")); db.session.commit()
         db.create_all()
-        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql", "011_whatsapp_openwa.sql", "012_puestos_y_modulos_usuario.sql", "013_rol_abogado.sql"):
+        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql", "011_whatsapp_openwa.sql", "012_puestos_y_modulos_usuario.sql", "013_rol_abogado.sql", "014_google_drive.sql"):
             db.session.execute(text(pathlib.Path("migrations", m).read_text(encoding="utf-8"))); db.session.commit()
     with owner.connect() as c:
         c.execute(text("GRANT USAGE ON SCHEMA public TO erp_app"))
@@ -1277,3 +1277,88 @@ def test_contabilidad_automatica_de_gigadevs(entorno):
         assert sincronizar_ahora(app)["asientos"] == 0
     finally:
         app.config["GIGADEVS_USUARIO"] = ""
+
+
+def test_google_drive_guarda_documentos_y_facturas(entorno):
+    """El Maestro conecta el Drive de Gigadevs con «Iniciar sesión con Google» (state de un solo uso, permiso drive.file, token cifrado);
+    los documentos legales aprobados y las facturas se guardan ordenados por año/sistema/tipo y nunca se suben dos veces."""
+    import base64
+    import json as _json
+    import urllib.parse as up
+    from app import drive, totp
+    from app.extensions import db
+    from app.models import DriveConexion, Usuario
+    from app.security import hashear
+    app = entorno["app"]
+    app.config.update(GOOGLE_OAUTH_CLIENT_ID="cid.apps.googleusercontent.com", GOOGLE_OAUTH_CLIENT_SECRET="gsecret")
+    b64 = lambda d: base64.urlsafe_b64encode(_json.dumps(d).encode()).decode().rstrip("=")
+    vistos, carpetas, subidos = [], {}, []
+
+    def google(metodo, url, cab, cuerpo):
+        vistos.append((metodo, url))
+        if url == drive.TOKEN:
+            q = dict(up.parse_qsl(cuerpo.decode()))
+            assert q["client_secret"] == "gsecret"
+            if q["grant_type"] == "authorization_code":
+                assert q["code"] == "codigo-ok" and q["redirect_uri"].endswith("/plataforma/drive/google")
+                idt = "x." + b64({"aud": "cid.apps.googleusercontent.com", "iss": "https://accounts.google.com", "email": "Drive@Gigadevs.test",
+                                  "email_verified": True}) + ".y"
+                return 200, _json.dumps({"access_token": "at1", "expires_in": 3599, "refresh_token": "rt-secreto", "id_token": idt,
+                                         "scope": "openid email https://www.googleapis.com/auth/drive.file"}).encode()
+            assert q["refresh_token"] == "rt-secreto"
+            return 200, b'{"access_token": "at2", "expires_in": 3599}'
+        if url == drive.REVOCAR: return 200, b"{}"
+        assert cab["Authorization"].startswith("Bearer at")
+        if url.startswith(drive.API):
+            m = _json.loads(cuerpo); fid = f"c{len(carpetas) + 1}"; carpetas[fid] = (m["name"], (m.get("parents") or [None])[0])
+            assert m["mimeType"] == drive.CARPETA
+            return 200, _json.dumps({"id": fid}).encode()
+        assert url == drive.SUBIR and b"text/html" in cuerpo
+        meta = _json.loads(cuerpo.split(b"\r\n\r\n", 1)[1].split(b"\r\n--", 1)[0])
+        subidos.append((meta["name"], meta["parents"][0])); return 200, _json.dumps({"id": f"f{len(subidos)}"}).encode()
+
+    def ruta_de(fid):
+        partes = []
+        while fid: n, fid = carpetas[fid]; partes.insert(0, n)
+        return "/".join(partes)
+
+    drive.TRANSPORTE = google
+    try:
+        with entorno["app_owner"].app_context():
+            sec = totp.nuevo_secreto()
+            db.session.add(Usuario(username="root_drive", email="rootd@prov.test", email_verificado=True, rol="Maestro", password_hash=hashear(CLAVE),
+                                   debe_cambiar_clave=False, mfa_activo=True, mfa_secreto_cifrado=entorno["app_owner"].extensions["cifrador"].cifrar(sec)))
+            db.session.commit()
+        root = _cliente(app)
+        root.post("/login", data={"usuario": "root_drive", "clave": CLAVE}); root.post("/mfa/verificar", data={"codigo": totp.codigo(sec)})
+        pag = root.get("/plataforma/drive").get_data(as_text=True)
+        assert "Iniciar sesión con Google" in pag and "drive.file" in pag
+        r = root.post("/plataforma/drive", data={"accion": "conectar"})
+        q = dict(up.parse_qsl(up.urlsplit(r.headers["Location"]).query))
+        assert r.headers["Location"].startswith(drive.AUTORIZAR) and q["access_type"] == "offline" and "drive.file" in q["scope"] and "auth/drive " not in q["scope"] + " "
+        r = root.get(f"/plataforma/drive/google?state=otro&code=codigo-ok", follow_redirects=True)
+        assert "venció o no corresponde" in r.get_data(as_text=True) and not any(u == drive.TOKEN for _, u in vistos)   # state falso: ni se canjea
+        r = root.post("/plataforma/drive", data={"accion": "conectar"})
+        state = dict(up.parse_qsl(up.urlsplit(r.headers["Location"]).query))["state"]
+        r = root.get(f"/plataforma/drive/google?state={state}&code=codigo-ok", follow_redirects=True)
+        assert "Google Drive conectado con drive@gigadevs.test" in r.get_data(as_text=True)
+        with entorno["app_owner"].app_context():
+            fila = db.session.get(DriveConexion, 1)
+            assert fila.correo == "drive@gigadevs.test" and "rt-secreto" not in fila.refresh_token_cifrado     # cifrado en reposo
+        r = root.post("/plataforma/drive", data={"accion": "pendientes"}, follow_redirects=True)
+        assert "Drive al día" in r.get_data(as_text=True), r.get_data(as_text=True)[-800:]
+        rutas = [ruta_de(p) + "/" + n for n, p in subidos]
+        assert any(x.startswith("Gigadevs Corp · Contax/Legal/") and "/Contax/Documentos aprobados/Contrato" in x for x in rutas), rutas
+        assert any(x.startswith("Gigadevs Corp · Contax/Facturas/2026/") and "/Factura " in x for x in rutas), rutas
+        n_sub, n_carp = len(subidos), len(carpetas)
+        assert len({ruta_de(c) for c in carpetas}) == n_carp                          # cada carpeta se crea una sola vez
+        root.post("/plataforma/drive", data={"accion": "pendientes"})
+        assert len(subidos) == n_sub and len(carpetas) == n_carp                      # idempotente
+        assert "Guardado recientemente" in root.get("/plataforma/drive").get_data(as_text=True)
+        r = root.post("/plataforma/drive", data={"accion": "desconectar"}, follow_redirects=True)
+        assert "desconectado" in r.get_data(as_text=True) and vistos[-1] == ("POST", drive.REVOCAR)
+        with entorno["app_owner"].app_context():
+            assert db.session.get(DriveConexion, 1) is None
+    finally:
+        drive.TRANSPORTE = None
+        app.config.update(GOOGLE_OAUTH_CLIENT_ID="", GOOGLE_OAUTH_CLIENT_SECRET="")

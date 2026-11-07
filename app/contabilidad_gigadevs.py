@@ -227,7 +227,11 @@ def sincronizar_ahora(app) -> dict | None:
             if u is None or org is None: return None
             facturas = fab().facturas()
             fijar_org(db, org.id)
-            return sincronizar(facturas, u, org)
+            r = sincronizar(facturas, u, org)
+            from . import drive
+            try: r["drive"] = drive.subir_facturas(facturas)[0]
+            except drive.ErrorDrive as e: log.warning("Drive: %s", e)
+            return r
         except Exception:  # noqa: BLE001 — el hilo de fondo nunca debe caer
             db.session.rollback(); log.exception("contabilidad_gigadevs: sincronización fallida"); return None
         finally:
