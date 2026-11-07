@@ -130,7 +130,9 @@ def create_app(config_obj=None):
     @app.after_request
     def cabeceras(resp):
         resp.headers["Content-Security-Policy"] = ("default-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; "
-                                                   "base-uri 'self'; form-action 'self'" + ("; upgrade-insecure-requests" if app.config.get("PRODUCCION") else "")
+                                                   "base-uri 'self'; form-action 'self'"
+                                                   # la página de Google Drive envía al inicio de sesión de Google (y solo ella)
+                                                   + (" https://accounts.google.com" if getattr(g, "csp_form_google", False) else "") + ("; upgrade-insecure-requests" if app.config.get("PRODUCCION") else "")
                                                    + ("; style-src 'self' 'unsafe-inline'; script-src " + ("'self'" if getattr(g, "csp_scripts_propios", False) else "'none'")
                                                       if getattr(g, "csp_estilos_en_linea", False) else ""))
         resp.headers["X-Content-Type-Options"] = "nosniff"
