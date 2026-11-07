@@ -68,7 +68,7 @@ def crear_entorno():
     with app_owner.app_context():
         db.session.execute(text("CREATE EXTENSION IF NOT EXISTS citext")); db.session.commit()
         db.create_all()
-        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql", "011_whatsapp_openwa.sql", "012_puestos_y_modulos_usuario.sql", "013_rol_abogado.sql", "014_google_drive.sql"):
+        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql", "011_whatsapp_openwa.sql", "012_puestos_y_modulos_usuario.sql", "013_rol_abogado.sql", "014_google_drive.sql", "015_rls_acceso.sql"):
             db.session.execute(text(pathlib.Path("migrations", m).read_text(encoding="utf-8"))); db.session.commit()
     with owner.connect() as c:
         c.execute(text("GRANT USAGE ON SCHEMA public TO erp_app"))
@@ -76,6 +76,8 @@ def crear_entorno():
         c.execute(text("GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO erp_app"))
         c.execute(text("GRANT EXECUTE ON FUNCTION pg_control_system() TO erp_app"))
         c.execute(text("GRANT EXECUTE ON FUNCTION maestro_resumen_organizaciones(), maestro_cadenas_bitacora(), whatsapp_destino(text), maestro_empresas_whatsapp(integer[]) TO erp_app"))
+        c.execute(text("GRANT EXECUTE ON FUNCTION acceso_usuario_por_nombre(text), acceso_usuario_por_correo(text), "
+                       "acceso_usuario_por_token(text, text), acceso_organizacion_de(text, text), acceso_org_de_usuario(integer) TO erp_app"))
     from urllib.parse import quote
     app_url = re.sub(r"//[^@]+@", lambda m: f"//erp_app:{quote(APP_PW, safe='')}@", URL)   # la clave puede traer «@», «:» o «/»
     class CfgApp(CfgOwner):
@@ -210,7 +212,7 @@ def test_flujo_completo(entorno):
     inv_a = _ultimo_enlace("invitacion")
     root.post("/plataforma", data={"accion": "crear", "nombre": "Bodega Beta", "rif": "J-33333333-3", "username": "adminB", "email": "b@beta.test"})
     inv_b = _ultimo_enlace("invitacion")
-    with app.app_context():
+    with entorno["app_owner"].app_context():          # inspección de la prueba como dueño (RLS no deja ver organizaciones ajenas)
         org_a = db.session.execute(select(Organizacion.id).where(Organizacion.rif == "J-11111111-1")).scalar()
         org_b = db.session.execute(select(Organizacion.id).where(Organizacion.rif == "J-33333333-3")).scalar()
     planes[org_a], planes[org_b] = ("ALL_IN_ONE",), ("CASH", 10, 5, 1)          # B: un solo equipo permitido
@@ -1400,3 +1402,53 @@ def test_google_drive_guarda_documentos_y_facturas(entorno):
     finally:
         drive.TRANSPORTE = None
         app.config.update(GOOGLE_OAUTH_CLIENT_ID="", GOOGLE_OAUTH_CLIENT_SECRET="")
+
+
+def test_rls_en_las_tablas_de_acceso(entorno):
+    """Migración 015: usuarios, organizaciones, enlaces, códigos MFA e historial también los aísla PostgreSQL. Sin contexto no se ve
+    ninguna cuenta; cada persona ve la suya; el administrador, las de su organización; solo el Maestro ve todas. Las búsquedas
+    previas a la sesión devuelven solo un número."""
+    from flask import g
+    from app import rls
+    from app.extensions import db
+    T = db.text
+    app = entorno["app"]
+    with entorno["app_owner"].app_context():
+        orgs = dict(db.session.execute(T("SELECT rif, id FROM organizaciones")).all())
+        a, b = orgs["J-11111111-1"], orgs["J-33333333-3"]
+        ua = db.session.execute(T("SELECT id FROM usuarios WHERE organizacion_id = :o ORDER BY id LIMIT 1"), {"o": a}).scalar()
+        total = db.session.execute(T("SELECT count(*) FROM usuarios")).scalar()
+    with app.test_request_context():
+        cuenta = lambda t: db.session.execute(T(f"SELECT count(*) FROM {t}")).scalar()
+        assert db.session.execute(T("SELECT current_user")).scalar() == "erp_app"
+        g.org_rls = g.usuario_rls = None; g.maestro_rls = False
+        db.session.rollback()
+        assert cuenta("usuarios") == 0 and cuenta("organizaciones") == 0 and cuenta("tokens_correo") == 0 and cuenta("historial_claves") == 0
+        rls.ver_usuario(db, ua)                                                      # solo la propia cuenta (p. ej. en el login)
+        assert db.session.execute(T("SELECT array_agg(id) FROM usuarios")).scalar() == [ua]
+        assert db.session.execute(T("SELECT array_agg(id) FROM organizaciones")).scalar() == [a]
+        rls.fijar_org(db, a)                                                         # administrador de A: las cuentas de A, ninguna de B
+        assert db.session.execute(T("SELECT count(*) FROM usuarios WHERE organizacion_id = :b"), {"b": b}).scalar() == 0
+        assert db.session.execute(T("SELECT count(*) FROM usuarios WHERE organizacion_id = :a"), {"a": a}).scalar() >= 1
+        assert db.session.execute(T("SELECT count(*) FROM tokens_correo t JOIN usuarios u ON u.id = t.usuario_id")).scalar() == \
+               db.session.execute(T("SELECT count(*) FROM tokens_correo")).scalar()          # ningún enlace de otra organización
+        g.usuario_rls = None; db.session.rollback(); rls.fijar_org(db, a)
+        try:                                                                         # no puede mover a nadie a otra organización
+            db.session.execute(T("UPDATE usuarios SET organizacion_id = :b WHERE id = :u"), {"b": b, "u": ua}); db.session.flush()
+            raise AssertionError("RLS no bloqueó el cambio de organización")
+        except Exception as e:  # noqa: BLE001
+            assert "row-level security" in str(e); db.session.rollback()
+        g.org_rls, g.maestro_rls = None, False; rls.ver_usuario(db, ua)            # la propia persona tampoco se muda de organización
+        try:
+            db.session.execute(T("UPDATE usuarios SET organizacion_id = :b WHERE id = :u"), {"b": b, "u": ua}); db.session.flush()
+            raise AssertionError("RLS no bloqueó que la persona cambiara su organización")
+        except Exception as e:  # noqa: BLE001
+            assert "row-level security" in str(e); db.session.rollback()
+        rls.ver_usuario(db, ua)
+        db.session.execute(T("UPDATE usuarios SET ultimo_ip = '198.51.100.7' WHERE id = :u"), {"u": ua}); db.session.rollback()   # lo propio sí
+        g.org_rls, g.usuario_rls, g.maestro_rls = None, None, True
+        db.session.rollback()
+        assert cuenta("usuarios") == total                                           # el Maestro ve todas las cuentas
+        g.maestro_rls = False; db.session.rollback()
+        assert rls.usuario_por_nombre(db, "adminA") == ua and cuenta("usuarios") == 0   # la búsqueda previa solo devuelve el número
+        assert rls.usuario_por_nombre(db, "nadie-existe") is None

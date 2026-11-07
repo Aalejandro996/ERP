@@ -12,6 +12,7 @@ from .. import correo, totp
 from ..auditoria import registrar
 from ..extensions import db, limiter
 from ..models import CodigoRecuperacion, Equipo, Organizacion, TokenCorreo, Usuario, _ahora
+from .. import rls
 from ..rls import fijar_org
 from ..security import MFA_OBLIGATORIO, clave_reutilizada, fijar_clave, hashear, politica_clave, sha256, verificar_clave
 
@@ -39,6 +40,8 @@ def crear_token(u, proposito, email) -> str:
 
 def consumir_token(crudo, proposito, marcar=True):
     if not crudo or len(crudo) > 100: return None
+    uid = rls.usuario_por_token(db, sha256(crudo), proposito)
+    if uid is not None: rls.ver_usuario(db, uid)       # el enlace identifica a la persona: solo su cuenta queda visible
     t = db.session.execute(select(TokenCorreo).where(TokenCorreo.token_hash == sha256(crudo), TokenCorreo.proposito == proposito)
                            .with_for_update()).scalar_one_or_none()
     if t is None or t.usado_en is not None or t.expira_en < _ahora(): return None
@@ -82,10 +85,11 @@ def enviar_recuperacion(u, motivo="Recibimos una solicitud para restablecer la c
 # ---------------------------------------------------------------- sesión y compuertas
 @bp.before_app_request
 def cargar_usuario():
-    g.usuario, g.org_rls = None, None
+    g.usuario, g.org_rls, g.usuario_rls, g.maestro_rls = None, None, None, False
     uid = session.get("uid")
     if not uid:
         return None
+    rls.ver_usuario(db, uid)          # la cookie firmada dice quién es: solo su propia fila es visible hasta validarla
     u = db.session.get(Usuario, uid)
     org = db.session.get(Organizacion, u.organizacion_id) if u and u.organizacion_id else None
     vencida = time.time() - session.get("t0", 0) > current_app.config["SESION_ABSOLUTA_S"]
@@ -94,7 +98,7 @@ def cargar_usuario():
         session.clear()  # desactivado, clave/MFA cambiados, sesión vencida u organización suspendida: fuera de inmediato
         return redirect(url_for("auth.login")) if request.endpoint not in RUTAS_PUBLICAS else None
     g.usuario, g.organizacion = u, org
-    fijar_org(db, u.organizacion_id)
+    rls.de_usuario(db, u)
     if session.get("eq") and db.session.execute(select(Equipo.id).where(Equipo.id == session["eq"], Equipo.revocado_en.is_(None))).first() is None:
         session.clear()  # equipo revocado por el administrador: la sesión de ese equipo termina de inmediato
         return redirect(url_for("auth.login"))
@@ -168,6 +172,8 @@ def login():
         nombre = (request.form.get("usuario") or "").strip()[:254]
         clave = request.form.get("clave") or ""
         campo = Usuario.email if "@" in nombre else Usuario.username
+        uid = (rls.usuario_por_correo if "@" in nombre else rls.usuario_por_nombre)(db, nombre)
+        if uid is not None: rls.ver_usuario(db, uid)     # RLS: solo la cuenta que intenta entrar queda visible
         u = db.session.execute(select(Usuario).where(campo == nombre)).scalar_one_or_none()
         ahora = _ahora()
         org_id = u.organizacion_id if u else None
@@ -232,7 +238,8 @@ def correo_confirmar(token):
     if t is None:
         flash("El enlace no es válido o ya venció. Solicite uno nuevo."); return redirect(url_for("auth.login"))
     u = db.session.get(Usuario, t.usuario_id)
-    if db.session.execute(select(Usuario.id).where(Usuario.email == t.email, Usuario.id != u.id)).first():
+    if any(cid != u.id for cid, _ in rls.cuentas_con(db, "", t.email)) or \
+            db.session.execute(select(Usuario.id).where(Usuario.email == t.email, Usuario.id != u.id)).first():
         db.session.commit(); flash("Ese correo ya está en uso."); return redirect(url_for("auth.login"))
     u.email, u.email_verificado = t.email, True
     registrar(u.username, "CORREO_VERIFICADO", org=u.organizacion_id); db.session.commit()
@@ -268,6 +275,8 @@ def invitacion(token):
 def recuperar():
     if request.method == "POST":
         email = (request.form.get("email") or "").strip().lower()[:254]
+        uid = rls.usuario_por_correo(db, email) if "@" in email else None
+        if uid is not None: rls.ver_usuario(db, uid)
         u = db.session.execute(select(Usuario).where(Usuario.email == email)).scalar_one_or_none() if "@" in email else None
         if u and u.activo and u.email_verificado:
             try:
@@ -379,6 +388,7 @@ def mfa_verificar():
     uid = session.get("pre_mfa")
     if not uid or time.time() - session.get("pre_mfa_ts", 0) > 300:
         session.clear(); return redirect(url_for("auth.login"))
+    rls.ver_usuario(db, uid)
     u = db.session.get(Usuario, uid)
     if request.method == "POST" and u:
         ingresado = (request.form.get("codigo") or "").strip()

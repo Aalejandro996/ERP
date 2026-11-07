@@ -8,7 +8,7 @@ from flask import g, has_request_context
 from sqlalchemy import event, text
 from sqlalchemy.orm import Session
 
-_SQL = text("SELECT set_config('app.org_id', :v, true)")
+_SQL = text("SELECT set_config('app.org_id', :v, true), set_config('app.usuario_id', :u, true), set_config('app.maestro', :m, true)")
 
 
 def _valor() -> str:
@@ -18,11 +18,18 @@ def _valor() -> str:
     return str(int(org)) if org else ""
 
 
+def _parametros() -> dict:
+    """org (datos de negocio), usuario (su propia cuenta) y maestro (tablas de acceso de todas las cuentas; migración 015)."""
+    if not has_request_context(): return {"v": "", "u": "", "m": ""}
+    uid = getattr(g, "usuario_rls", None)
+    return {"v": _valor(), "u": str(int(uid)) if uid else "", "m": "1" if getattr(g, "maestro_rls", False) else ""}
+
+
 def instalar():
     @event.listens_for(Session, "after_begin")
     def _fijar(session, transaction, connection):  # noqa: ARG001
         if connection.dialect.name == "postgresql":
-            connection.execute(_SQL, {"v": _valor()})
+            connection.execute(_SQL, _parametros())
 
 
 def rol_limitado(engine, rol):
@@ -44,4 +51,34 @@ def rol_limitado(engine, rol):
 def fijar_org(db, org_id):
     """Llamar en cuanto se conoce al usuario: aplica a la transacción en curso y a las siguientes de la petición."""
     g.org_rls = org_id
-    db.session.execute(_SQL, {"v": _valor()})
+    db.session.execute(_SQL, _parametros())
+
+
+def ver_usuario(db, usuario_id, maestro=False):
+    """La persona que usa (o intenta usar) la cuenta: puede ver su propia fila de usuario, sus enlaces y sus códigos."""
+    g.usuario_rls, g.maestro_rls = usuario_id, bool(maestro)
+    db.session.execute(_SQL, _parametros())
+
+
+def de_usuario(db, u):
+    """Contexto completo de una persona autenticada: su organización, su cuenta y, si es Maestro, las cuentas de todos."""
+    g.org_rls, g.usuario_rls, g.maestro_rls = u.organizacion_id, u.id, (u.rol == "Maestro")
+    db.session.execute(_SQL, _parametros())
+
+
+def _buscar(db, funcion, *args):
+    if db.engine.dialect.name != "postgresql": return None
+    marcadores = ", ".join(f":a{i}" for i in range(len(args)))
+    return db.session.execute(text(f"SELECT {funcion}({marcadores})"), {f"a{i}": a for i, a in enumerate(args)}).scalar()
+
+
+def usuario_por_nombre(db, valor): return _buscar(db, "acceso_usuario_por_nombre", valor)
+def usuario_por_correo(db, valor): return _buscar(db, "acceso_usuario_por_correo", valor)
+def usuario_por_token(db, token_hash, proposito): return _buscar(db, "acceso_usuario_por_token", token_hash, proposito)
+
+
+def cuentas_con(db, nombre, correo) -> list[tuple[int, int | None]]:
+    """(usuario_id, organizacion_id) de las cuentas con ese usuario o correo, en TODA la plataforma (sin ver sus datos)."""
+    if db.engine.dialect.name != "postgresql": return []
+    return [tuple(r) for r in db.session.execute(text("SELECT usuario_id, organizacion_id FROM acceso_organizacion_de(:n, :c)"),
+                                                 {"n": nombre or "", "c": correo or ""})]
