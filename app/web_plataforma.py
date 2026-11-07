@@ -397,6 +397,21 @@ def maestro_gigadevs():
     correo_sugerido = (current_app.config.get("GIGADEVS_CORREO") or (u.email if u else "") or "").strip().lower()
     if request.method == "POST":
         a, autor = F.get("accion"), g.usuario.username
+        if a == "contabilidad":
+            from .contabilidad_gigadevs import ErrorContabilidadGigadevs, sincronizar
+            from .rls import fijar_org
+            try:
+                if org is None or u is None: raise ValueError("Primero configure GIGADEVS_USUARIO con el usuario o el RIF de Gigadevs en Contax")
+                facturas = _admin().facturas()
+                fijar_org(db, org.id)
+                r = sincronizar(facturas, u, org)
+                registrar(autor, "CONTABILIDAD_GIGADEVS", f"org={org.rif} asientos={r['asientos']} cuentas={r['cuentas_creadas']} errores={len(r['errores'])}", org=None)
+                db.session.commit()
+                flash(f"Contabilidad de {r['empresa']}: {r['asientos']} asiento(s) nuevo(s), {r['cuentas_creadas']} cuenta(s) del plan agregada(s)."
+                      + (" Pendientes: " + "; ".join(r["errores"][:3]) if r["errores"] else ""))
+            except (ErrorAdmin, ErrorContabilidadGigadevs, ValueError, OSError) as e:
+                db.session.rollback(); flash(str(e)[:250])
+            return redirect(url_for("web.maestro_gigadevs"))
         try:
             if org is None or u is None: raise ValueError("Primero configure GIGADEVS_USUARIO con el usuario o el RIF de Gigadevs en Contax")
             correo_dest = (F.get("correo") or correo_sugerido).strip().lower()
@@ -449,6 +464,14 @@ def maestro_gigadevs():
     elif org is None:
         secs.append(dict(titulo="Qué falta", nota="Cargue en la variable GIGADEVS_USUARIO el usuario, el correo o el RIF de la organización que "
                          "llevará Gigadevs en Contax. Al volver aquí podrá activar su licencia."))
+    if org is not None and u is not None:
+        minutos = current_app.config.get("CONTABILIDAD_GIGADEVS_MIN", 10)
+        secs.append(dict(titulo="Contabilidad automática", clase="maestro-form",
+                         nota="Cada factura de licencias, suscripciones y pedidos de todos los sistemas se asienta sola en la empresa de Gigadevs "
+                              "con su plan de cuentas: venta (1.1.2.01 Clientes · 4.1.1.01 Ventas SaaS · 2.1.2.01 Débito Fiscal IVA), cobro "
+                              "(1.1.1.03 Bancos Bs. o 1.1.1.05 Pasarelas) y, si se anula, su contra-asiento. "
+                              + (f"Se sincroniza cada {minutos} minutos." if minutos > 0 else "La sincronización automática está apagada."),
+                         form=dict(action=request.path, boton="Sincronizar ahora", campos=[h("contabilidad")])))
     if lics:
         secs.append(dict(titulo="Licencias de la organización", tabla=dict(cols=["#", "Plan", "Estado", "Usuarios", "Empresas", "Vence"], num=[3, 4], filas=[
             dict(cells=[l["id"], nombre_plan({"plan": l["plan"]}) if l["plan"] else "Legado", l["estado"], l["max_usuarios"], l["max_empresas"], _fecha(l["vence_en"])])

@@ -38,6 +38,7 @@ class Config:
     # Usuario (nombre o correo) que llevará la contabilidad, administración y parte fiscal de Gigadevs dentro de Contax.
     # Su organización recibe la licencia All in One sin cobro y será el destino contable de los demás sistemas.
     GIGADEVS_USUARIO = os.environ.get("GIGADEVS_USUARIO", "").strip()      # usuario, correo o RIF de la organización
+    CONTABILIDAD_GIGADEVS_MIN = int(os.environ.get("CONTABILIDAD_GIGADEVS_MIN", "10"))   # cada cuántos minutos se asientan las facturas (0 = solo a mano)
     GIGADEVS_CORREO = os.environ.get("GIGADEVS_CORREO", "").strip()        # correo sugerido para el responsable
     APP_NOMBRE = os.environ.get("APP_NOMBRE", "Contax")
     APP_LEMA = os.environ.get("APP_LEMA", "Tu empresa en orden. Tu fisco al día.")

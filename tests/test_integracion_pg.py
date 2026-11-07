@@ -992,6 +992,11 @@ def test_tutorial_migracion_cuadre_pdf_e_invitaciones(entorno):
     assert uno("SELECT correo_contacto FROM organizaciones WHERE rif='J-77777777-7'") == "giga@gigadevs.test"
     giga = root.get("/plataforma/gigadevs").get_data(as_text=True)
     assert "All in One · sin cobro" in giga and "Reenviar enlace" in giga
+    assert "Contabilidad automática" in giga and "4.1.1.01 Ventas SaaS" in giga
+    r = root.post("/plataforma/gigadevs", data={"accion": "contabilidad"}, follow_redirects=True)
+    assert any("asiento(s) nuevo(s)" in m and "cuenta(s) del plan agregada(s)" in m for m in alerta(r)), alerta(r)   # facturas reales del servidor
+    r = root.post("/plataforma/gigadevs", data={"accion": "contabilidad"}, follow_redirects=True)
+    assert any(": 0 asiento(s) nuevo(s), 0 cuenta(s)" in m for m in alerta(r)), alerta(r)                            # la segunda vez no duplica
     assert any("ya tiene su licencia" in m for m in alerta(root.post("/plataforma/gigadevs", data={"accion": "activar", "correo": "giga@gigadevs.test"}, follow_redirects=True)))
     app.config["GIGADEVS_USUARIO"] = ""
     # portada pública de Contax: funciones, planes con los precios vigentes del catálogo y enlaces legales
@@ -1231,3 +1236,44 @@ def test_legal_abogada_aprueba_y_el_cliente_acepta(entorno):
     assert ac[0]["usuario"] == "admin_gamma" and ac[0]["sujeto"] == "J-56565656-5" and ac[0]["rol"] == "Administrador" and ac[0]["version"] == 1
     reg = root.get("/plataforma/legal/aceptaciones").get_data(as_text=True)
     assert "Gamma Legal" in reg and "Íntegra" in reg
+
+
+def test_contabilidad_automatica_de_gigadevs(entorno):
+    """Las facturas de la plataforma se asientan solas en la empresa de Gigadevs con su plan de cuentas: venta, cobro y anulación,
+    sin duplicar nunca un asiento aunque se sincronice varias veces."""
+    from decimal import Decimal
+    from app.contabilidad_gigadevs import PLAN, sincronizar
+    from app.extensions import db
+    from app.models import Empresa, Movimiento, Organizacion, Usuario
+    from app.models_compras import AsientoOrigen
+    oid, _c = _org_con_admin(entorno, "Gigadevs Corp", "J-60606060-6", "giga_conta")
+    fx = lambda i, **k: {"id": 9000 + i, "numero": i, "numero_completo": f"A-{i:08d}", "fecha": "2026-11-05", "cliente_nombre": "Ferretería X",
+                         "cliente_rif": "J-40000000-1", "moneda": "VES", "total": "116.00", "iva": "16.00", "estado": "Emitida",
+                         "forma_pago": "Ávila Pay · Pago Móvil", "orden_ref": f"OP2611{i:06X}", "sistema": "control_financiero", **k}
+    facturas = [fx(1), fx(2, moneda="USD", total="232.00", iva="32.00", forma_pago="Zelle"),
+                fx(3, estado="Anulada", motivo_anulacion="Error de datos", anulada_en=1_793_000_000.0), fx(4, forma_pago="", orden_ref=None)]
+    with entorno["app_owner"].app_context():
+        org = db.session.get(Organizacion, oid)
+        db.session.add(Empresa(organizacion_id=oid, razon_social="Gigadevs Corp, C.A.", rif="J-60606060-6")); db.session.commit()
+        u = db.session.execute(db.select(Usuario).where(Usuario.username == "giga_conta")).scalar_one()
+        r = sincronizar(facturas, u, org)
+        assert r["cuentas_creadas"] == len(PLAN) and r["errores"] == [] and r["asientos"] == 9, r
+        assert sincronizar(facturas, u, org)["asientos"] == 0                                  # idempotente
+        eid = db.session.execute(db.select(Empresa.id).where(Empresa.organizacion_id == oid)).scalar_one()
+        saldo = lambda c: sum((m.debe - m.haber for m in db.session.execute(
+            db.select(Movimiento).where(Movimiento.empresa_id == eid, Movimiento.cuenta_codigo == c)).scalars()), Decimal(0))
+        assert saldo("4.1.1.01") == Decimal("-400.00")              # ventas 100 + 200 + 100 (la anulada se revierte)
+        assert saldo("2.1.2.01") == Decimal("-64.00")               # débito fiscal IVA 16 + 32 + 16
+        assert saldo("1.1.1.03") == Decimal("116.00") and saldo("1.1.1.05") == Decimal("232.00")   # Bancos Bs y pasarela USD
+        assert saldo("1.1.2.01") == Decimal("116.00")               # la factura 4 queda por cobrar
+        assert db.session.execute(db.select(db.func.count()).select_from(AsientoOrigen).where(AsientoOrigen.empresa_id == eid)).scalar() == 9
+    # la sincronización de fondo (sin petición, con candado de PostgreSQL y RLS de la organización) trae las facturas reales del servidor
+    from app.contabilidad_gigadevs import sincronizar_ahora
+    app = entorno["app"]
+    app.config["GIGADEVS_USUARIO"] = "J-60606060-6"
+    try:
+        r = sincronizar_ahora(app)
+        assert r is not None and r["empresa"] == "Gigadevs Corp, C.A." and r["asientos"] > 0 and r["errores"] == [], r
+        assert sincronizar_ahora(app)["asientos"] == 0
+    finally:
+        app.config["GIGADEVS_USUARIO"] = ""

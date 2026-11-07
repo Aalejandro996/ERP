@@ -148,4 +148,7 @@ def create_app(config_obj=None):
     from . import publico
     publico.instalar(app, db)  # robots, sitemap, filtro de rastreos, mantenimiento y páginas de error
 
+    if not app.config.get("TESTING") and app.extensions.get("admin_licencias") and app.config.get("GIGADEVS_USUARIO"):
+        from .contabilidad_gigadevs import iniciar_en_fondo
+        iniciar_en_fondo(app, app.config.get("CONTABILIDAD_GIGADEVS_MIN", 10))
     return app
