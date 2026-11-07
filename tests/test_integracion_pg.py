@@ -95,7 +95,7 @@ def crear_entorno():
                     avilapay_transporte=avila.transporte)
     cli_srv = srv.test_client()
     def transporte(metodo, url, cuerpo, cab):
-        r = cli_srv.open(url.split("lic.test", 1)[1], method=metodo, data=cuerpo, headers=cab); return r.status_code, r.data
+        r = cli_srv.open(url.split("lic.test", 1)[1], method=metodo, data=cuerpo, headers=cab); return r.status_code, r.data, dict(r.headers)
     app.config["PAGO_MOVIL_INSTRUCCIONES"] = "Banco Prueba 0414-0000000, RIF J-00000000-0."
     app.extensions["admin_licencias"] = lambda: ClienteAdmin("https://lic.test", "z" * 40, transporte=transporte)
     return dict(app=app, owner=owner, planes=planes, app_owner=app_owner, correos_lic=correos_lic, correos_html=correos_html, avila=avila, lic_cliente=cli_srv)

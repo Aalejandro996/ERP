@@ -94,7 +94,8 @@ class Entorno:
 
     def _admin_http(self, metodo, url, cuerpo, cab):
         r = self.http.open(url.split("lic.test", 1)[1], method=metodo, data=cuerpo, headers=cab)
-        return r.status_code, r.data
+        if getattr(self, "alterar", False): return r.status_code, r.data.replace(b"activa", b"suspen"), dict(r.headers)
+        return r.status_code, r.data, dict(r.headers)       # con cabeceras: se verifica la firma de la respuesta
 
     def transporte(self, url, data, timeout=10):
         r = self.http.post("/" + url.split("/", 3)[3], json=data)
@@ -692,3 +693,35 @@ def test_suscripcion_de_quincena_pagada_desde_la_app_con_avila_pay(e):
     assert sub["referencia_sujeto"] == "ana@correo.test" and sub["plan"] == "plus" and sub["max_usuarios"] == 1
     assert _aviso_avila(e, pago).status_code == 200 and len(e.st.listar_suscripciones("control_financiero")) == 1   # un pago, una suscripción
     assert com.clientes("control_financiero")[0]["documento"] == "V-12345678-0"
+
+
+def test_las_respuestas_del_servidor_van_firmadas_y_una_alterada_se_rechaza(e):
+    """El Maestro solo acepta respuestas firmadas por el servidor de licencias para su petición: una respuesta cambiada en el camino
+    (o repetida de otra petición) se descarta."""
+    e.admin.crear_licencia(cliente="Alfa", correo="a@alfa.test", organizacion_ref="1", plan="CASH", dias=30, autor="m")
+    assert e.admin.licencias()[0]["estado"] == "activa"
+    e.alterar = True
+    with pytest.raises(ErrorAdmin, match="firma válida"): e.admin.licencias()
+    e.alterar = False
+
+
+def test_la_api_de_los_sistemas_rechaza_firmas_ajenas_repetidas_y_limita_peticiones(e):
+    import json as _j
+    from app.licensing.admin import firma, verificar_respuesta
+    ruta = "/sync/v1/control_financiero/planes"
+    cab = firma("q" * 40, "GET", ruta, b"", t=e.t[0])
+    r = e.http.get(ruta, headers={"X-Gigadevs-Firma": cab})
+    nonce = dict(x.split("=", 1) for x in cab.split(","))["n"]
+    assert r.status_code == 200 and verificar_respuesta("q" * 40, r.headers["X-Gigadevs-Respuesta"], nonce, 200, r.data, e.t[0])
+    assert e.http.get(ruta, headers={"X-Gigadevs-Firma": cab}).status_code == 401                      # la misma firma no sirve dos veces
+    assert e.http.get(ruta, headers={"X-Gigadevs-Firma": firma("x" * 40, "GET", ruta, b"", t=e.t[0])}).status_code == 401
+    assert e.http.get(ruta, headers={"X-Gigadevs-Firma": firma("q" * 40, "GET", ruta, b"", t=e.t[0] - 600)}).status_code == 401   # vieja
+    from sqlalchemy import func, select
+    from licensing_server.server import eventos
+    with e.st.eng.connect() as c:
+        assert c.execute(select(func.count()).select_from(eventos).where(eventos.c.evento == "sync_rechazado")).scalar() >= 3   # cada intento queda registrado
+    cuerpo = _j.dumps({"x": 1}).encode()
+    assert e.http.post("/sync/v1/control_financiero/checkout", data=cuerpo, headers={"X-Gigadevs-Firma": firma("q" * 40, "POST", "/sync/v1/control_financiero/checkout", cuerpo, t=e.t[0]),
+                                                                                    "Content-Type": "text/plain"}).status_code == 415
+    for _ in range(130): ultima = e.http.get(ruta)
+    assert ultima.status_code == 429                                                                  # límite por IP

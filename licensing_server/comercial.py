@@ -308,7 +308,10 @@ class Comercial:
 
 
 def firma_valida(secreto, cabecera, metodo, ruta, cuerpo, reloj=time.time, tolerancia=300) -> str | None:
-    """Firma de los sistemas: «t=…,n=…,f=hmac_sha256(t\\nn\\nMÉTODO\\nruta\\nsha256(cuerpo))». Devuelve el nonce si es válida."""
+    """Firma de los sistemas: «t=…,n=…,f=hmac_sha256(t\\nn\\nMÉTODO\\nruta\\nsha256(cuerpo))». Devuelve el nonce si es válida.
+    `secreto` puede ser una lista (secreto actual y anterior) para rotarlo sin cortar el servicio."""
+    if isinstance(secreto, (list, tuple)):
+        return next((n for n in (firma_valida(x, cabecera, metodo, ruta, cuerpo, reloj, tolerancia) for x in secreto if x) if n), None)
     if not secreto: return None
     partes = dict(p.split("=", 1) for p in (cabecera or "").split(",") if "=" in p)
     t, n, f = partes.get("t", ""), partes.get("n", ""), partes.get("f", "")
@@ -319,9 +322,27 @@ def firma_valida(secreto, cabecera, metodo, ruta, cuerpo, reloj=time.time, toler
 
 
 def autenticar_sistema(st, secretos_sync, pid) -> bool:
-    n = firma_valida(secretos_sync.get(pid), request.headers.get("X-Gigadevs-Firma"), request.method,
-                     request.full_path.rstrip("?"), request.get_data(), st.reloj)
-    return n is not None and st.usar_nonce(n)
+    """Firma del sistema `pid` con su propio secreto (o el anterior, durante una rotación), hora ±5 min y nonce de un solo uso.
+    Si es válida, la respuesta saldrá firmada con el mismo secreto y ligada a este nonce; si no, el intento queda en la bitácora."""
+    from flask import g
+    secretos = secretos_sync.get(pid)
+    lista = secretos if isinstance(secretos, (list, tuple)) else [secretos]
+    cab = request.headers.get("X-Gigadevs-Firma")
+    for s in lista:
+        n = firma_valida(s, cab, request.method, request.full_path.rstrip("?"), request.get_data(), st.reloj)
+        if n is not None:
+            if not st.usar_nonce(n): break                       # firma repetida: reenvío de una petición vieja
+            g.firma_respuesta = (s, n)
+            return True
+    with st.eng.begin() as c:
+        st.log(c, None, "sync_rechazado", f"{pid} {request.method} {request.path} firma={'sí' if cab else 'no'}", request.headers.get("X-Forwarded-For") or request.remote_addr)
+    return False
+
+
+def firma_respuesta(secreto, nonce, estado, cuerpo: bytes, t) -> str:
+    """Cabecera X-Gigadevs-Respuesta: prueba de que la respuesta la dio este servidor para ESA petición (nonce) y no fue alterada."""
+    base = "\n".join([str(int(t)), nonce, str(estado), hashlib.sha256(cuerpo).hexdigest()])
+    return f"t={int(t)},f={hmac.new(secreto.encode(), base.encode(), hashlib.sha256).hexdigest()}"
 
 
 def registrar_rutas(app, st, com, secretos_sync, clave_privada, emitir_factura, cuerpo):

@@ -22,13 +22,33 @@ def firma(secreto: str, metodo: str, ruta: str, cuerpo: bytes, t=None, nonce=Non
     return f"t={t},n={nonce},f={hmac.new(secreto.encode(), base.encode(), hashlib.sha256).hexdigest()}"
 
 
+class _SinRedirecciones(urllib.request.HTTPRedirectHandler):
+    """Nunca seguir redirecciones: las cabeceras firmadas no deben viajar a otro servidor."""
+    def redirect_request(self, *a, **k): return None
+
+
+_ABRIDOR = urllib.request.build_opener(_SinRedirecciones)
+
+
 def _http(metodo, url, cuerpo, cabeceras, timeout=20):
+    """(estado, cuerpo, cabeceras). Solo HTTPS (o localhost en desarrollo), sin seguir redirecciones."""
+    if not (url.startswith("https://") or url.startswith(("http://127.0.0.1", "http://localhost"))): raise ErrorAdmin("El servidor de licencias debe usar HTTPS")
     req = urllib.request.Request(url, cuerpo or None, cabeceras, method=metodo)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 (URL de configuración)
-            return r.status, r.read()
+        with _ABRIDOR.open(req, timeout=timeout) as r:  # noqa: S310 (URL de configuración, HTTPS)
+            return r.status, r.read(1024 * 1024 * 8), dict(r.headers)
     except urllib.error.HTTPError as e:
-        return e.code, e.read()
+        return e.code, e.read(65536), dict(e.headers or {})
+
+
+def verificar_respuesta(secreto, cabecera, nonce, estado, cuerpo, ahora, tolerancia=300) -> bool:
+    """La respuesta trae X-Gigadevs-Respuesta = hmac(t\\nnonce\\nestado\\nsha256(cuerpo)): la dio el servidor de licencias para ESTA
+    petición y nadie la alteró ni la repitió en el camino."""
+    partes = dict(p.split("=", 1) for p in (cabecera or "").split(",") if "=" in p)
+    t, f = partes.get("t", ""), partes.get("f", "")
+    if not (t.isdigit() and len(f) == 64) or abs(ahora - int(t)) > tolerancia: return False
+    base = "\n".join([t, nonce, str(estado), hashlib.sha256(cuerpo or b"").hexdigest()])
+    return hmac.compare_digest(hmac.new(secreto.encode(), base.encode(), hashlib.sha256).hexdigest(), f)
 
 
 class ClienteAdmin:
@@ -47,7 +67,12 @@ class ClienteAdmin:
         cuerpo = json.dumps(datos).encode() if datos is not None else b""
         cab = {"X-ERP-Firma": firma(self.secreto, metodo, ruta, cuerpo, t=self.reloj()), "Accept": "application/json"}
         if datos is not None: cab["Content-Type"] = "application/json"
-        estado, resp = self.http(metodo, self.base + ruta, cuerpo, cab)
+        res = self.http(metodo, self.base + ruta, cuerpo, cab)
+        estado, resp = res[0], res[1]
+        if len(res) > 2:   # por HTTP real: la respuesta debe venir firmada por el servidor de licencias
+            nonce = dict(p.split("=", 1) for p in cab["X-ERP-Firma"].split(","))["n"]
+            if not verificar_respuesta(self.secreto, {k.lower(): v for k, v in res[2].items()}.get("x-gigadevs-respuesta"), nonce, estado, resp, self.reloj()):
+                raise ErrorAdmin("La respuesta del servidor de licencias no trae una firma válida (posible suplantación); se descartó")
         try:
             r = json.loads(resp or b"{}")
         except ValueError:
