@@ -102,6 +102,12 @@ def create_app(config_obj=None):
         return render_template("error.html", codigo=402, titulo="Licencia no válida",
                                mensaje="Su organización no tiene una licencia vigente. Contacte al administrador."), 402
 
+    @app.before_request
+    def compuerta_legal():
+        """Documentos legales vigentes (aprobados por la abogada) que el usuario aún no aceptó: se aceptan antes de seguir."""
+        from .web_legal import compuerta
+        return compuerta()
+
     from .tiempo import a_hora_ve
     app.add_template_filter(a_hora_ve, "hora_ve")
 

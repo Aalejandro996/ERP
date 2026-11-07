@@ -696,6 +696,11 @@ def create_app(db_url: str, clave_privada, reloj=time.time, secreto_admin: str |
     com = CM.Comercial(st, PRODUCTOS)
     app.extensions["comercial"] = com
     CM.registrar_rutas(app, st, com, cfg.get("sync") or {}, clave_privada, lambda con, **k: _fx.emitir(con, reloj=reloj, **k), cuerpo)
+    # Documentos legales: versiones aprobadas por la abogada y registro de aceptaciones (licensing_server/legal.py)
+    from . import legal as LG
+    lg = LG.Legal(st)
+    app.extensions["legal"] = lg
+    LG.registrar_rutas(app, st, lg, cuerpo, lambda pid: CM.autenticar_sistema(st, cfg.get("sync") or {}, pid))
 
     @app.get("/admin/v1/productos")
     def a_productos():

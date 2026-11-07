@@ -6,11 +6,12 @@ from sqlalchemy.dialects.postgresql import CITEXT
 
 from .extensions import db
 
-ROLES = ("Maestro", "Administrador", "Contador", "Auxiliar", "Auditor Financiero", "Cajero",
+ROLES = ("Maestro", "Abogado", "Administrador", "Contador", "Auxiliar", "Auditor Financiero", "Cajero",
          # Puestos de una empresa (migración 012). El rol fija los permisos; los módulos de cada usuario los acota aún más.
          "Gerente General", "Gerente Administrativo", "Analista Fiscal", "Tesorero", "Analista de Cuentas por Cobrar",
          "Analista de Cuentas por Pagar", "Comprador", "Almacenista", "Facturador", "Vendedor", "Auditor Interno", "Consulta")
-ROLES_CLIENTE = ROLES[1:]  # el Maestro es del proveedor de la plataforma y no pertenece a ninguna organización
+ROLES_PLATAFORMA = ("Maestro", "Abogado")   # de Gigadevs: no pertenecen a ninguna organización cliente
+ROLES_CLIENTE = tuple(r for r in ROLES if r not in ROLES_PLATAFORMA)  # el Maestro es del proveedor de la plataforma y no pertenece a ninguna organización
 
 
 def _ahora():
@@ -55,7 +56,7 @@ class Usuario(db.Model):
     empresas = db.relationship("UsuarioEmpresa", back_populates="usuario", cascade="all, delete-orphan")
     organizacion = db.relationship("Organizacion")
     __table_args__ = (CheckConstraint(f"rol IN {ROLES}", name="ck_usuarios_rol"),
-                      CheckConstraint("(rol = 'Maestro') = (organizacion_id IS NULL)", name="ck_usuarios_org"))
+                      CheckConstraint("(rol IN ('Maestro', 'Abogado')) = (organizacion_id IS NULL)", name="ck_usuarios_org"))
 
 
 class Empresa(db.Model):  # = clientes_contables del sistema original

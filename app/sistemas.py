@@ -62,6 +62,7 @@ SISTEMAS = {
 SOLO_CONTAX = {
     "web.plataforma", "web.maestro_licencias", "web.maestro_precios", "web.maestro_pagos", "web.maestro_dolares",
     "web.maestro_avilapay", "web.maestro_whatsapp", "web.maestro_bd", "web.plataforma_bitacora", "web.maestro_gigadevs",
+    "web.maestro_legal", "web.maestro_legal_documento", "web.maestro_legal_aceptaciones", "web.maestro_legal_abogada",
 }
 # Páginas de un sistema concreto, que llevan el sistema en el parámetro «producto».
 POR_PRODUCTO = {"web.maestro_suscripciones", "web.maestro_suscripcion_token"}
@@ -138,6 +139,10 @@ def menu(sid):
                 _enlace("Pagos en bolívares", "web.maestro_avilapay", "💳")]},
             {"titulo": "Comercial", "enlaces": comercial},
             {"titulo": "Gigadevs", "enlaces": [_enlace("Gigadevs en Contax", "web.maestro_gigadevs", "⭐")]},
+            {"titulo": "Legal", "enlaces": [
+                _enlace("Documentos legales", "web.maestro_legal", "📜", ("web.maestro_legal_documento",)),
+                _enlace("Aceptaciones", "web.maestro_legal_aceptaciones", "🗂️"),
+                _enlace("Abogada", "web.maestro_legal_abogada", "✒️")]},
             {"titulo": "Normativa legal", "enlaces": [
                 _enlace("Parámetros legales", "web.admin_fiscal", "⚖️"),
                 _enlace("Textos legales", "web.legal", "📜", pagina="terminos")]},

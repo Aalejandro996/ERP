@@ -68,7 +68,7 @@ def crear_entorno():
     with app_owner.app_context():
         db.session.execute(text("CREATE EXTENSION IF NOT EXISTS citext")); db.session.commit()
         db.create_all()
-        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql", "011_whatsapp_openwa.sql", "012_puestos_y_modulos_usuario.sql"):
+        for m in ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql", "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql", "011_whatsapp_openwa.sql", "012_puestos_y_modulos_usuario.sql", "013_rol_abogado.sql"):
             db.session.execute(text(pathlib.Path("migrations", m).read_text(encoding="utf-8"))); db.session.commit()
     with owner.connect() as c:
         c.execute(text("GRANT USAGE ON SCHEMA public TO erp_app"))
@@ -1134,3 +1134,71 @@ def test_salud_y_estaticos_no_cuentan_para_el_limite(entorno):
             from flask import request
             request.url_rule = app.url_map.bind("localhost").match(ruta, return_rule=True)[0]
             assert _sin_limite() is exenta, ruta
+
+
+# Va al final: aprueba el contrato de Contax en el servidor de licencias compartido y desde entonces se pide aceptarlo.
+def test_legal_abogada_aprueba_y_el_cliente_acepta(entorno):
+    """Módulo Legal: el Maestro registra a la abogada; ella activa su cuenta, registra su firma y aprueba el contrato con su clave y su
+    código MFA; desde entonces el administrador de cada cliente debe aceptarlo al ingresar, y la aceptación queda registrada."""
+    import io
+    import time as _t
+    from app import totp
+    from app.extensions import db
+    from app.models import Usuario
+    from app.security import hashear
+    app = entorno["app"]
+    with entorno["app_owner"].app_context():
+        sec_m = totp.nuevo_secreto()
+        db.session.add(Usuario(username="root_legal", email="rootl@prov.test", email_verificado=True, rol="Maestro", password_hash=hashear(CLAVE),
+                               debe_cambiar_clave=False, mfa_activo=True, mfa_secreto_cifrado=entorno["app_owner"].extensions["cifrador"].cifrar(sec_m)))
+        db.session.commit()
+    root = _cliente(app)
+    root.post("/login", data={"usuario": "root_legal", "clave": CLAVE}); root.post("/mfa/verificar", data={"codigo": totp.codigo(sec_m)})
+    leg = root.get("/plataforma/legal").get_data(as_text=True)
+    assert "Registrar abogada" in leg and "Contrato de licencia y suscripción" in leg and "Borrador" in leg and "Documentos legales" in leg
+    r = root.post("/plataforma/legal", data={"accion": "abogada", "nombre": "María Pérez", "cedula": "V-12345678", "inpreabogado": "123456",
+                                             "username": "mperez", "email": "mperez@abg.test"}, follow_redirects=True)
+    assert "Abogada registrada" in r.get_data(as_text=True), r.get_data(as_text=True)[-500:]
+    abg = _cliente(app)
+    assert abg.post(_ultimo_enlace("invitacion"), data={"nueva": CLAVE, "repetir": CLAVE}).status_code == 302
+    sec_abg = _login_total(abg, "mperez", CLAVE)
+    assert abg.get("/").headers["Location"].endswith("/plataforma/legal")
+    assert abg.get("/plataforma/sistemas").status_code == 403 and abg.get("/plataforma").status_code == 403    # no ve la consola Maestro
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 40
+    r = abg.post("/plataforma/legal/abogada", data={"accion": "firma", "firma": (io.BytesIO(png), "firma.png")}, content_type="multipart/form-data",
+                 follow_redirects=True)
+    assert "Firma registrada" in r.get_data(as_text=True)
+    with app.app_context():
+        adm = app.extensions["admin_licencias"]()
+        did = next(d["id"] for d in adm.legal_documentos("contax")["documentos"] if d["tipo"] == "contrato")
+    # el Maestro edita y envía a revisión; no puede aprobar
+    doc = root.get(f"/plataforma/legal/{did}").get_data(as_text=True)
+    assert "## Partes, objeto y aceptación" in doc and "Enviar a la abogada" in doc
+    root.post(f"/plataforma/legal/{did}", data={"accion": "revision"})
+    assert root.post(f"/plataforma/legal/{did}", data={"accion": "aprobar", "clave": CLAVE, "codigo": "000000"}).status_code == 403
+    # la abogada: con un código incorrecto no se aprueba; con clave y código correctos, rige
+    r = abg.post(f"/plataforma/legal/{did}", data={"accion": "aprobar", "clave": CLAVE, "codigo": "000000"}, follow_redirects=True)
+    assert "no se aprobó" in r.get_data(as_text=True)
+    r = abg.post(f"/plataforma/legal/{did}", data={"accion": "aprobar", "clave": CLAVE, "codigo": totp.codigo(sec_abg, _t.time() + 30)}, follow_redirects=True)
+    assert "rige desde ahora" in r.get_data(as_text=True), r.get_data(as_text=True)[-600:]
+    impreso = abg.get(f"/plataforma/legal/{did}/documento").get_data(as_text=True)
+    assert "Aprobado por" in impreso and "Inpreabogado N° 123456" in impreso and "data:image/png;base64," in impreso
+    # el administrador de un cliente debe aceptarlo antes de seguir; queda registrado y recibe la copia del contrato
+    oid, cli = _org_con_admin(entorno, "Gamma Legal", "J-56565656-5", "admin_gamma")
+    r = cli.get("/")
+    assert r.headers["Location"].endswith("/legal/aceptar")
+    t = cli.get("/legal/aceptar").get_data(as_text=True)
+    assert "Antes de continuar" in t, t[t.find("<main"):t.find("<main") + 1500] and "Contrato de licencia y suscripción de Contax®" in t and "Inpreabogado N° 123456" in t
+    assert "Marque la casilla" in cli.post("/legal/aceptar", data={}, follow_redirects=True).get_data(as_text=True)
+    from app import correo
+    n = len(correo.ENVIADOS)
+    r = cli.post("/legal/aceptar", data={"acepto": [str(did)]})
+    assert r.status_code == 302 and r.headers["Location"].endswith("/")
+    assert len(correo.ENVIADOS) == n + 1 and correo.ENVIADOS[-1]["To"] == "admin_gamma@x.test" and "Copia de su contrato" in correo.ENVIADOS[-1]["Subject"]
+    r = cli.get("/")
+    assert "/legal/aceptar" not in r.headers.get("Location", "")                                       # ya pasa la compuerta legal
+    with app.app_context():
+        ac = app.extensions["admin_licencias"]().legal_aceptaciones("contax")
+    assert ac[0]["usuario"] == "admin_gamma" and ac[0]["sujeto"] == "J-56565656-5" and ac[0]["rol"] == "Administrador" and ac[0]["version"] == 1
+    reg = root.get("/plataforma/legal/aceptaciones").get_data(as_text=True)
+    assert "Gamma Legal" in reg and "Íntegra" in reg

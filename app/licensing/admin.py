@@ -79,6 +79,21 @@ class ClienteAdmin:
     def pagar_orden_producto(self, ref, **d): return self._req("POST", f"/admin/v1/productos/ordenes/{ref}/pagar", d)
     def facturar_orden_producto(self, ref): return self._req("POST", f"/admin/v1/productos/ordenes/{ref}/facturar", {})["factura"]
     def anular_orden_producto(self, ref, motivo): return self._req("POST", f"/admin/v1/productos/ordenes/{ref}/anular", {"motivo": motivo})
+    # documentos legales (licensing_server/legal.py)
+    def legal_documentos(self, sistema=None): return self._req("GET", "/admin/v1/legal/documentos", params={"sistema": sistema})
+    def legal_documento(self, did): return self._req("GET", f"/admin/v1/legal/documentos/{int(did)}")["documento"]
+    def legal_guardar(self, did, secciones, autor, observaciones=None):
+        return self._req("PUT", f"/admin/v1/legal/documentos/{int(did)}", {"secciones": secciones, "autor": autor, "observaciones": observaciones})["id"]
+    def legal_revision(self, did): return self._req("POST", f"/admin/v1/legal/documentos/{int(did)}/revision", {})
+    def legal_devolver(self, did, abogado, observaciones): return self._req("POST", f"/admin/v1/legal/documentos/{int(did)}/devolver", {"abogado": abogado, "observaciones": observaciones})
+    def legal_aprobar(self, did, abogado): return self._req("POST", f"/admin/v1/legal/documentos/{int(did)}/aprobar", {"abogado": abogado})["documento"]
+    def legal_vigente(self, sistema, tipo): return self._req("GET", f"/admin/v1/legal/vigente/{sistema}/{tipo}")["documento"]
+    def legal_abogados(self): return self._req("GET", "/admin/v1/legal/abogados")["abogados"]
+    def legal_guardar_abogado(self, usuario, **d): return self._req("PUT", f"/admin/v1/legal/abogados/{usuario}", d)["abogado"]
+    def legal_firma(self, usuario, png_b64): return self._req("PUT", f"/admin/v1/legal/abogados/{usuario}/firma", {"png": png_b64})
+    def legal_pendientes(self, sistema, usuario, perfil): return self._req("GET", f"/admin/v1/legal/pendientes/{sistema}", params={"usuario": usuario, "perfil": perfil})["pendientes"]
+    def legal_aceptar(self, sistema, **d): return self._req("POST", f"/admin/v1/legal/aceptar/{sistema}", d)["aceptaciones"]
+    def legal_aceptaciones(self, sistema=None): return self._req("GET", "/admin/v1/legal/aceptaciones", params={"sistema": sistema})["aceptaciones"]
     def token_suscripcion(self, sid): return self._req("GET", f"/admin/v1/suscripciones/{int(sid)}/token")["token"]
     # precios y órdenes
     def precios(self): return self._req("GET", "/admin/v1/precios")["precios"]

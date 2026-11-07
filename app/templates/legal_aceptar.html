@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block contenido %}
+<div class="cabecera"><div><div class="ruta">Gigadevs Corp · documentos legales</div><h1>Antes de continuar</h1></div></div>
+<section class="legal-aceptar">
+  <p>Para usar {{ nombre_sistema }} lea y acepte {{ 'los siguientes documentos' if pendientes|length > 1 else 'el siguiente documento' }}. Cada uno fue revisado y
+  aprobado por la abogada de Gigadevs Corp. Su aceptación queda registrada con la versión, la fecha y hora, su dirección IP y la huella del texto, y tiene
+  plena validez conforme al Decreto-Ley sobre Mensajes de Datos y Firmas Electrónicas.{% if hay_contrato %} Le enviaremos una copia del contrato a su correo.{% endif %}</p>
+  <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  {% for p in pendientes %}{% set d = p.documento %}
+  <details class="legal-doc" {{ 'open' if loop.first }}><summary><b>{{ d.titulo }}</b> <span class="peq">versión {{ d.version }}</span></summary>
+    <div class="legal-texto">{% for s in d.secciones %}<h2>{{ loop.index }}. {{ s.titulo }}</h2>{% for x in s.parrafos %}<p>{{ x }}</p>{% endfor %}{% endfor %}
+    {% if d.abogado %}<p class="peq nota">Aprobado por Abg. {{ d.abogado.nombre }} · Inpreabogado N° {{ d.abogado.inpreabogado }} · huella {{ d.huella[:16] }}…</p>{% endif %}</div>
+  </details>
+  <label class="legal-check"><input type="checkbox" name="acepto" value="{{ d.id }}" required> He leído y acepto el {{ d.titulo|lower if d.titulo.startswith(('Contrato','Términos')) else d.titulo }}.</label>
+  {% endfor %}
+  <div class="form-pie"><button>Acepto y continúo</button></div>
+  </form>
+  <form method="post" action="{{ url_for('auth.logout') }}" id="form-salir"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sec">No acepto: cerrar sesión</button></form>
+</section>
+{% endblock %}

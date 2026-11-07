@@ -652,7 +652,7 @@ def test_modulos_por_usuario_acotan_los_permisos_del_puesto():
 def test_las_migraciones_que_corren_en_cada_despliegue_aceptan_todos_los_puestos():
     import pathlib, re
     from app.models import ROLES
-    for m in ("002_multicliente_facturacion.sql", "012_puestos_y_modulos_usuario.sql"):
+    for m in ("002_multicliente_facturacion.sql", "012_puestos_y_modulos_usuario.sql", "013_rol_abogado.sql"):
         sql = pathlib.Path("migrations", m).read_text(encoding="utf-8")
         lista = re.search(r"ck_usuarios_rol CHECK \(rol IN \(([^)]*)\)", sql).group(1)
         assert set(re.findall(r"'([^']+)'", lista)) == set(ROLES), m
