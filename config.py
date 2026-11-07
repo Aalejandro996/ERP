@@ -41,6 +41,7 @@ class Config:
     # Google Drive de Gigadevs: cliente OAuth «Aplicación web» creado en Google Cloud (redirección: APP_BASE_URL/plataforma/drive/google)
     GOOGLE_OAUTH_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
     GOOGLE_OAUTH_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+    DRIVE_CUENTA_PERMITIDA = os.environ.get("DRIVE_CUENTA_PERMITIDA", "").strip()   # p. ej. drive@gigadevs.com o @gigadevs.com
     DRIVE_CARPETA_RAIZ = os.environ.get("DRIVE_CARPETA_RAIZ", "Gigadevs Corp · Contax").strip()
     CONTABILIDAD_GIGADEVS_MIN = int(os.environ.get("CONTABILIDAD_GIGADEVS_MIN", "10"))   # cada cuántos minutos se asientan las facturas (0 = solo a mano)
     GIGADEVS_CORREO = os.environ.get("GIGADEVS_CORREO", "").strip()        # correo sugerido para el responsable

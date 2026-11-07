@@ -81,9 +81,25 @@ def redireccion() -> str:
     return current_app.config["APP_BASE_URL"].rstrip("/") + "/plataforma/drive/google"
 
 
-def url_autorizacion(state: str) -> str:
+def pkce() -> tuple[str, str]:
+    """(verificador, desafío S256). El verificador se queda en la sesión: un código de Google interceptado no sirve sin él."""
+    import hashlib
+    import secrets
+    v = secrets.token_urlsafe(64)
+    return v, base64.urlsafe_b64encode(hashlib.sha256(v.encode()).digest()).decode().rstrip("=")
+
+
+def cuenta_permitida(correo: str) -> bool:
+    """DRIVE_CUENTA_PERMITIDA: correos o dominios (@gigadevs.com) separados por comas. Vacío = cualquier cuenta."""
+    lista = [x.strip().lower() for x in (current_app.config.get("DRIVE_CUENTA_PERMITIDA") or "").split(",") if x.strip()]
+    correo = (correo or "").lower()
+    return not lista or any(correo == x or (x.startswith("@") and correo.endswith(x)) for x in lista)
+
+
+def url_autorizacion(state: str, desafio: str) -> str:
     q = {"client_id": current_app.config["GOOGLE_OAUTH_CLIENT_ID"], "redirect_uri": redireccion(), "response_type": "code",
-         "scope": PERMISOS, "access_type": "offline", "prompt": "consent select_account", "include_granted_scopes": "false", "state": state}
+         "scope": PERMISOS, "access_type": "offline", "prompt": "consent select_account", "include_granted_scopes": "false", "state": state,
+         "code_challenge": desafio, "code_challenge_method": "S256"}
     return AUTORIZAR + "?" + urllib.parse.urlencode(q)
 
 
@@ -101,17 +117,22 @@ def _correo_de(id_token: str) -> str:
     return d["email"].lower()
 
 
-def completar(code: str, autor: str) -> str:
+def completar(code: str, autor: str, verificador: str) -> str:
     """Canjea el código de Google por el token de actualización y lo guarda cifrado. Devuelve el correo de la cuenta."""
     from .extensions import db
     from .models import DriveConexion
     c = current_app.config
     cuerpo = urllib.parse.urlencode({"code": code, "client_id": c["GOOGLE_OAUTH_CLIENT_ID"], "client_secret": c["GOOGLE_OAUTH_CLIENT_SECRET"],
-                                     "redirect_uri": redireccion(), "grant_type": "authorization_code"}).encode()
+                                     "redirect_uri": redireccion(), "grant_type": "authorization_code",
+                                     "code_verifier": verificador}).encode()
     d = _json(*_http("POST", TOKEN, {"Content-Type": "application/x-www-form-urlencoded"}, cuerpo), "el inicio de sesión")
     if "drive.file" not in (d.get("scope") or ""): raise ErrorDrive("Falta el permiso de Drive: vuelva a conectar y marque la casilla de Google Drive")
     if not d.get("refresh_token"): raise ErrorDrive("Google no entregó acceso permanente: quite Contax en myaccount.google.com/permissions y conecte de nuevo")
     correo = _correo_de(d.get("id_token") or "")
+    if not cuenta_permitida(correo):
+        try: _http("POST", REVOCAR, {"Content-Type": "application/x-www-form-urlencoded"}, urllib.parse.urlencode({"token": d["refresh_token"]}).encode())
+        except ErrorDrive: pass
+        raise ErrorDrive(f"La cuenta {correo} no está autorizada para guardar los documentos de Gigadevs (DRIVE_CUENTA_PERMITIDA); se revocó el acceso")
     cif = current_app.extensions["cifrador"]
     from .models import _ahora
     fila = conexion() or DriveConexion(id=1)
