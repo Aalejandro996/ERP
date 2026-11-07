@@ -22,7 +22,7 @@ REFERENCIA = [("G", "16"), ("R", "8"), ("A", "15"), ("IGTF", "3")]
 MIGRACIONES = ("001_integridad.sql", "002_multicliente_facturacion.sql", "003_maestro_equipos_compras.sql", "004_tasas_inpc.sql",
                "005_retirar_org_ficticia.sql", "006_monedas_empresa.sql", "007_compras_whatsapp.sql", "008_bienvenida_migracion_cuadre.sql", "009_whatsapp_wasender.sql", "010_presupuestos.sql", "011_whatsapp_openwa.sql",
                "012_puestos_y_modulos_usuario.sql", "013_rol_abogado.sql",
-               "014_google_drive.sql")
+               "014_google_drive.sql", "015_rls_acceso.sql")
 SOLO_INSERCION = ("asientos", "movimientos", "audit_log", "movimientos_inventario", "lineas_documento_venta", "pagos_documento_venta")
 
 
@@ -96,6 +96,8 @@ def preparar_rol(db, rol):
         db.session.execute(t(f'REVOKE ALL ON "{tabla}" FROM {rol}'))
     db.session.execute(t(f"GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO {rol}"))
     db.session.execute(t(f"GRANT EXECUTE ON FUNCTION maestro_resumen_organizaciones(), maestro_cadenas_bitacora(), whatsapp_destino(text), maestro_empresas_whatsapp(integer[]) TO {rol}"))
+    db.session.execute(t(f"GRANT EXECUTE ON FUNCTION acceso_usuario_por_nombre(text), acceso_usuario_por_correo(text), "
+                         f"acceso_usuario_por_token(text, text), acceso_organizacion_de(text, text), acceso_org_de_usuario(integer) TO {rol}"))
     db.session.commit()
     print(f"Rol limitado «{rol}» listo (la app hará SET ROLE {rol}; RLS aplica).")
 

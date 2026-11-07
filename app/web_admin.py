@@ -7,7 +7,7 @@ from decimal import Decimal
 from flask import current_app, flash, g, redirect, request, url_for
 from sqlalchemy import func, select
 
-from . import correo
+from . import correo, rls
 from .auditoria import registrar
 from .auth.routes import enviar_invitacion
 from .extensions import db
@@ -58,6 +58,8 @@ def admin_usuarios():
             modulos = None if rol == "Administrador" or not F.get("con_modulos") else _modulos_elegidos(F.getlist("modulos"), del_plan)
             elegidas = {int(x) for x in F.getlist("empresas") if x.isdigit()}
             if not elegidas <= {e.id for e in emps_org}: raise ValueError("Empresa inexistente")
+            # RLS: las cuentas de otras organizaciones no se ven; se pregunta sin revelar de quién son
+            if any(oid != org_id for _, oid in rls.cuentas_con(db, nombre, email)): raise ValueError("El usuario o el correo no están disponibles")
             por_nombre = db.session.execute(select(Usuario).where(Usuario.username == nombre)).scalar_one_or_none()
             por_correo = db.session.execute(select(Usuario).where(Usuario.email == email)).scalar_one_or_none()
             if por_nombre and por_correo and por_nombre.id != por_correo.id: raise ValueError("Ese usuario y ese correo pertenecen a cuentas distintas")

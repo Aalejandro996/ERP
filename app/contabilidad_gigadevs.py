@@ -219,7 +219,7 @@ def sincronizar_ahora(app) -> dict | None:
     fab = app.extensions.get("admin_licencias")
     if fab is None or not app.config.get("GIGADEVS_USUARIO"): return None
     with app.test_request_context("/_contabilidad_gigadevs"):
-        g.org_rls = None
+        g.org_rls, g.usuario_rls, g.maestro_rls = None, None, True     # tarea interna de la plataforma: localiza a Gigadevs
         try:
             if db.engine.dialect.name == "postgresql" and not db.session.execute(text("SELECT pg_try_advisory_xact_lock(726170)")).scalar():
                 return None
