@@ -72,7 +72,8 @@ def fijar_clave(usuario, clave: str):
 # ---- RBAC: matriz de permisos centralizada. Un permiso solo vale si además el PLAN de la licencia trae su módulo ----
 PERMISOS = {
     "Maestro": {"plataforma", "legal"},
-    "Abogado": {"legal"},     # abogada de Gigadevs: revisa y aprueba los documentos legales; no ve datos de clientes  # gestiona clientes y parámetros legales globales; NO ve libros de ningún cliente
+    "Abogado": {"legal"},
+    "Director": {"legal"},    # Directores Generales: autorizan los documentos legales y registran su firma     # abogada de Gigadevs: revisa y aprueba los documentos legales; no ve datos de clientes  # gestiona clientes y parámetros legales globales; NO ve libros de ningún cliente
     "Administrador": {"*"},
     "Contador": {"asientos.ver", "asientos.crear", "asientos.anular", "periodos.cerrar", "cuentas.editar", "reportes.ver",
                  "cartera.ver", "cartera.operar", "inventario.ver", "inventario.operar", "fiscal.ver", "fiscal.operar", "config.contable",
@@ -131,7 +132,7 @@ def modulos_actuales() -> frozenset:
 
 def tiene_permiso(usuario, permiso: str) -> bool:
     p = PERMISOS.get(usuario.rol, set())
-    if usuario.rol in ("Maestro", "Abogado"):     # personal de Gigadevs: solo sus permisos de plataforma, nunca datos de clientes
+    if usuario.rol in ("Maestro", "Abogado", "Director"):     # personal de Gigadevs: solo sus permisos de plataforma, nunca datos de clientes
         return permiso in p
     if permiso == "plataforma":
         return False

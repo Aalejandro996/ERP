@@ -250,7 +250,7 @@ def portada():
 def inicio():
     if g.usuario is None: return portada()
     if g.usuario.rol == "Maestro": return redirect(url_for("web.maestro_sistemas"))  # solo el selector, sin menú lateral
-    if g.usuario.rol == "Abogado": return redirect(url_for("web.maestro_legal"))     # la abogada de Gigadevs: documentos legales
+    if g.usuario.rol in ("Abogado", "Director"): return redirect(url_for("web.maestro_legal"))     # la abogada de Gigadevs: documentos legales
     if request.method == "GET" and g.usuario.rol == "Administrador" and g.licencia:
         from .models import Organizacion
         org = db.session.get(Organizacion, g.usuario.organizacion_id)

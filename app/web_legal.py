@@ -20,7 +20,8 @@ from .web import F, campo, pagina, ruta
 from .web_plataforma import _admin, _fecha
 
 h = lambda v: campo("accion", "", "hidden", valor=v)
-ESTADOS = {"borrador": "Borrador", "revision": "En revisión", "aprobado": "Vigente (aprobado)", "reemplazado": "Reemplazado"}
+ESTADOS = {"borrador": "Borrador", "revision": "En revisión (abogada)", "autorizacion": "Esperando a los Directores Generales",
+           "aprobado": "Vigente (aprobado)", "reemplazado": "Reemplazado"}
 TIPOS = {"contrato": "Contrato de licencia y suscripción", "terminos": "Términos y condiciones", "privacidad": "Privacidad", "cookies": "Cookies"}
 
 
@@ -61,35 +62,45 @@ def texto_a_secciones(texto):
 
 
 # ====================================================================== lista de documentos
+def _registrar_firmante(rol):
+    """El Maestro registra a la abogada o a un Director General: su usuario de Gigadevs (sin datos de clientes) y la invitación."""
+    from .auth.routes import enviar_invitacion
+    from .security import hashear
+    usuario, correo = (F.get("username") or "").strip().lower(), (F.get("email") or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9._-]{3,40}", usuario): raise ValueError("Usuario: 3 a 40 letras, números, punto o guion")
+    if "@" not in correo: raise ValueError("Correo inválido")
+    u = db.session.execute(select(Usuario).where((Usuario.username == usuario) | (Usuario.email == correo))).scalar_one_or_none()
+    if u is not None and u.rol != rol: raise ValueError("Ese usuario o correo ya pertenece a otra cuenta")
+    if rol == "Abogado":
+        _admin().legal_guardar_abogado(usuario, nombre=F.get("nombre"), cedula=F.get("cedula"), inpreabogado=F.get("inpreabogado"), correo=correo)
+    else:
+        _admin().legal_guardar_director(usuario, nombre=F.get("nombre"), cedula=F.get("cedula"), cargo=F.get("cargo") or "Director General", correo=correo)
+    nuevo = u is None
+    if nuevo:
+        u = Usuario(username=usuario, email=correo, email_verificado=False, rol=rol, organizacion_id=None,
+                    password_hash=hashear(secrets.token_urlsafe(32)), debe_cambiar_clave=False)
+        db.session.add(u); db.session.flush()
+        enviar_invitacion(u, "Gigadevs Corp (área legal)", g.usuario.username)
+    registrar(g.usuario.username, "FIRMANTE_LEGAL_REGISTRADO", f"{rol} {usuario}", org=None)
+    return nuevo
+
+
 @ruta("/plataforma/legal", "legal", ("GET", "POST"))
 def maestro_legal():
+    if request.method == "POST" and F.get("accion") == "director":
+        if g.usuario.rol != "Maestro": abort(403)
+        _hacer(lambda: _registrar_firmante("Director"), lambda nuevo: "Director General registrado" + (": recibirá la invitación para activar su cuenta y registrar su firma." if nuevo else "."))
+        return redirect(url_for("web.maestro_legal"))
     if request.method == "POST" and F.get("accion") == "abogada":
         if g.usuario.rol != "Maestro": abort(403)
-        def registrar_abogada():
-            from .auth.routes import enviar_invitacion
-            from .security import hashear
-            usuario, correo = (F.get("username") or "").strip().lower(), (F.get("email") or "").strip().lower()
-            if not re.fullmatch(r"[a-z0-9._-]{3,40}", usuario): raise ValueError("Usuario: 3 a 40 letras, números, punto o guion")
-            if "@" not in correo: raise ValueError("Correo inválido")
-            u = db.session.execute(select(Usuario).where((Usuario.username == usuario) | (Usuario.email == correo))).scalar_one_or_none()
-            if u is not None and u.rol != "Abogado": raise ValueError("Ese usuario o correo ya pertenece a otra cuenta")
-            _admin().legal_guardar_abogado(usuario, nombre=F.get("nombre"), cedula=F.get("cedula"), inpreabogado=F.get("inpreabogado"), correo=correo)
-            nuevo = u is None
-            if nuevo:
-                u = Usuario(username=usuario, email=correo, email_verificado=False, rol="Abogado", organizacion_id=None,
-                            password_hash=hashear(secrets.token_urlsafe(32)), debe_cambiar_clave=False)
-                db.session.add(u); db.session.flush()
-                enviar_invitacion(u, "Gigadevs Corp (área legal)", g.usuario.username)
-            registrar(g.usuario.username, "ABOGADA_REGISTRADA", f"{usuario} Inpreabogado {F.get('inpreabogado')}", org=None)
-            return nuevo
-        _hacer(registrar_abogada, lambda nuevo: "Abogada registrada" + (": recibirá la invitación para activar su cuenta." if nuevo else "."))
+        _hacer(lambda: _registrar_firmante("Abogado"), lambda nuevo: "Abogada registrada" + (": recibirá la invitación para activar su cuenta." if nuevo else "."))
         return redirect(url_for("web.maestro_legal"))
     from .licensing.admin import ErrorAdmin
     sel = request.args.get("sistema") if request.args.get("sistema") in sistemas.SISTEMAS else None
     try:
-        adm = _admin(); datos = adm.legal_documentos(sel); abgs = adm.legal_abogados(); acs = adm.legal_aceptaciones()
+        adm = _admin(); datos = adm.legal_documentos(sel); abgs = adm.legal_abogados(); acs = adm.legal_aceptaciones(); dirs = adm.legal_directores()
     except (ErrorAdmin, ValueError, OSError) as e:
-        flash(f"No se pudo consultar el servicio de licencias: {str(e)[:150]}"); datos, abgs, acs = {"documentos": [], "cadena_integra": True}, [], []
+        flash(f"No se pudo consultar el servicio de licencias: {str(e)[:150]}"); datos, abgs, acs, dirs = {"documentos": [], "cadena_integra": True}, [], [], []
     docs = datos["documentos"]
     filas = [dict(cells=[_nombre_sistema(d["sistema"]), TIPOS.get(d["tipo"], d["tipo"]), f"v{d['version']}", ESTADOS.get(d["estado"], d["estado"]),
                          _fecha(d["actualizado_en"]), _fecha(d["aprobado_en"]) if d.get("aprobado_en") else "—"],
@@ -99,8 +110,9 @@ def maestro_legal():
     secs = [dict(kpis=[("Vigentes", sum(d["estado"] == "aprobado" for d in docs)), ("En revisión", len(en_revision)),
                        ("Borradores", sum(d["estado"] == "borrador" for d in docs)), ("Aceptaciones registradas", len(acs))]),
             dict(titulo="Cómo funciona", clase="maestro-contexto",
-                 nota="Cada documento nace como borrador desde la plantilla. Se edita, se envía a revisión y solo rige cuando la abogada lo aprueba con su "
-                      "clave y su código de verificación. Desde ese momento se pide aceptarlo al próximo ingreso: el administrador de cada cliente "
+                 nota="Cada documento nace como borrador desde la plantilla. Se edita y se envía a revisión; la abogada lo aprueba con su clave y su "
+                      "código de verificación, y luego los dos Directores Generales lo autorizan desde el enlace que reciben por correo. Solo con las tres "
+                      "firmas rige. Desde ese momento se pide aceptarlo al próximo ingreso: el administrador de cada cliente "
                       "acepta el contrato, los términos y la privacidad; los demás usuarios, los términos y la privacidad. Cada aceptación queda "
                       "registrada con la versión exacta, la hora, la IP y la huella del texto. Marco legal: docs/MARCO_LEGAL.md."
                       + ("" if datos.get("cadena_integra", True) else " ⚠ La cadena de aceptaciones NO está íntegra: revise la bitácora.")),
@@ -114,6 +126,17 @@ def maestro_legal():
         secs.append(dict(titulo="Abogada autorizada", tabla=dict(cols=["Nombre", "Cédula", "Inpreabogado", "Usuario", "Firma", "Estado"], filas=[
             dict(cells=[a["nombre"], a["cedula"], a["inpreabogado"], a["usuario"], "Registrada" if a["tiene_firma"] else "Pendiente",
                         "Activa" if a["activo"] else "Inactiva"]) for a in abgs])))
+        secs.append(dict(titulo="Directores Generales", nota="Cada documento necesita la autorización de los dos. La reciben por correo con el contexto "
+                         "de lo que autorizan; su firma registrada queda en el documento.",
+                         tabla=dict(cols=["Nombre", "Cargo", "Cédula", "Usuario", "Correo", "Firma", "Estado"], filas=[
+                             dict(cells=[x["nombre"], x["cargo"], x["cedula"], x["usuario"], x["correo"], "Registrada" if x["tiene_firma"] else "Pendiente",
+                                         "Activo" if x["activo"] else "Inactivo"]) for x in dirs])))
+        if len([x for x in dirs if x["activo"]]) < 2:
+            secs.append(dict(titulo="Registrar Director General", clase="maestro-form", abierto=True,
+                             nota="Se crea su usuario de Gigadevs (sin acceso a datos de clientes) y recibe la invitación; al entrar registra su firma.",
+                             form=dict(action=request.path, boton="Registrar y enviar invitación", campos=[h("director"),
+                                 campo("nombre", "Nombre completo"), campo("cedula", "Cédula", ph="V-12345678"),
+                                 campo("cargo", "Cargo", valor="Director General"), campo("username", "Usuario"), campo("email", "Correo", "email")])))
         secs.append(dict(titulo="Registrar abogada", clase="maestro-form", abierto=not abgs,
                          nota="Se crea su usuario de Gigadevs (rol Abogado, sin acceso a datos de clientes) y recibe la invitación para crear su clave "
                               "y su verificación en dos pasos. Al entrar registra su firma.",
@@ -147,14 +170,11 @@ def maestro_legal_documento(did):
                 if not verificar_clave(F.get("clave", ""), g.usuario.password_hash)[0]: raise ValueError("Clave incorrecta: el documento no se aprobó")
                 if not _mfa_confirmado(g.usuario, F.get("codigo")): raise ValueError("Código de verificación incorrecto: el documento no se aprobó")
                 doc = _admin().legal_aprobar(did, g.usuario.username)
-                registrar(g.usuario.username, "DOCUMENTO_LEGAL_APROBADO", f"{doc['sistema']}/{doc['tipo']} v{doc['version']} huella={doc['huella'][:16]}", org=None)
-                try:
-                    from . import drive
-                    drive.subir_documento_aprobado(doc)
-                except Exception as e:  # noqa: BLE001 — Drive no detiene la aprobación; se reintenta desde Legal
-                    current_app.logger.warning("Drive: no se subió el documento %s: %s", did, e)
+                registrar(g.usuario.username, "DOCUMENTO_LEGAL_APROBADO_ABOGADA", f"{doc['sistema']}/{doc['tipo']} v{doc['version']} huella={doc['huella'][:16]}", org=None)
+                for e in doc.get("enlaces", []): pedir_autorizacion(doc, e)
                 return doc
-            _hacer(aprobar, lambda d: f"Aprobado: {d['titulo']} v{d['version']} rige desde ahora.")
+            _hacer(aprobar, lambda d: f"Aprobado por usted. Se pidió la autorización de los Directores Generales ({', '.join(e['director'] for e in d.get('enlaces', []))}); "
+                                      "rige cuando ambos autoricen.")
         else: flash("Acción inválida")
         return redirect(url_for("web.maestro_legal_documento", did=did))
     try:
@@ -199,7 +219,14 @@ def documento_html(doc, base_url=None):
     aprobacion = (f'<div class="aprob"><div><b>Aprobado por</b><br>Abg. {e(ab["nombre"])}<br>C.I. {e(ab["cedula"])} · Inpreabogado N° {e(ab["inpreabogado"])}'
                   f'<br>{e(time.strftime("%d/%m/%Y %H:%M UTC", time.gmtime(doc["aprobado_en"])))}</div>'
                   + (f'<img alt="Firma" src="data:image/png;base64,{e(ab["firma"])}">' if ab.get("firma") else "") + "</div>"
-                  if ab and doc["estado"] in ("aprobado", "reemplazado") else '<div class="aprob borrador">BORRADOR — sin aprobación de la abogada. No rige.</div>')
+                  if ab and doc["estado"] in ("aprobado", "reemplazado", "autorizacion") else '<div class="aprob borrador">BORRADOR — sin aprobación de la abogada. No rige.</div>')
+    for a in doc.get("autorizaciones") or []:
+        if a["estado"] != "autorizado": continue
+        aprobacion += (f'<div class="aprob"><div><b>Autorizado por</b><br>{e(a["nombre"])}<br>{e(a["cargo"])} · C.I. {e(a["cedula"])}'
+                       f'<br>{e(time.strftime("%d/%m/%Y %H:%M UTC", time.gmtime(a["respondido_en"])))}</div>'
+                       + (f'<img alt="Firma" src="data:image/png;base64,{e(a["firma"])}">' if a.get("firma") else "") + "</div>")
+    if doc["estado"] == "autorizacion":
+        aprobacion += '<div class="aprob borrador">Pendiente de la autorización de los Directores Generales. Aún no rige.</div>'
     return f"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{e(doc['titulo'])} · v{doc['version']}</title><style>
 body{{margin:0;background:#f4f4f2;font-family:'Inter','Segoe UI',Helvetica,Arial,sans-serif;color:#303030}}
@@ -227,14 +254,39 @@ def maestro_legal_imprimir(did):
     return Response(documento_html(doc), mimetype="text/html")
 
 
+def _cargar_directores():
+    from .licensing.admin import ErrorAdmin
+    try:
+        return _admin().legal_directores()
+    except (ErrorAdmin, ValueError, OSError):
+        return []
+
+
+def pedir_autorizacion(doc, enlace):
+    """Correo al Director General con el contexto de lo que autoriza y su enlace de un solo uso (7 días)."""
+    from . import correo
+    url = correo.url_absoluta(url_for("web.legal_autorizar", token=enlace["token"]))
+    ab = doc.get("abogado") or {}
+    correo.enviar(enlace["correo"], f"Autorización requerida · {doc['titulo']}",
+                  f"Estimado(a) {enlace['director']}:\n\nComo {enlace['cargo']} de Gigadevs Corp, se requiere su autorización para que entre en vigencia "
+                  f"el documento «{doc['titulo']}» (versión {doc['version']}). Ya fue revisado y aprobado por la abogada {ab.get('nombre', '')} "
+                  f"(Inpreabogado N° {ab.get('inpreabogado', '')}).\n\nAl autorizarlo, el documento regirá para los clientes de "
+                  f"{_nombre_sistema(doc['sistema'])}: se les pedirá aceptarlo al ingresar y llevará su firma registrada junto a la de la abogada. "
+                  "Si no está de acuerdo, puede no autorizarlo indicando el motivo; el documento volverá a borrador.",
+                  titulo="Su autorización es necesaria", boton=("Revisar y autorizar", url),
+                  filas=[("Documento", doc["titulo"]), ("Sistema", _nombre_sistema(doc["sistema"])), ("Versión", str(doc["version"])),
+                         ("Huella SHA-256", doc["huella"][:32] + "…"), ("Validez del enlace", "7 días, un solo uso")],
+                  nota="Este enlace es personal: no lo reenvíe. Si no esperaba este correo, avise a Gigadevs.")
+
+
 # ====================================================================== abogada: datos y firma
 @ruta("/plataforma/legal/abogada", "legal", ("GET", "POST"))
 def maestro_legal_abogada():
     from .licensing.admin import ErrorAdmin
     if request.method == "POST":
-        if not _es_abogada(): abort(403)
+        if g.usuario.rol not in ("Abogado", "Director"): abort(403)
         a = F.get("accion")
-        if a == "datos":
+        if a == "datos" and g.usuario.rol == "Abogado":
             _hacer(lambda: _admin().legal_guardar_abogado(g.usuario.username, nombre=F.get("nombre"), cedula=F.get("cedula"),
                                                           inpreabogado=F.get("inpreabogado"), correo=g.usuario.email), "Datos actualizados")
         elif a == "firma":
@@ -249,6 +301,14 @@ def maestro_legal_abogada():
         abgs = _admin().legal_abogados()
     except (ErrorAdmin, ValueError, OSError) as e:
         flash(str(e)[:200]); abgs = []
+    if g.usuario.rol == "Director":
+        dirs = _cargar_directores()
+        yo = next((x for x in dirs if x["usuario"] == g.usuario.username), None)
+        return pagina("Mis datos y firma", None, [
+            dict(kpis=[("Cargo", yo["cargo"] if yo else "—"), ("Firma", "Registrada" if yo and yo["tiene_firma"] else "Pendiente")]),
+            dict(titulo="Mi firma", nota="Imagen PNG de su firma (máx. 300 KB). Se imprime en cada documento que usted autorice desde el enlace que recibe "
+                                         "por correo.",
+                 form=dict(action=request.path, boton="Guardar firma", archivo=True, campos=[h("firma"), campo("firma", "Firma (PNG)", "file", accept="image/png")]))])
     if not _es_abogada():
         return pagina("Legal · Abogada", None, [dict(tabla=dict(cols=["Nombre", "Cédula", "Inpreabogado", "Usuario", "Firma"], filas=[
             dict(cells=[a["nombre"], a["cedula"], a["inpreabogado"], a["usuario"], "Registrada" if a["tiene_firma"] else "Pendiente"]) for a in abgs])),
@@ -284,7 +344,7 @@ def maestro_legal_aceptaciones():
 
 # ====================================================================== aceptación al ingresar (usuarios de los clientes de Contax)
 REVISAR_CADA_S = 900       # tras aceptar (o sin pendientes) no se vuelve a consultar durante 15 minutos
-LIBRES = {"web.legal_aceptar", "web.legal", "auth.logout", "static", "salud"}
+LIBRES = {"web.legal_aceptar", "web.legal", "web.legal_autorizar", "auth.logout", "static", "salud"}
 
 
 def _perfil(u):
@@ -378,3 +438,33 @@ def enviar_copia(u, org, docs):
         for d in docs: drive.subir_aceptacion(d, u.username, org.rif if org else "", org.nombre if org else "")
     except Exception as e:  # noqa: BLE001
         current_app.logger.warning("Drive: no se subió la aceptación: %s", e)
+
+
+@bp.route("/legal/autorizar/<token>", methods=["GET", "POST"])
+def legal_autorizar(token):
+    """Enlace del correo de cada Director General: ve el contexto y el texto completo, y autoriza (o no, con el motivo)."""
+    from .extensions import limiter  # noqa: F401
+    from .licensing.admin import ErrorAdmin
+    if not re.fullmatch(r"[A-Za-z0-9_-]{20,80}", token or ""): abort(404)
+    if request.method == "POST":
+        decision = "autorizado" if F.get("decision") == "autorizar" else "rechazado"
+        ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip()[:64]
+        try:
+            r = _admin().legal_autorizar(token, decision=decision, ip=ip, agente=(request.user_agent.string or "")[:300], comentario=F.get("comentario"))
+        except (ErrorAdmin, ValueError, OSError) as e:
+            flash(str(e)[:200]); return redirect(request.path)
+        if r["estado"] == "aprobado":
+            try:
+                from . import drive
+                drive.subir_documento_aprobado(_admin().legal_documento(r["documento_id"]))
+            except Exception as e:  # noqa: BLE001 — Drive no detiene la vigencia; se sube desde Legal
+                current_app.logger.warning("Drive: no se subió el documento %s: %s", r["documento_id"], e)
+        flash({"aprobado": "Gracias. Con su autorización el documento ya rige.", "autorizacion": "Gracias. Su autorización quedó registrada; falta la del otro director.",
+               "borrador": "Registramos que no lo autoriza. El documento volvió a borrador con su motivo."}.get(r["estado"], "Registrado."))
+        return redirect(request.path)
+    try:
+        ctx = _admin().legal_autorizacion(token)
+    except (ErrorAdmin, ValueError, OSError):
+        abort(404)
+    return render_template("legal_autorizar.html", titulo="Autorización de documento legal", empresa=None, ctx=ctx, doc=ctx["documento"],
+                           nombre_sistema=_nombre_sistema(ctx["documento"]["sistema"]), estados=ESTADOS)

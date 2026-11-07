@@ -1179,10 +1179,39 @@ def test_legal_abogada_aprueba_y_el_cliente_acepta(entorno):
     # la abogada: con un código incorrecto no se aprueba; con clave y código correctos, rige
     r = abg.post(f"/plataforma/legal/{did}", data={"accion": "aprobar", "clave": CLAVE, "codigo": "000000"}, follow_redirects=True)
     assert "no se aprobó" in r.get_data(as_text=True)
+    # sin los dos Directores Generales registrados (con firma) no se puede aprobar
     r = abg.post(f"/plataforma/legal/{did}", data={"accion": "aprobar", "clave": CLAVE, "codigo": totp.codigo(sec_abg, _t.time() + 30)}, follow_redirects=True)
-    assert "rige desde ahora" in r.get_data(as_text=True), r.get_data(as_text=True)[-600:]
+    assert "Directores Generales" in r.get_data(as_text=True)
+    dirs = []
+    for usuario, nombre, ci in (("dgadrian", "Adrián Muñoz", "V-11111111"), ("dgsoranyer", "Soranyer Ávila", "V-10807720")):
+        r = root.post("/plataforma/legal", data={"accion": "director", "nombre": nombre, "cedula": ci, "cargo": "Director General",
+                                                 "username": usuario, "email": f"{usuario}@gigadevs.test"}, follow_redirects=True)
+        assert "Director General registrado" in r.get_data(as_text=True), r.get_data(as_text=True)[-400:]
+        cd = _cliente(app)
+        assert cd.post(_ultimo_enlace("invitacion"), data={"nueva": CLAVE, "repetir": CLAVE}).status_code == 302
+        _login_total(cd, usuario, CLAVE)
+        assert cd.get("/").headers["Location"].endswith("/plataforma/legal") and cd.get("/plataforma/sistemas").status_code == 403
+        r = cd.post("/plataforma/legal/abogada", data={"accion": "firma", "firma": (io.BytesIO(png), "f.png")}, content_type="multipart/form-data", follow_redirects=True)
+        assert "Firma registrada" in r.get_data(as_text=True); dirs.append(usuario)
+    assert "Registrar Director General" not in root.get("/plataforma/legal").get_data(as_text=True)    # ya están los dos
+    from app import correo
+    n = len(correo.ENVIADOS)
+    r = abg.post(f"/plataforma/legal/{did}", data={"accion": "aprobar", "clave": CLAVE, "codigo": totp.codigo(sec_abg, _t.time() + 30)}, follow_redirects=True)
+    assert "rige cuando ambos autoricen" in r.get_data(as_text=True), r.get_data(as_text=True)[-600:]
+    pedidos = [m for m in correo.ENVIADOS[n:] if "Autorización requerida" in m["Subject"]]
+    assert sorted(m["To"] for m in pedidos) == ["dgadrian@gigadevs.test", "dgsoranyer@gigadevs.test"]
+    enlaces = [re.search(r"https://erp\.test(/legal/autorizar/[\w-]+)", m.get_content()).group(1) for m in pedidos]
+    anon = _cliente(app)                                                                              # el director no necesita iniciar sesión
+    ctx = anon.get(enlaces[0]).get_data(as_text=True)
+    assert "Autorizo este documento" in ctx and "Inpreabogado N° 123456" in ctx and "Partes, objeto y aceptación" in ctx
+    assert "/legal/aceptar" not in _org_con_admin(entorno, "Delta Previa", "J-57575757-5", "admin_delta")[1].get("/").headers.get("Location", "")  # aún no rige
+    anon.post(enlaces[0], data={"decision": "autorizar"})
+    assert "ya autorizó" in anon.get(enlaces[0]).get_data(as_text=True)
+    r = anon.post(enlaces[1], data={"decision": "autorizar"}, follow_redirects=True)
+    assert "ya rige" in r.get_data(as_text=True), r.get_data(as_text=True)[-400:]
     impreso = abg.get(f"/plataforma/legal/{did}/documento").get_data(as_text=True)
-    assert "Aprobado por" in impreso and "Inpreabogado N° 123456" in impreso and "data:image/png;base64," in impreso
+    assert "Aprobado por" in impreso and "Inpreabogado N° 123456" in impreso and impreso.count("data:image/png;base64,") == 3   # abogada + 2 directores
+    assert impreso.count("Autorizado por") == 2 and "Director General" in impreso
     # el administrador de un cliente debe aceptarlo antes de seguir; queda registrado y recibe la copia del contrato
     oid, cli = _org_con_admin(entorno, "Gamma Legal", "J-56565656-5", "admin_gamma")
     r = cli.get("/")

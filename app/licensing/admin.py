@@ -90,7 +90,11 @@ class ClienteAdmin:
     def legal_vigente(self, sistema, tipo): return self._req("GET", f"/admin/v1/legal/vigente/{sistema}/{tipo}")["documento"]
     def legal_abogados(self): return self._req("GET", "/admin/v1/legal/abogados")["abogados"]
     def legal_guardar_abogado(self, usuario, **d): return self._req("PUT", f"/admin/v1/legal/abogados/{usuario}", d)["abogado"]
-    def legal_firma(self, usuario, png_b64): return self._req("PUT", f"/admin/v1/legal/abogados/{usuario}/firma", {"png": png_b64})
+    def legal_firma(self, usuario, png_b64): return self._req("PUT", f"/admin/v1/legal/firmas/{usuario}", {"png": png_b64})
+    def legal_directores(self): return self._req("GET", "/admin/v1/legal/directores")["directores"]
+    def legal_guardar_director(self, usuario, **d): return self._req("PUT", f"/admin/v1/legal/directores/{usuario}", d)["director"]
+    def legal_autorizacion(self, token): return self._req("GET", f"/admin/v1/legal/autorizaciones/{token}")
+    def legal_autorizar(self, token, **d): return self._req("POST", f"/admin/v1/legal/autorizaciones/{token}", d)
     def legal_pendientes(self, sistema, usuario, perfil): return self._req("GET", f"/admin/v1/legal/pendientes/{sistema}", params={"usuario": usuario, "perfil": perfil})["pendientes"]
     def legal_aceptar(self, sistema, **d): return self._req("POST", f"/admin/v1/legal/aceptar/{sistema}", d)["aceptaciones"]
     def legal_aceptaciones(self, sistema=None): return self._req("GET", "/admin/v1/legal/aceptaciones", params={"sistema": sistema})["aceptaciones"]

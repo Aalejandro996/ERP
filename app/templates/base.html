@@ -3,7 +3,7 @@
 <link rel="icon" href="{{ url_for('static', filename='marca/favicon.ico') }}" sizes="any"><link rel="icon" href="{{ url_for('static', filename='marca/logo-icono.svg') }}" type="image/svg+xml">
 <link rel="apple-touch-icon" href="{{ url_for('static', filename='marca/apple-touch-icon.png') }}"><meta name="theme-color" content="#191919"><meta name="description" content="{{ config.APP_NOMBRE }} — {{ config.APP_LEMA }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='estilo.css') }}"><script src="{{ url_for('static', filename='app.js') }}" defer></script></head>
-{% set u = g.usuario %}{% set ep = request.endpoint %}{% set es_maestro = u and u.rol == 'Maestro' %}{% set sis = sistema_activo() if es_maestro else None %}{% set sin_menu = es_maestro and not sis %}{% set es_cliente = u and u.organizacion_id %}{% set es_abogado = u and u.rol == 'Abogado' %}
+{% set u = g.usuario %}{% set ep = request.endpoint %}{% set es_maestro = u and u.rol == 'Maestro' %}{% set sis = sistema_activo() if es_maestro else None %}{% set sin_menu = es_maestro and not sis %}{% set es_cliente = u and u.organizacion_id %}{% set es_abogado = u and u.rol in ('Abogado', 'Director') %}
 <body class="{{ 'maestro-selector' if sin_menu }}" data-maestro-product="{{ sis or '' }}">
 <div class="app{{ ' app-maestro-selector' if sin_menu }}"><input type="checkbox" id="nav-toggle">
 <aside class="sidebar">
@@ -25,7 +25,7 @@
     <a href="{{ url_for('web.admin_equipos') }}" class="{{ 'activo' if ep == 'web.admin_equipos' }}">Equipos</a>
     <a href="{{ url_for('web.admin_licencia') }}" class="{{ 'activo' if ep == 'web.admin_licencia' }}">Licencia</a></nav>{% endif %}
   {% elif es_abogado %}
-  <div class="org"><b>Gigadevs Corp</b><span class="chip">Abogada</span></div>
+  <div class="org"><b>Gigadevs Corp</b><span class="chip">{{ 'Abogada' if u.rol == 'Abogado' else 'Director General' }}</span></div>
   <nav class="nav-grupo"><span>Legal</span>
     <a href="{{ url_for('web.maestro_legal') }}" class="{{ 'activo' if ep in ('web.maestro_legal', 'web.maestro_legal_documento') }}"><span class="ico" aria-hidden="true">📜</span>Documentos</a>
     <a href="{{ url_for('web.maestro_legal_aceptaciones') }}" class="{{ 'activo' if ep == 'web.maestro_legal_aceptaciones' }}"><span class="ico" aria-hidden="true">🗂️</span>Aceptaciones</a>

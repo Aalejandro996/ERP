@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block contenido %}
+<div class="cabecera"><div><div class="ruta">Gigadevs Corp · autorización de los Directores Generales</div><h1>{{ doc.titulo }}</h1></div></div>
+<section class="legal-aceptar">
+  <p>{{ ctx.director.nombre }} ({{ ctx.director.cargo }}): se le pide autorizar la <b>versión {{ doc.version }}</b> de este documento de <b>{{ nombre_sistema }}</b>.
+  {% if doc.abogado %}Fue revisado y aprobado por la Abg. {{ doc.abogado.nombre }} (Inpreabogado N° {{ doc.abogado.inpreabogado }}).{% endif %}
+  Al autorizarlo, regirá para los clientes de {{ nombre_sistema }}: se les pedirá aceptarlo al ingresar y llevará su firma registrada. Su decisión queda
+  registrada con la fecha y hora, su dirección IP y la huella del texto ({{ doc.huella[:24] }}…).</p>
+  {% if doc.observaciones %}<p class="peq">Observaciones: {{ doc.observaciones }}</p>{% endif %}
+  <details class="legal-doc" open><summary><b>Texto completo</b></summary><div class="legal-texto">
+    {% for s in doc.secciones %}<h2>{{ loop.index }}. {{ s.titulo }}</h2>{% for x in s.parrafos %}<p>{{ x }}</p>{% endfor %}{% endfor %}</div></details>
+  {% if ctx.estado == 'pendiente' %}
+  <form method="post" class="form-pie"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="decision" value="autorizar"><button>Autorizo este documento</button></form>
+  <details class="legal-doc"><summary>No lo autorizo</summary><form method="post" style="padding:12px 16px"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="decision" value="rechazar"><label>Motivo<textarea name="comentario" rows="3" required maxlength="2000"></textarea></label>
+    <button class="btn sec">No autorizar</button></form></details>
+  {% else %}<div class="msg">{{ {'autorizado': 'Usted ya autorizó este documento.', 'rechazado': 'Usted no autorizó este documento.', 'anulado': 'Esta solicitud ya no está vigente: otro director no autorizó el documento.', 'vencido': 'El enlace venció: pida a la abogada que vuelva a enviar la aprobación.'}.get(ctx.estado, '') }}
+    Estado del documento: {{ estados.get(doc.estado, doc.estado) }}.</div>{% endif %}
+</section>
+{% endblock %}

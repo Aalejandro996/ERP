@@ -12,6 +12,7 @@ import base64
 import hashlib
 import json
 import re
+import secrets
 
 from sqlalchemy import Column, Float, Integer, MetaData, String, Table, Text, UniqueConstraint, func, insert, select, update
 
@@ -33,6 +34,22 @@ abogados = Table(
     Column("nombre", Text, nullable=False), Column("cedula", String(20), nullable=False), Column("inpreabogado", String(20), nullable=False),
     Column("correo", Text), Column("firma", Text), Column("firma_huella", String(64)),                      # firma: PNG en base64
     Column("activo", Integer, nullable=False, default=1), Column("registrado_en", Float, nullable=False), Column("actualizado_en", Float, nullable=False))
+# Directores Generales: cada documento aprobado por la abogada necesita además la autorización de los dos directores
+directores = Table(
+    "lic_legal_directores", md,
+    Column("id", Integer, primary_key=True), Column("usuario", String(80), nullable=False, unique=True),
+    Column("nombre", Text, nullable=False), Column("cedula", String(20), nullable=False), Column("cargo", Text, nullable=False),
+    Column("correo", Text, nullable=False), Column("firma", Text), Column("firma_huella", String(64)),
+    Column("activo", Integer, nullable=False, default=1), Column("registrado_en", Float, nullable=False), Column("actualizado_en", Float, nullable=False))
+autorizaciones = Table(
+    "lic_legal_autorizaciones", md,
+    Column("id", Integer, primary_key=True), Column("documento_id", Integer, nullable=False), Column("director_id", Integer, nullable=False),
+    Column("token_hash", String(64), nullable=False, unique=True), Column("estado", String(12), nullable=False, default="pendiente"),
+    # pendiente → autorizado | rechazado | anulado (otro director no autorizó)
+    Column("enviado_en", Float, nullable=False), Column("respondido_en", Float), Column("ip", String(64)), Column("agente", Text),
+    Column("comentario", Text), Column("firma_huella", String(64)), Column("evidencia", String(64)))
+DIRECTORES_REQUERIDOS = 2
+VIGENCIA_AUTORIZACION_S = 7 * 86400
 aceptaciones = Table(
     "lic_legal_aceptaciones", md,
     Column("id", Integer, primary_key=True), Column("documento_id", Integer, nullable=False), Column("sistema", String(40), nullable=False),
@@ -109,6 +126,11 @@ class Legal:
             if d.get("abogado_id"):
                 ab = c.execute(select(abogados).where(abogados.c.id == d["abogado_id"])).first()
                 d["abogado"] = {k: ab._mapping[k] for k in ("nombre", "cedula", "inpreabogado", "firma", "firma_huella")} if ab else None
+            d["autorizaciones"] = [{**{k: r._mapping[k] for k in ("estado", "enviado_en", "respondido_en", "comentario", "evidencia")},
+                                    **{k: r._mapping[k] for k in ("nombre", "cedula", "cargo", "firma")}}
+                                   for r in c.execute(select(autorizaciones, directores.c.nombre, directores.c.cedula, directores.c.cargo, directores.c.firma)
+                                                      .join(directores, directores.c.id == autorizaciones.c.director_id)
+                                                      .where(autorizaciones.c.documento_id == d["id"]).order_by(autorizaciones.c.id))]
         return d
 
     def vigente(self, sistema, tipo):
@@ -149,7 +171,8 @@ class Legal:
                 raise ValueError("Solo se devuelve un documento en revisión")
 
     def aprobar(self, did, usuario_abogado):
-        """La abogada aprueba la versión en revisión: rige desde ya y la versión anterior queda «reemplazada»."""
+        """La abogada aprueba la versión en revisión. Pasa a «autorizacion»: rige cuando la autorizan los dos Directores Generales.
+        Devuelve el documento y, para cada director, el enlace de un solo uso (token) que se le envía por correo."""
         ab = self.abogado(usuario_abogado)
         if not ab["activo"]: raise ValueError("La abogada no está activa")
         if not ab["tiene_firma"]: raise ValueError("Registre su firma antes de aprobar documentos")
@@ -158,12 +181,87 @@ class Legal:
             d = c.execute(select(documentos).where(documentos.c.id == int(did)).with_for_update()).first()
             if d is None: raise LookupError("Documento inexistente")
             if d.estado != "revision": raise ValueError("Solo se aprueba un documento enviado a revisión")
+            dirs = [r for r in c.execute(select(directores).where(directores.c.activo == 1)) if r.firma]
+            if len(dirs) < DIRECTORES_REQUERIDOS:
+                raise ValueError(f"Faltan los Directores Generales: registre a los {DIRECTORES_REQUERIDOS} con su firma antes de aprobar")
             aprobacion = hashlib.sha256(f"{d.huella}|{ab['inpreabogado']}|{ab['firma_huella']}|{ahora}".encode()).hexdigest()
+            c.execute(update(documentos).where(documentos.c.id == d.id).values(estado="autorizacion", abogado_id=ab["id"], aprobado_en=ahora,
+                                                                                aprobacion=aprobacion, actualizado_en=ahora))
+            enlaces = []
+            for r in dirs[:DIRECTORES_REQUERIDOS]:
+                crudo = secrets.token_urlsafe(32)
+                c.execute(insert(autorizaciones).values(documento_id=d.id, director_id=r.id, token_hash=hashlib.sha256(crudo.encode()).hexdigest(),
+                                                        estado="pendiente", enviado_en=ahora))
+                enlaces.append({"director": r.nombre, "cargo": r.cargo, "correo": r.correo, "token": crudo})
+        return {**self.documento(did), "enlaces": enlaces}
+
+    # ------------------------------------------------------------------ autorización de los Directores Generales
+    def _autorizacion(self, c, token):
+        fila = c.execute(select(autorizaciones).where(autorizaciones.c.token_hash == hashlib.sha256(str(token).encode()).hexdigest())
+                         .with_for_update()).first()
+        if fila is None: raise LookupError("El enlace no es válido")
+        return fila
+
+    def autorizacion(self, token):
+        """Contexto de lo que el director autoriza (sin consumir el enlace)."""
+        with self.st.eng.connect() as c:
+            fila = c.execute(select(autorizaciones).where(autorizaciones.c.token_hash == hashlib.sha256(str(token).encode()).hexdigest())).first()
+            if fila is None: raise LookupError("El enlace no es válido")
+            dr = c.execute(select(directores).where(directores.c.id == fila.director_id)).first()
+        vencido = fila.estado == "pendiente" and self.st.reloj() > fila.enviado_en + VIGENCIA_AUTORIZACION_S
+        return {"estado": "vencido" if vencido else fila.estado, "director": {"nombre": dr.nombre, "cargo": dr.cargo, "cedula": dr.cedula},
+                "documento": self.documento(fila.documento_id)}
+
+    def autorizar(self, token, decision, ip=None, agente=None, comentario=None):
+        """El director autoriza (o no) con el enlace de su correo. Con las dos autorizaciones el documento rige; si uno no autoriza,
+        vuelve a borrador con el motivo y se anulan los enlaces pendientes."""
+        if decision not in ("autorizado", "rechazado"): raise ValueError("Decisión inválida")
+        if decision == "rechazado" and not str(comentario or "").strip(): raise ValueError("Indique el motivo para no autorizar")
+        ahora = self.st.reloj()
+        with self.st.eng.begin() as c:
+            a = self._autorizacion(c, token)
+            if a.estado != "pendiente": raise ValueError("Este enlace ya se usó")
+            if ahora > a.enviado_en + VIGENCIA_AUTORIZACION_S: raise ValueError("El enlace venció: pida a la abogada que reenvíe la aprobación")
+            d = c.execute(select(documentos).where(documentos.c.id == a.documento_id).with_for_update()).first()
+            if d.estado != "autorizacion": raise ValueError("Este documento ya no espera autorización")
+            dr = c.execute(select(directores).where(directores.c.id == a.director_id)).first()
+            evidencia = hashlib.sha256(f"{d.huella}|{dr.cedula}|{dr.firma_huella}|{decision}|{ahora}|{ip}".encode()).hexdigest()
+            c.execute(update(autorizaciones).where(autorizaciones.c.id == a.id).values(
+                estado=decision, respondido_en=ahora, ip=(str(ip)[:64] if ip else None), agente=(str(agente)[:300] if agente else None),
+                comentario=str(comentario or "").strip()[:2000] or None, firma_huella=dr.firma_huella, evidencia=evidencia))
+            if decision == "rechazado":
+                c.execute(update(autorizaciones).where(autorizaciones.c.documento_id == d.id, autorizaciones.c.estado == "pendiente").values(estado="anulado"))
+                c.execute(update(documentos).where(documentos.c.id == d.id).values(
+                    estado="borrador", observaciones=f"No autorizado por {dr.nombre} ({dr.cargo}): {str(comentario).strip()[:1500]}", actualizado_en=ahora))
+                return {"estado": "borrador", "documento_id": d.id}
+            faltan = c.execute(select(func.count()).select_from(autorizaciones).where(autorizaciones.c.documento_id == d.id,
+                                                                                      autorizaciones.c.estado == "pendiente")).scalar()
+            if faltan: return {"estado": "autorizacion", "documento_id": d.id, "faltan": faltan}
             c.execute(update(documentos).where(documentos.c.sistema == d.sistema, documentos.c.tipo == d.tipo, documentos.c.estado == "aprobado")
                       .values(estado="reemplazado"))
-            c.execute(update(documentos).where(documentos.c.id == d.id).values(estado="aprobado", abogado_id=ab["id"], aprobado_en=ahora,
-                                                                                aprobacion=aprobacion, actualizado_en=ahora))
-        return self.documento(did)
+            c.execute(update(documentos).where(documentos.c.id == d.id).values(estado="aprobado", actualizado_en=ahora))
+        return {"estado": "aprobado", "documento_id": d.id}
+
+    def directores(self):
+        with self.st.eng.connect() as c:
+            return [_dict(r) for r in c.execute(select(directores).order_by(directores.c.id))]
+
+    def guardar_director(self, usuario, nombre, cedula, cargo, correo, activo=True):
+        nombre, cargo = str(nombre or "").strip()[:120], str(cargo or "Director General").strip()[:80]
+        cedula = str(cedula or "").strip().upper().replace(".", "")
+        correo = str(correo or "").strip().lower()
+        if len(nombre) < 5: raise ValueError("Indique el nombre completo del director")
+        if not RE_CI.match(cedula): raise ValueError("Cédula inválida (V-12345678)")
+        if "@" not in correo: raise ValueError("Correo del director inválido")
+        ahora = self.st.reloj()
+        with self.st.eng.begin() as c:
+            existe = c.execute(select(directores.c.id).where(directores.c.usuario == str(usuario))).first()
+            if not existe and c.execute(select(func.count()).select_from(directores).where(directores.c.activo == 1)).scalar() >= DIRECTORES_REQUERIDOS and activo:
+                raise ValueError(f"Ya hay {DIRECTORES_REQUERIDOS} Directores Generales activos: desactive uno antes de registrar otro")
+            valores = dict(nombre=nombre, cedula=cedula, cargo=cargo, correo=correo, activo=1 if activo else 0, actualizado_en=ahora)
+            if existe: c.execute(update(directores).where(directores.c.usuario == str(usuario)).values(**valores))
+            else: c.execute(insert(directores).values(usuario=str(usuario)[:80], registrado_en=ahora, **valores))
+        return next(d for d in self.directores() if d["usuario"] == str(usuario))
 
     # ------------------------------------------------------------------ abogada
     def abogado(self, usuario):
@@ -194,11 +292,13 @@ class Legal:
         return self.abogado(usuario)
 
     def guardar_firma(self, usuario, png: bytes):
+        """Firma (PNG) de la abogada o de un Director General."""
         if not png or len(png) > 300 * 1024 or png[:8] != b"\x89PNG\r\n\x1a\n": raise ValueError("La firma debe ser una imagen PNG de hasta 300 KB")
-        self.abogado(usuario)
+        valores = dict(firma=base64.b64encode(png).decode(), firma_huella=hashlib.sha256(png).hexdigest(), actualizado_en=self.st.reloj())
         with self.st.eng.begin() as c:
-            c.execute(update(abogados).where(abogados.c.usuario == str(usuario)).values(
-                firma=base64.b64encode(png).decode(), firma_huella=hashlib.sha256(png).hexdigest(), actualizado_en=self.st.reloj()))
+            if c.execute(update(abogados).where(abogados.c.usuario == str(usuario)).values(**valores)).rowcount: return
+            if c.execute(update(directores).where(directores.c.usuario == str(usuario)).values(**valores)).rowcount: return
+        raise LookupError("No hay una abogada ni un director registrado con ese usuario")
 
     # ------------------------------------------------------------------ aceptaciones
     def pendientes(self, sistema, usuario, perfil="usuario"):
@@ -296,7 +396,7 @@ def registrar_rutas(app, st, lg, cuerpo, sistema_autenticado):
         d = cuerpo(); return jsonify(abogado=lg.guardar_abogado(usuario, d.get("nombre"), d.get("cedula"), d.get("inpreabogado"), d.get("correo"),
                                                                   d.get("activo", True)))
 
-    @app.put("/admin/v1/legal/abogados/<usuario>/firma")
+    @app.put("/admin/v1/legal/firmas/<usuario>")
     def l_firma(usuario):
         d = cuerpo()
         try:
@@ -304,6 +404,25 @@ def registrar_rutas(app, st, lg, cuerpo, sistema_autenticado):
         except (ValueError, TypeError) as e:
             raise ValueError("Firma inválida") from e
         lg.guardar_firma(usuario, png); return jsonify(ok=True)
+
+    @app.get("/admin/v1/legal/directores")
+    def l_directores():
+        return jsonify(directores=lg.directores())
+
+    @app.put("/admin/v1/legal/directores/<usuario>")
+    def l_guardar_director(usuario):
+        d = cuerpo(); return jsonify(director=lg.guardar_director(usuario, d.get("nombre"), d.get("cedula"), d.get("cargo"), d.get("correo"),
+                                                                    d.get("activo", True)))
+
+    @app.get("/admin/v1/legal/autorizaciones/<token>")
+    def l_autorizacion(token):
+        return jsonify(lg.autorizacion(token))
+
+    @app.post("/admin/v1/legal/autorizaciones/<token>")
+    def l_autorizar(token):
+        d = cuerpo(); r = lg.autorizar(token, d.get("decision"), d.get("ip"), d.get("agente"), d.get("comentario"))
+        with st.eng.begin() as c: st.log(c, None, "legal_autorizacion", f"documento #{r['documento_id']} {d.get('decision')} → {r['estado']}", d.get("ip"))
+        return jsonify(r)
 
     @app.get("/admin/v1/legal/pendientes/<sistema>")
     def l_pendientes(sistema):
